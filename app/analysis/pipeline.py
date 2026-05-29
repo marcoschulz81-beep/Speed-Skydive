@@ -85,6 +85,14 @@ def _read_csv(content: bytes) -> pd.DataFrame:
     return df
 
 
+def _detect_device_type(df: pd.DataFrame) -> str:
+    imu_markers = {"ax", "ay", "az", "gx", "gy", "gz", "accX", "accY", "accZ"}
+    columns = {str(c).strip() for c in df.columns}
+    if columns.intersection(imu_markers):
+        return "FlySight 2"
+    return "FlySight 1"
+
+
 def _safe_interp(x: np.ndarray, y: np.ndarray, x_target: float) -> float | None:
     if len(x) < 2 or x_target < x[0] or x_target > x[-1]:
         return None
@@ -538,6 +546,7 @@ def analyze_flysight_csv(
     breakoff_altitude_agl_m: float | None,
 ) -> dict[str, Any]:
     df = _read_csv(content)
+    device_type = _detect_device_type(df)
     raw_start_time_utc = df["time"].iloc[0].isoformat()
     t_abs_s = (df["time"] - df["time"].iloc[0]).dt.total_seconds().to_numpy()
     dt = np.diff(t_abs_s)
@@ -674,7 +683,7 @@ def analyze_flysight_csv(
         "jump_id": jump_id,
         "jumper_name": jumper_name.strip(),
         "file_name": file_name,
-        "device_type": "FlySight 1",
+        "device_type": device_type,
         "raw_start_time_utc": raw_start_time_utc,
         "t0_utc": t0_utc,
         "exit_altitude_msl_m": round(exit_altitude_msl, 2),
