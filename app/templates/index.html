@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Upload | Speed-Skydive Analyzer{% endblock %}
+{% block content %}
+<section class="panel">
+    <h1>FlySight CSV auswerten</h1>
+    <p class="muted">Upload pro Sprung, Speicherung unter Springername, automatischer Trainingsreport.</p>
+
+    {% if message %}
+    <div class="flash success">{{ message }}</div>
+    {% endif %}
+    {% if error %}
+    <div class="flash error">{{ error }}</div>
+    {% endif %}
+
+    <form class="grid-form" method="post" action="/analyze" enctype="multipart/form-data">
+        <label>
+            <span>Springername</span>
+            <input type="text" name="jumper_name" placeholder="z. B. Marlene" required>
+        </label>
+        <label>
+            <span>Ground Elevation (MSL, m)</span>
+            <input type="text" name="ground_elevation_m" placeholder="optional">
+        </label>
+        <label>
+            <span>Breakoff Altitude (AGL, m)</span>
+            <input type="text" name="breakoff_altitude_agl_m" placeholder="optional, default 1700">
+        </label>
+        <label class="file-field">
+            <span>FlySight CSV</span>
+            <input type="file" name="csv_file" accept=".csv" required>
+        </label>
+        <button type="submit">Analyse starten</button>
+    </form>
+</section>
+
+<section class="panel">
+    <h2>Letzte Spruenge</h2>
+    {% if recent_jumps %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Springer</th>
+                <th>Datei</th>
+                <th>t0 UTC</th>
+                <th>3s Max (km/h)</th>
+                <th>Rule Score (km/h)</th>
+                <th>Qualitaet</th>
+                <th>Detail</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for jump in recent_jumps %}
+            <tr>
+                <td><a href="/jumpers/{{ jump.jumper_name | urlencode }}">{{ jump.jumper_name }}</a></td>
+                <td>{{ jump.file_name }}</td>
+                <td>{{ jump.t0_utc }}</td>
+                <td>{{ "%.2f"|format(jump.best_3s_vVert_kmh) }}</td>
+                <td>
+                    {% if jump.rule_based_3s_score is not none %}
+                        {{ "%.2f"|format(jump.rule_based_3s_score) }}
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+                <td>{{ "%.1f"|format(jump.quality_score) }}</td>
+                <td><a href="/jumps/{{ jump.jump_id }}">Report</a></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">Noch keine gespeicherten Spruenge.</p>
+    {% endif %}
+</section>
+
+<section class="panel">
+    <h2>Springer</h2>
+    {% if jumpers %}
+    <div class="chips">
+        {% for jumper in jumpers %}
+        <a class="chip" href="/jumpers/{{ jumper | urlencode }}">{{ jumper }}</a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">Noch keine Springer vorhanden.</p>
+    {% endif %}
+</section>
+{% endblock %}
+

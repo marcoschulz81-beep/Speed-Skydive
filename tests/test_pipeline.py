@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import numpy as np
+import pandas as pd
+
+from app.analysis.pipeline import analyze_flysight_csv
+
+
+def _build_synthetic_csv() -> bytes:
+    dt = 0.2
+    n = 320
+    t = np.arange(n) * dt
+    base_time = datetime(2026, 5, 29, 10, 0, 0, tzinfo=timezone.utc)
+    times = [base_time + timedelta(seconds=float(x)) for x in t]
+
+    vel_d = np.piecewise(
+        t,
+        [t < 5, (t >= 5) & (t < 22), t >= 22],
+        [
+            lambda x: np.clip((x - 3) * 4, 0, None),
+            lambda x: 8 + (x - 5) * 7.2,
+            lambda x: 130 - (x - 22) * 0.9,
+        ],
+    )
+    vel_d = np.clip(vel_d, 0, 132)
+
+    vel_n = np.piecewise(
+        t,
+        [t < 5, (t >= 5) & (t < 25), t >= 25],
+        [
+            lambda x: 65 - x * 1.5,
+            lambda x: 55 - (x - 5) * 1.9,
+            lambda x: 18 + (x - 25) * 0.5,
+        ],
+    )
+    vel_n = np.clip(vel_n, 10, None)
+    vel_e = np.full_like(t, 3.0)
+
+    h = [4400.0]
+    for i in range(1, len(t)):
+        h.append(h[-1] - float(vel_d[i]) * dt)
+    h = np.array(h)
+
+    df = pd.DataFrame(
+        {
+            "time": [ts.isoformat() for ts in times],
+            "lat": 50.0 + np.sin(t / 1000) * 0.001,
+            "lon": 8.0 + np.cos(t / 1000) * 0.001,
+            "hMSL": h,
+            "velN": vel_n,
+            "velE": vel_e,
+            "velD": vel_d,
+            "hAcc": 1.5,
+            "vAcc": 1.7,
+            "sAcc": 0.8,
+            "gpsFix": 3,
+            "numSV": 13,
+        }
+    )
+    return df.to_csv(index=False).encode("utf-8")
+
+
+def test_pipeline_outputs_core_metrics():
+    content = _build_synthetic_csv()
+    result = analyze_flysight_csv(
+        content=content,
+        file_name="synthetic.csv",
+        jumper_name="Marlene",
+        ground_elevation_m=200.0,
+        breakoff_altitude_agl_m=1700.0,
+    )
+
+    jump = result["jump_record"]
+    metrics = result["metrics_record"]
+    fixpoints = result["report"]["fixpoints"]
+    phases = result["report"]["phases"]
+
+    assert jump["sample_rate_hz"] >= 4.9
+    assert metrics["best_3s_vVert_kmh"] > 430
+    assert len(fixpoints) == 5
+    assert all(point["vVert_kmh"] is not None for point in fixpoints[:3])
+    assert len(phases) == 4
+    assert metrics["hot_zone_start_s"] is not None
+    assert metrics["negative_risk_score"] >= 0
+

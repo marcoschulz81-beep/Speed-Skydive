@@ -1,0 +1,278 @@
+{% extends "base.html" %}
+{% block title %}Sprungreport | Speed-Skydive Analyzer{% endblock %}
+{% block content %}
+<section class="panel">
+    <div class="panel-head">
+        <h1>Sprungreport</h1>
+        <div class="actions">
+            <a class="btn" href="/jumps/{{ jump_id }}/report.pdf">PDF Export</a>
+            <a class="btn secondary" href="/">Neuer Upload</a>
+        </div>
+    </div>
+
+    <div class="meta-grid">
+        <div><span class="label">Springer</span><span>{{ report.jump.jumper_name }}</span></div>
+        <div><span class="label">Datei</span><span>{{ report.jump.file_name }}</span></div>
+        <div><span class="label">t0 UTC</span><span>{{ report.jump.t0_utc }}</span></div>
+        <div><span class="label">Samplingrate</span><span>{{ report.jump.sample_rate_hz }} Hz</span></div>
+        <div><span class="label">Exit MSL</span><span>{{ report.jump.exit_altitude_msl_m }} m</span></div>
+        <div><span class="label">Exit AGL</span><span>{{ report.jump.exit_altitude_agl_m }} m</span></div>
+        <div><span class="label">Gueltige Exit-Hoehe</span><span>{{ "Ja" if report.jump.is_valid_altitude else "Nein" }}</span></div>
+        <div><span class="label">Qualitaet</span><span>{{ report.jump.quality_score }}</span></div>
+    </div>
+</section>
+
+<section class="panel">
+    <h2>Speed Score</h2>
+    <div class="score-grid">
+        <div class="score-box">
+            <span class="k">Training 3s Max</span>
+            <span class="v">{{ report.metrics.best_3s_vVert_kmh }} km/h</span>
+            <span class="m">{{ report.metrics.best_3s_vVert_mps }} m/s</span>
+        </div>
+        <div class="score-box">
+            <span class="k">Bestes Fenster</span>
+            <span class="v">+{{ report.metrics.best_3s_start_s }}s bis +{{ report.metrics.best_3s_end_s }}s</span>
+            <span class="m">Ø vHor {{ report.metrics.best_3s_vHor_kmh }} km/h, Ø Winkel {{ report.metrics.best_3s_angle_deg }}°</span>
+        </div>
+        <div class="score-box">
+            <span class="k">Regelnaher 3s Score</span>
+            <span class="v">
+                {% if report.metrics.rule_based_3s_score is not none %}
+                    {{ report.metrics.rule_based_3s_score }} km/h
+                {% else %}
+                    -
+                {% endif %}
+            </span>
+            <span class="m">
+                Window: {{ report.metrics.performance_window_start_s }}s bis {{ report.metrics.performance_window_end_s }}s
+            </span>
+        </div>
+    </div>
+</section>
+
+<section class="panel">
+    <h2>Fixpunkte (+10/+15/+20/+24/+28s)</h2>
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Zeit</th>
+                <th>vVert (km/h)</th>
+                <th>vHor (km/h)</th>
+                <th>Winkel (°)</th>
+                <th>hAGL (m)</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for fp in report.fixpoints %}
+            <tr>
+                <td>+{{ fp.t_rel_s }}s</td>
+                <td>{{ "%.2f"|format(fp.vVert_kmh) if fp.vVert_kmh is not none else "-" }}</td>
+                <td>{{ "%.2f"|format(fp.vHor_kmh) if fp.vHor_kmh is not none else "-" }}</td>
+                <td>{{ "%.2f"|format(fp.angle_deg) if fp.angle_deg is not none else "-" }}</td>
+                <td>{{ "%.2f"|format(fp.hAGL_m) if fp.hAGL_m is not none else "-" }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="panel">
+    <h2>Phasen</h2>
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Phase</th>
+                <th>Zeitraum</th>
+                <th>Ø vVert</th>
+                <th>Ø vHor</th>
+                <th>Ø Winkel</th>
+                <th>Kommentar</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for phase in report.phases %}
+            <tr>
+                <td>{{ phase.name }}</td>
+                <td>+{{ phase.start_s }}s bis +{{ phase.end_s }}s</td>
+                <td>{{ phase.avg_vVert_kmh if phase.avg_vVert_kmh is not none else "-" }}</td>
+                <td>{{ phase.avg_vHor_kmh if phase.avg_vHor_kmh is not none else "-" }}</td>
+                <td>{{ phase.avg_angle_deg if phase.avg_angle_deg is not none else "-" }}</td>
+                <td>{{ phase.comment }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="panel">
+    <h2>Scorecard</h2>
+    <div class="table-wrap">
+        <table>
+            <tbody>
+            {% for k, v in report.scorecard.items() %}
+            <tr>
+                <th>{{ k }}</th>
+                <td>{{ v }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="panel">
+    <h2>Konkrete Tipps</h2>
+    <ul class="tips">
+        {% for tip in report.tips %}
+        <li>{{ tip }}</li>
+        {% endfor %}
+    </ul>
+</section>
+
+<section class="panel">
+    <h2>Kurvenanalyse</h2>
+    <div class="charts-grid">
+        <div id="chart-vvert" class="chart"></div>
+        <div id="chart-vhor" class="chart"></div>
+        <div id="chart-angle" class="chart"></div>
+        <div id="chart-height" class="chart"></div>
+        <div id="chart-acc" class="chart"></div>
+        <div id="chart-vvert-vhor" class="chart"></div>
+        <div id="chart-angle-vvert" class="chart"></div>
+    </div>
+</section>
+
+<section class="panel">
+    <h2>Diagnose</h2>
+    <p><strong>t0-Erkennung:</strong> {{ report.notes.t0_reason }}</p>
+    <p><strong>Hot-Zone:</strong> {{ report.notes.hot_zone_reason }}</p>
+    <p><strong>Negativ/Kippen:</strong> {{ report.notes.negative_details }}</p>
+    <p><strong>AGL:</strong> {{ report.notes.agl_note }}</p>
+    <p><strong>Qualitaetsflags:</strong> {{ report.quality_flags | join(", ") if report.quality_flags else "-" }}</p>
+</section>
+
+<script>
+const chartData = {{ chart_data_json | safe }};
+const report = {{ report | tojson | safe }};
+const fixpoints = report.fixpoints || [];
+const metrics = report.metrics || {};
+
+function markerShapes() {
+    const shapes = [];
+    if (metrics.best_3s_start_s !== null && metrics.best_3s_end_s !== null) {
+        shapes.push({
+            type: "rect",
+            xref: "x",
+            yref: "paper",
+            x0: metrics.best_3s_start_s,
+            x1: metrics.best_3s_end_s,
+            y0: 0,
+            y1: 1,
+            fillcolor: "rgba(46, 204, 113, 0.15)",
+            line: {width: 0}
+        });
+    }
+    if (metrics.hot_zone_start_s !== null && metrics.hot_zone_end_s !== null) {
+        shapes.push({
+            type: "rect",
+            xref: "x",
+            yref: "paper",
+            x0: metrics.hot_zone_start_s,
+            x1: metrics.hot_zone_end_s,
+            y0: 0,
+            y1: 1,
+            fillcolor: "rgba(230, 126, 34, 0.12)",
+            line: {width: 0}
+        });
+    }
+    for (const fp of fixpoints) {
+        shapes.push({
+            type: "line",
+            xref: "x",
+            yref: "paper",
+            x0: fp.t_rel_s,
+            x1: fp.t_rel_s,
+            y0: 0,
+            y1: 1,
+            line: {color: "rgba(127,140,141,0.45)", width: 1, dash: "dot"}
+        });
+    }
+    return shapes;
+}
+
+const baseLayout = {
+    margin: {l: 48, r: 20, t: 30, b: 42},
+    paper_bgcolor: "#11161c",
+    plot_bgcolor: "#11161c",
+    font: {color: "#dce3ea", size: 12},
+    xaxis: {title: "t_rel [s]", gridcolor: "#1f2933"},
+    yaxis: {gridcolor: "#1f2933"},
+    shapes: markerShapes()
+};
+
+Plotly.newPlot("chart-vvert", [{
+    x: chartData.time_s, y: chartData.vVert_kmh, type: "scatter", mode: "lines", name: "vVert",
+    line: {color: "#2ecc71", width: 2}
+}], {...baseLayout, title: "Vertikale Geschwindigkeit", yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
+
+Plotly.newPlot("chart-vhor", [{
+    x: chartData.time_s, y: chartData.vHor_kmh, type: "scatter", mode: "lines", name: "vHor",
+    line: {color: "#4aa3ff", width: 2}
+}], {...baseLayout, title: "Horizontale Geschwindigkeit", yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
+
+Plotly.newPlot("chart-angle", [{
+    x: chartData.time_s, y: chartData.angle_deg, type: "scatter", mode: "lines", name: "Winkel",
+    line: {color: "#ffd166", width: 2}
+}], {
+    ...baseLayout,
+    title: "Tauchwinkel",
+    yaxis: {title: "Grad", gridcolor: "#1f2933", range: [0, 95]},
+    shapes: markerShapes().concat([
+        {type: "line", xref: "x", yref: "y", x0: 0, x1: Math.max(...chartData.time_s), y0: 83, y1: 83, line: {color: "rgba(255,255,255,0.25)", width: 1, dash: "dash"}},
+        {type: "line", xref: "x", yref: "y", x0: 0, x1: Math.max(...chartData.time_s), y0: 86, y1: 86, line: {color: "rgba(255,255,255,0.25)", width: 1, dash: "dash"}}
+    ])
+}, {displayModeBar: false});
+
+Plotly.newPlot("chart-height", [{
+    x: chartData.time_s, y: chartData.hAGL_m, type: "scatter", mode: "lines", name: "hAGL",
+    line: {color: "#ff8c66", width: 2}
+}], {...baseLayout, title: "Hoehe AGL", yaxis: {title: "m", gridcolor: "#1f2933"}}, {displayModeBar: false});
+
+Plotly.newPlot("chart-acc", [{
+    x: chartData.time_s, y: chartData.accVert_mps2, type: "scatter", mode: "lines", name: "accVert",
+    line: {color: "#c77dff", width: 2}
+}], {...baseLayout, title: "Vertikale Beschleunigung", yaxis: {title: "m/s²", gridcolor: "#1f2933"}}, {displayModeBar: false});
+
+Plotly.newPlot("chart-vvert-vhor", [{
+    x: chartData.vHor_kmh, y: chartData.vVert_kmh, type: "scatter", mode: "lines", name: "vVert vs vHor",
+    line: {color: "#56cfe1", width: 2}
+}], {
+    margin: {l: 48, r: 20, t: 30, b: 42},
+    paper_bgcolor: "#11161c",
+    plot_bgcolor: "#11161c",
+    font: {color: "#dce3ea", size: 12},
+    title: "vVert vs vHor",
+    xaxis: {title: "vHor [km/h]", gridcolor: "#1f2933"},
+    yaxis: {title: "vVert [km/h]", gridcolor: "#1f2933"}
+}, {displayModeBar: false});
+
+Plotly.newPlot("chart-angle-vvert", [{
+    x: chartData.angle_deg, y: chartData.vVert_kmh, type: "scatter", mode: "lines", name: "Winkel vs vVert",
+    line: {color: "#f8961e", width: 2}
+}], {
+    margin: {l: 48, r: 20, t: 30, b: 42},
+    paper_bgcolor: "#11161c",
+    plot_bgcolor: "#11161c",
+    font: {color: "#dce3ea", size: 12},
+    title: "Winkel vs vVert",
+    xaxis: {title: "Winkel [°]", gridcolor: "#1f2933"},
+    yaxis: {title: "vVert [km/h]", gridcolor: "#1f2933"}
+}, {displayModeBar: false});
+</script>
+{% endblock %}
+

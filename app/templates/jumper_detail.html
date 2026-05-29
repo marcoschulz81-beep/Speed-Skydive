@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Springer | Speed-Skydive Analyzer{% endblock %}
+{% block content %}
+<section class="panel">
+    <div class="panel-head">
+        <h1>Springer: {{ jumper_name }}</h1>
+        <a class="btn secondary" href="/">Zurueck</a>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Datei</th>
+                <th>t0 UTC</th>
+                <th>3s Max (km/h)</th>
+                <th>Rule Score (km/h)</th>
+                <th>Qualitaet</th>
+                <th>Samplingrate</th>
+                <th>Exit valid</th>
+                <th>Detail</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for jump in jumps %}
+            <tr>
+                <td>{{ jump.file_name }}</td>
+                <td>{{ jump.t0_utc }}</td>
+                <td>{{ "%.2f"|format(jump.best_3s_vVert_kmh) }}</td>
+                <td>{{ "%.2f"|format(jump.rule_based_3s_score) if jump.rule_based_3s_score is not none else "-" }}</td>
+                <td>{{ "%.1f"|format(jump.quality_score) }}</td>
+                <td>{{ jump.sample_rate_hz }} Hz</td>
+                <td>{{ "Ja" if jump.is_valid_altitude else "Nein" }}</td>
+                <td><a href="/jumps/{{ jump.jump_id }}">Report</a></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}
+
