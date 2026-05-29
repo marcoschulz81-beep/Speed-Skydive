@@ -135,6 +135,11 @@ button,
 .actions {
     display: flex;
     gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.inline-form {
+    margin: 0;
 }
 
 .table-wrap {

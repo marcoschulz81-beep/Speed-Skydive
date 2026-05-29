@@ -2,6 +2,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATABASE_PATH = BASE_DIR / "speed_skydive.db"
+RAW_UPLOAD_DIR = BASE_DIR / "uploaded_logs"
 
 REQUIRED_COLUMNS = [
     "time",
@@ -33,4 +34,3 @@ TARGET_ANGLE_BANDS = [
     {"start_s": 8.0, "end_s": 20.0, "min_deg": 80.0, "max_deg": 85.0, "label": "Hauptaufbau"},
     {"start_s": 20.0, "end_s": 999.0, "min_deg": 83.0, "max_deg": 86.0, "label": "Peak-Haltebereich"},
 ]
-

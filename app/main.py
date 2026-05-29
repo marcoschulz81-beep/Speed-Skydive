@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse, Response
@@ -11,17 +13,19 @@ from fastapi.templating import Jinja2Templates
 
 from app.analysis.pipeline import AnalysisError, analyze_flysight_csv
 from app.analysis.comparison import build_jump_comparison
-from app.config import BASE_DIR
+from app.config import BASE_DIR, RAW_UPLOAD_DIR
 from app.database import init_db
 from app.report_pdf import build_pdf
 from app.services.storage import (
     get_best_jump_for_jumper,
     get_jump_report,
+    get_jump_source_metadata,
     get_jump_summary,
     list_compare_candidates,
     list_jumps_for_jumper,
     list_jumpers,
     list_recent_jumps,
+    replace_analysis_result,
     save_analysis_result,
 )
 
@@ -33,6 +37,7 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), na
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    RAW_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @app.get("/")
@@ -88,14 +93,19 @@ async def analyze_upload(
         return _render_index_with_error(request, f"Unerwarteter Analysefehler: {exc}")
 
     source_hash = hashlib.sha256(content).hexdigest()
-    jump_id, is_duplicate = save_analysis_result(result, source_file_sha256=source_hash)
+    source_path = _cache_uploaded_file(source_hash=source_hash, original_name=csv_file.filename, content=content)
+    jump_id, is_duplicate = save_analysis_result(
+        result,
+        source_file_sha256=source_hash,
+        source_file_path=str(source_path),
+    )
     if is_duplicate:
         return RedirectResponse(url=f"/jumps/{jump_id}", status_code=303)
     return RedirectResponse(url=f"/jumps/{jump_id}", status_code=303)
 
 
 @app.get("/jumps/{jump_id}")
-def jump_detail(request: Request, jump_id: str):
+def jump_detail(request: Request, jump_id: str, message: str | None = None, error: str | None = None):
     report = get_jump_report(jump_id)
     if report is None:
         raise HTTPException(status_code=404, detail="Sprung nicht gefunden.")
@@ -108,8 +118,53 @@ def jump_detail(request: Request, jump_id: str):
             "report": report,
             "chart_data_json": json.dumps(report["chart_data"]),
             "quality_flags_json": json.dumps(report["quality_flags"]),
+            "message": message,
+            "error": error,
         },
     )
+
+
+@app.post("/jumps/{jump_id}/reprocess-t0")
+def reprocess_t0(jump_id: str):
+    report = get_jump_report(jump_id)
+    source_meta = get_jump_source_metadata(jump_id)
+    if report is None or source_meta is None:
+        raise HTTPException(status_code=404, detail="Sprung nicht gefunden.")
+
+    source_path = _resolve_source_file_for_jump(source_meta)
+    if source_path is None or not source_path.exists():
+        msg = "Original-CSV nicht gefunden. Bitte Datei erneut hochladen."
+        return RedirectResponse(url=f"/jumps/{jump_id}?error={quote_plus(msg)}", status_code=303)
+
+    try:
+        content = source_path.read_bytes()
+        source_hash = hashlib.sha256(content).hexdigest()
+        cached_path = _cache_uploaded_file(
+            source_hash=source_hash,
+            original_name=report["jump"]["file_name"],
+            content=content,
+        )
+        new_result = analyze_flysight_csv(
+            content=content,
+            file_name=report["jump"]["file_name"],
+            jumper_name=report["jump"]["jumper_name"],
+            ground_elevation_m=report["jump"].get("ground_elevation_m"),
+            breakoff_altitude_agl_m=None,
+        )
+        replace_analysis_result(
+            jump_id=jump_id,
+            result=new_result,
+            source_file_sha256=source_hash,
+            source_file_path=str(cached_path),
+        )
+    except AnalysisError as exc:
+        return RedirectResponse(url=f"/jumps/{jump_id}?error={quote_plus(str(exc))}", status_code=303)
+    except Exception as exc:  # pragma: no cover
+        msg = f"Unerwarteter Reanalysefehler: {exc}"
+        return RedirectResponse(url=f"/jumps/{jump_id}?error={quote_plus(msg)}", status_code=303)
+
+    ok_msg = "Absprung wurde neu erkannt und der Datensatz aktualisiert."
+    return RedirectResponse(url=f"/jumps/{jump_id}?message={quote_plus(ok_msg)}", status_code=303)
 
 
 @app.get("/jumps/{jump_id}/compare")
@@ -277,6 +332,37 @@ def _render_index_with_error(request: Request, error: str):
         },
         status_code=400,
     )
+
+
+def _cache_uploaded_file(*, source_hash: str, original_name: str, content: bytes) -> Path:
+    ext = Path(original_name).suffix or ".csv"
+    cache_path = RAW_UPLOAD_DIR / f"{source_hash}{ext.lower()}"
+    if not cache_path.exists():
+        cache_path.write_bytes(content)
+    return cache_path
+
+
+def _resolve_source_file_for_jump(source_meta: dict[str, Any]) -> Path | None:
+    source_path = source_meta.get("source_file_path")
+    if source_path:
+        path = Path(source_path)
+        if path.exists():
+            return path
+
+    source_hash = source_meta.get("source_file_sha256")
+    if source_hash:
+        for ext in [".csv", ".CSV"]:
+            candidate = RAW_UPLOAD_DIR / f"{source_hash}{ext}"
+            if candidate.exists():
+                return candidate
+
+    file_name = source_meta.get("file_name")
+    if file_name:
+        candidate = Path.home() / "Downloads" / str(file_name)
+        if candidate.exists():
+            return candidate
+
+    return None
 
 
 def _annotate_best_jump(jumps: list[dict[str, Any]]) -> list[dict[str, Any]]:

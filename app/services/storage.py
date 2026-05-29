@@ -13,14 +13,13 @@ def save_analysis_result(
     result: dict[str, Any],
     *,
     source_file_sha256: str | None = None,
+    source_file_path: str | None = None,
 ) -> tuple[str, bool]:
     """
     Returns (jump_id, is_duplicate).
     When duplicate, no new rows are inserted and existing jump_id is returned.
     """
     jump = result["jump_record"]
-    metrics = result["metrics_record"]
-    samples = result["sample_records"]
 
     with get_connection() as conn:
         duplicate_id = _find_duplicate_jump_id(
@@ -43,105 +42,37 @@ def save_analysis_result(
                 conn.commit()
             return duplicate_id, True
 
-        conn.execute(
-            """
-            INSERT INTO jumps (
-                jump_id, jumper_name, file_name, device_type, source_file_sha256, raw_start_time_utc, t0_utc,
-                exit_altitude_msl_m, exit_altitude_agl_m, ground_elevation_m, is_valid_altitude,
-                sample_rate_hz, quality_score, quality_flags
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                jump["jump_id"],
-                jump["jumper_name"],
-                jump["file_name"],
-                jump["device_type"],
-                source_file_sha256,
-                jump["raw_start_time_utc"],
-                jump["t0_utc"],
-                jump["exit_altitude_msl_m"],
-                jump["exit_altitude_agl_m"],
-                jump["ground_elevation_m"],
-                jump["is_valid_altitude"],
-                jump["sample_rate_hz"],
-                jump["quality_score"],
-                jump["quality_flags"],
-            ),
-        )
-
-        conn.executemany(
-            """
-            INSERT INTO samples (
-                jump_id, time_utc, t_rel_s, lat, lon, hMSL_m, hAGL_m, velN_mps, velE_mps, velD_mps,
-                vVert_kmh, vHor_kmh, vTotal_kmh, angle_deg, accVert_mps2, hAcc, vAcc, sAcc,
-                gpsFix, numSV, quality_flags
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    s["jump_id"],
-                    s["time_utc"],
-                    s["t_rel_s"],
-                    s["lat"],
-                    s["lon"],
-                    s["hMSL_m"],
-                    s["hAGL_m"],
-                    s["velN_mps"],
-                    s["velE_mps"],
-                    s["velD_mps"],
-                    s["vVert_kmh"],
-                    s["vHor_kmh"],
-                    s["vTotal_kmh"],
-                    s["angle_deg"],
-                    s["accVert_mps2"],
-                    s["hAcc"],
-                    s["vAcc"],
-                    s["sAcc"],
-                    s["gpsFix"],
-                    s["numSV"],
-                    s["quality_flags"],
-                )
-                for s in samples
-            ],
-        )
-
-        conn.execute(
-            """
-            INSERT INTO metrics (
-                jump_id, best_3s_start_s, best_3s_end_s, best_3s_vVert_mps, best_3s_vVert_kmh,
-                best_3s_vHor_kmh, best_3s_angle_deg, training_3s_max_from_t0, rule_based_3s_score,
-                rule_based_3s_score_mps, performance_window_start_s, performance_window_end_s,
-                validation_window_quality, hot_zone_start_s, hot_zone_end_s, negative_risk_score,
-                notes, fixpoints_json, phases_json, scorecard_json, tips_json, quality_flags
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                metrics["jump_id"],
-                metrics["best_3s_start_s"],
-                metrics["best_3s_end_s"],
-                metrics["best_3s_vVert_mps"],
-                metrics["best_3s_vVert_kmh"],
-                metrics["best_3s_vHor_kmh"],
-                metrics["best_3s_angle_deg"],
-                metrics["training_3s_max_from_t0"],
-                metrics["rule_based_3s_score"],
-                metrics["rule_based_3s_score_mps"],
-                metrics["performance_window_start_s"],
-                metrics["performance_window_end_s"],
-                metrics["validation_window_quality"],
-                metrics["hot_zone_start_s"],
-                metrics["hot_zone_end_s"],
-                metrics["negative_risk_score"],
-                metrics["notes"],
-                metrics["fixpoints_json"],
-                metrics["phases_json"],
-                metrics["scorecard_json"],
-                metrics["tips_json"],
-                metrics["quality_flags"],
-            ),
+        _insert_analysis_result(
+            conn=conn,
+            result=result,
+            source_file_sha256=source_file_sha256,
+            source_file_path=source_file_path,
         )
         conn.commit()
     return jump["jump_id"], False
+
+
+def replace_analysis_result(
+    *,
+    jump_id: str,
+    result: dict[str, Any],
+    source_file_sha256: str | None = None,
+    source_file_path: str | None = None,
+) -> str:
+    """
+    Replace an existing jump analysis in-place (same jump_id).
+    """
+    _override_result_jump_id(result=result, jump_id=jump_id)
+    with get_connection() as conn:
+        conn.execute("DELETE FROM jumps WHERE jump_id = ?", (jump_id,))
+        _insert_analysis_result(
+            conn=conn,
+            result=result,
+            source_file_sha256=source_file_sha256,
+            source_file_path=source_file_path,
+        )
+        conn.commit()
+    return jump_id
 
 
 def _find_duplicate_jump_id(
@@ -173,6 +104,124 @@ def _find_duplicate_jump_id(
         (jumper_name, file_name, raw_start_time_utc),
     ).fetchone()
     return None if row is None else str(row["jump_id"])
+
+
+def _insert_analysis_result(
+    *,
+    conn,
+    result: dict[str, Any],
+    source_file_sha256: str | None,
+    source_file_path: str | None,
+) -> None:
+    jump = result["jump_record"]
+    metrics = result["metrics_record"]
+    samples = result["sample_records"]
+
+    conn.execute(
+        """
+        INSERT INTO jumps (
+            jump_id, jumper_name, file_name, device_type, source_file_sha256, source_file_path, raw_start_time_utc, t0_utc,
+            exit_altitude_msl_m, exit_altitude_agl_m, ground_elevation_m, is_valid_altitude,
+            sample_rate_hz, quality_score, quality_flags
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            jump["jump_id"],
+            jump["jumper_name"],
+            jump["file_name"],
+            jump["device_type"],
+            source_file_sha256,
+            source_file_path,
+            jump["raw_start_time_utc"],
+            jump["t0_utc"],
+            jump["exit_altitude_msl_m"],
+            jump["exit_altitude_agl_m"],
+            jump["ground_elevation_m"],
+            jump["is_valid_altitude"],
+            jump["sample_rate_hz"],
+            jump["quality_score"],
+            jump["quality_flags"],
+        ),
+    )
+
+    conn.executemany(
+        """
+        INSERT INTO samples (
+            jump_id, time_utc, t_rel_s, lat, lon, hMSL_m, hAGL_m, velN_mps, velE_mps, velD_mps,
+            vVert_kmh, vHor_kmh, vTotal_kmh, angle_deg, accVert_mps2, hAcc, vAcc, sAcc,
+            gpsFix, numSV, quality_flags
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                s["jump_id"],
+                s["time_utc"],
+                s["t_rel_s"],
+                s["lat"],
+                s["lon"],
+                s["hMSL_m"],
+                s["hAGL_m"],
+                s["velN_mps"],
+                s["velE_mps"],
+                s["velD_mps"],
+                s["vVert_kmh"],
+                s["vHor_kmh"],
+                s["vTotal_kmh"],
+                s["angle_deg"],
+                s["accVert_mps2"],
+                s["hAcc"],
+                s["vAcc"],
+                s["sAcc"],
+                s["gpsFix"],
+                s["numSV"],
+                s["quality_flags"],
+            )
+            for s in samples
+        ],
+    )
+
+    conn.execute(
+        """
+        INSERT INTO metrics (
+            jump_id, best_3s_start_s, best_3s_end_s, best_3s_vVert_mps, best_3s_vVert_kmh,
+            best_3s_vHor_kmh, best_3s_angle_deg, training_3s_max_from_t0, rule_based_3s_score,
+            rule_based_3s_score_mps, performance_window_start_s, performance_window_end_s,
+            validation_window_quality, hot_zone_start_s, hot_zone_end_s, negative_risk_score,
+            notes, fixpoints_json, phases_json, scorecard_json, tips_json, quality_flags
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            metrics["jump_id"],
+            metrics["best_3s_start_s"],
+            metrics["best_3s_end_s"],
+            metrics["best_3s_vVert_mps"],
+            metrics["best_3s_vVert_kmh"],
+            metrics["best_3s_vHor_kmh"],
+            metrics["best_3s_angle_deg"],
+            metrics["training_3s_max_from_t0"],
+            metrics["rule_based_3s_score"],
+            metrics["rule_based_3s_score_mps"],
+            metrics["performance_window_start_s"],
+            metrics["performance_window_end_s"],
+            metrics["validation_window_quality"],
+            metrics["hot_zone_start_s"],
+            metrics["hot_zone_end_s"],
+            metrics["negative_risk_score"],
+            metrics["notes"],
+            metrics["fixpoints_json"],
+            metrics["phases_json"],
+            metrics["scorecard_json"],
+            metrics["tips_json"],
+            metrics["quality_flags"],
+        ),
+    )
+
+
+def _override_result_jump_id(*, result: dict[str, Any], jump_id: str) -> None:
+    result["jump_record"]["jump_id"] = jump_id
+    result["metrics_record"]["jump_id"] = jump_id
+    for sample in result["sample_records"]:
+        sample["jump_id"] = jump_id
 
 
 def list_recent_jumps(limit: int = 30) -> list[dict[str, Any]]:
@@ -248,6 +297,25 @@ def get_jump_summary(jump_id: str) -> dict[str, Any] | None:
             FROM jumps j
             JOIN metrics m ON m.jump_id = j.jump_id
             WHERE j.jump_id = ?
+            LIMIT 1
+            """,
+            (jump_id,),
+        ).fetchone()
+    return None if row is None else dict(row)
+
+
+def get_jump_source_metadata(jump_id: str) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                jump_id,
+                jumper_name,
+                file_name,
+                source_file_sha256,
+                source_file_path
+            FROM jumps
+            WHERE jump_id = ?
             LIMIT 1
             """,
             (jump_id,),

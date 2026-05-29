@@ -11,3 +11,4 @@ instance/
 dist/
 build/
 *.egg-info/
+uploaded_logs/

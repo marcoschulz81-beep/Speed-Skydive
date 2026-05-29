@@ -32,6 +32,7 @@ def init_db() -> None:
                 file_name TEXT NOT NULL,
                 device_type TEXT NOT NULL,
                 source_file_sha256 TEXT,
+                source_file_path TEXT,
                 raw_start_time_utc TEXT NOT NULL,
                 t0_utc TEXT NOT NULL,
                 exit_altitude_msl_m REAL NOT NULL,
@@ -108,6 +109,8 @@ def init_db() -> None:
         }
         if "source_file_sha256" not in columns:
             conn.execute("ALTER TABLE jumps ADD COLUMN source_file_sha256 TEXT")
+        if "source_file_path" not in columns:
+            conn.execute("ALTER TABLE jumps ADD COLUMN source_file_path TEXT")
         conn.execute("DROP INDEX IF EXISTS idx_jumps_source_file_sha256_unique")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_jumps_jumper_hash_unique ON jumps(jumper_name, source_file_sha256)"

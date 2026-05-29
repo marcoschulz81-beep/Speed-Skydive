@@ -6,10 +6,19 @@
         <h1>Sprungreport</h1>
         <div class="actions">
             <a class="btn secondary" href="/jumps/{{ jump_id }}/compare?preset=best">Mit bestem Sprung vergleichen</a>
+            <form method="post" action="/jumps/{{ jump_id }}/reprocess-t0" class="inline-form">
+                <button type="submit" class="btn secondary">Absprung neu erkennen</button>
+            </form>
             <a class="btn" href="/jumps/{{ jump_id }}/report.pdf">PDF Export</a>
             <a class="btn secondary" href="/">Neuer Upload</a>
         </div>
     </div>
+    {% if message %}
+    <div class="flash success">{{ message }}</div>
+    {% endif %}
+    {% if error %}
+    <div class="flash error">{{ error }}</div>
+    {% endif %}
 
     <div class="meta-grid">
         <div><span class="label">Springer</span><span>{{ report.jump.jumper_name }}</span></div>

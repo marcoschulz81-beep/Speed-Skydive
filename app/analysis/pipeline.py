@@ -147,10 +147,12 @@ def _first_sustained_index(
     *,
     start_idx: int,
     min_run: int,
+    end_idx: int | None = None,
 ) -> int | None:
     run_start: int | None = None
     run_len = 0
-    for i in range(start_idx, len(mask)):
+    stop = len(mask) if end_idx is None else min(end_idx, len(mask))
+    for i in range(start_idx, stop):
         if bool(mask[i]):
             if run_start is None:
                 run_start = i
@@ -182,10 +184,24 @@ def _detect_t0(df: pd.DataFrame, t_abs_s: np.ndarray, sample_rate_hz: float) -> 
     smooth["accVert"] = np.gradient(smooth["velD"].to_numpy(), t_abs_s)
     smooth["hDropRate"] = -np.gradient(smooth["hMSL"].to_numpy(), t_abs_s)
 
+    # Anchor to the primary freefall event: search exit BEFORE the dominant peak.
+    peak_idx = int(np.argmax(smooth["velD"].to_numpy()))
+    peak_vel = float(smooth["velD"].iloc[peak_idx])
+
+    # Build a search window that starts before the main rise and ends before/around peak.
+    rise_threshold = max(10.0, peak_vel * 0.22)
+    rise_candidates = np.where(smooth["velD"].to_numpy()[: peak_idx + 1] >= rise_threshold)[0]
+    if len(rise_candidates) > 0:
+        search_start = max(pre_window, int(rise_candidates[0] - round(sample_rate_hz * 6.0)))
+    else:
+        search_start = max(pre_window, peak_idx - int(round(sample_rate_hz * 45.0)))
+    search_end = max(search_start + min_run + future_window + 1, peak_idx + int(round(sample_rate_hz * 0.4)))
+    search_end = min(search_end, len(df) - future_window - 1)
+
     candidate_mask = np.zeros(len(df), dtype=bool)
     candidate_details: dict[int, tuple[float, float, float, float, float, float]] = {}
-    max_i = len(df) - future_window - 1
-    for i in range(pre_window, max_i):
+    max_i = max(search_start + 1, search_end)
+    for i in range(search_start, max_i):
         pre_slice = smooth.iloc[i - pre_window : i]
         fut_slice = smooth.iloc[i : i + future_window]
         if pre_slice.empty or fut_slice.empty:
@@ -216,8 +232,9 @@ def _detect_t0(df: pd.DataFrame, t_abs_s: np.ndarray, sample_rate_hz: float) -> 
 
     first_idx = _first_sustained_index(
         candidate_mask,
-        start_idx=pre_window,
+        start_idx=search_start,
         min_run=min_run,
+        end_idx=search_end + 1,
     )
     if first_idx is not None:
         fut_vel, vel_gain, acc_now, fut_drop, vhor_drop, pre_hor = candidate_details[first_idx]
@@ -230,15 +247,22 @@ def _detect_t0(df: pd.DataFrame, t_abs_s: np.ndarray, sample_rate_hz: float) -> 
         confidence = 0.55 + 0.45 * float(np.mean(conf_components))
         uncertainty_s = max(0.2, min(1.2, (min_run / sample_rate_hz) * 0.6))
         reason = (
-            f"exit by sustained transition: velD={fut_vel:.1f}m/s (gain {vel_gain:.1f}), "
-            f"accVert={acc_now:.2f}m/s2, hDropRate={fut_drop:.1f}m/s, vHorDrop={vhor_drop:.1f}m/s"
+            f"exit before peak at +{t_abs_s[peak_idx]:.1f}s: velD={fut_vel:.1f}m/s "
+            f"(gain {vel_gain:.1f}), accVert={acc_now:.2f}m/s2, "
+            f"hDropRate={fut_drop:.1f}m/s, vHorDrop={vhor_drop:.1f}m/s"
         )
         return first_idx, min(confidence, 1.0), uncertainty_s, reason
+
+    # Fallback anchored to primary peak window: first velD>=10 before peak.
+    above_10_pre_peak = np.where(df["velD"].to_numpy()[: peak_idx + 1] >= 10.0)[0]
+    if len(above_10_pre_peak) > 0:
+        idx = int(above_10_pre_peak[0])
+        return idx, 0.45, 1.5, "Fallback: erster velD>=10m/s vor Haupt-Peak als t_exit."
 
     above_10 = np.where(df["velD"].to_numpy() >= 10.0)[0]
     if len(above_10) > 0:
         idx = int(above_10[0])
-        return idx, 0.45, 1.5, "Fallback: erster velD>=10m/s als t_exit."
+        return idx, 0.35, 1.8, "Fallback: erster velD>=10m/s im Track als t_exit."
 
     return 0, 0.25, 2.0, "Fallback: kein klarer Exit, erster Sample verwendet."
 
