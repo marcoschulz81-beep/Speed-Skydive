@@ -156,10 +156,10 @@ def _find_duplicate_jump_id(
         row = conn.execute(
             """
             SELECT jump_id FROM jumps
-            WHERE source_file_sha256 = ?
+            WHERE jumper_name = ? AND source_file_sha256 = ?
             LIMIT 1
             """,
-            (source_file_sha256,),
+            (jumper_name, source_file_sha256),
         ).fetchone()
         if row is not None:
             return str(row["jump_id"])

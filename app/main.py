@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app.analysis.comparison import build_jump_comparison
 from app.analysis.pipeline import AnalysisError, analyze_flysight_csv
 from app.config import BASE_DIR
 from app.database import init_db
@@ -125,12 +126,58 @@ def jumper_view(request: Request, jumper_name: str):
     if not jumps:
         raise HTTPException(status_code=404, detail="Springer nicht gefunden.")
 
+    jumps = _annotate_best_jump(jumps)
     return templates.TemplateResponse(
         request,
         "jumper_detail.html",
         {
             "jumper_name": jumper_name,
             "jumps": jumps,
+            "compare_result": None,
+            "compare_chart_json": None,
+            "compare_error": None,
+            "left_jump_id": None,
+            "right_jump_id": None,
+        },
+    )
+
+
+@app.get("/jumpers/{jumper_name}/compare")
+def jumper_compare(request: Request, jumper_name: str, left_jump_id: str, right_jump_id: str):
+    jumps = list_jumps_for_jumper(jumper_name)
+    if not jumps:
+        raise HTTPException(status_code=404, detail="Springer nicht gefunden.")
+
+    jumps = _annotate_best_jump(jumps)
+    jump_ids = {jump["jump_id"] for jump in jumps}
+    compare_error: str | None = None
+    compare_result: dict[str, Any] | None = None
+    compare_chart_json: str | None = None
+
+    if left_jump_id == right_jump_id:
+        compare_error = "Bitte zwei unterschiedliche Spruenge auswaehlen."
+    elif left_jump_id not in jump_ids or right_jump_id not in jump_ids:
+        compare_error = "Vergleich ungueltig: Spruenge gehoeren nicht zu diesem Springer."
+    else:
+        left_report = get_jump_report(left_jump_id)
+        right_report = get_jump_report(right_jump_id)
+        if left_report is None or right_report is None:
+            compare_error = "Vergleich ungueltig: Mindestens ein Sprung wurde nicht gefunden."
+        else:
+            compare_result = build_jump_comparison(left_report=left_report, right_report=right_report)
+            compare_chart_json = json.dumps(compare_result["charts"])
+
+    return templates.TemplateResponse(
+        request,
+        "jumper_detail.html",
+        {
+            "jumper_name": jumper_name,
+            "jumps": jumps,
+            "compare_result": compare_result,
+            "compare_chart_json": compare_chart_json,
+            "compare_error": compare_error,
+            "left_jump_id": left_jump_id,
+            "right_jump_id": right_jump_id,
         },
     )
 
@@ -157,3 +204,16 @@ def _render_index_with_error(request: Request, error: str):
         },
         status_code=400,
     )
+
+
+def _annotate_best_jump(jumps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not jumps:
+        return jumps
+    best_jump = max(
+        jumps,
+        key=lambda item: float(item["best_3s_vVert_kmh"]) if item["best_3s_vVert_kmh"] is not None else float("-inf"),
+    )
+    best_id = best_jump["jump_id"]
+    for jump in jumps:
+        jump["is_best"] = jump["jump_id"] == best_id
+    return jumps

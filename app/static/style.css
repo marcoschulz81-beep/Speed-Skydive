@@ -95,7 +95,8 @@ label span {
 }
 
 input[type="text"],
-input[type="file"] {
+input[type="file"],
+select {
     width: 100%;
     background: #10171f;
     border: 1px solid #273544;
@@ -268,9 +269,34 @@ th {
     border-radius: 6px;
 }
 
+.best-row {
+    background: rgba(255, 209, 102, 0.08);
+}
+
+.best-badge {
+    display: inline-flex;
+    padding: 0.18rem 0.52rem;
+    border-radius: 999px;
+    background: rgba(255, 209, 102, 0.2);
+    border: 1px solid rgba(255, 209, 102, 0.55);
+    color: #ffe1a1;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.compare-form {
+    display: grid;
+    gap: 0.8rem;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    align-items: end;
+}
+
+.compare-form button {
+    width: fit-content;
+}
+
 @media (max-width: 760px) {
     .charts-grid {
         grid-template-columns: 1fr;
     }
 }
-

@@ -108,7 +108,8 @@ def init_db() -> None:
         }
         if "source_file_sha256" not in columns:
             conn.execute("ALTER TABLE jumps ADD COLUMN source_file_sha256 TEXT")
+        conn.execute("DROP INDEX IF EXISTS idx_jumps_source_file_sha256_unique")
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_jumps_source_file_sha256_unique ON jumps(source_file_sha256)"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_jumps_jumper_hash_unique ON jumps(jumper_name, source_file_sha256)"
         )
         conn.commit()
