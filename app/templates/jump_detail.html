@@ -33,7 +33,7 @@
         <div class="score-box">
             <span class="k">Bestes Fenster</span>
             <span class="v">+{{ report.metrics.best_3s_start_s }}s bis +{{ report.metrics.best_3s_end_s }}s</span>
-            <span class="m">Ø vHor {{ report.metrics.best_3s_vHor_kmh }} km/h, Ø Winkel {{ report.metrics.best_3s_angle_deg }}°</span>
+            <span class="m">Avg vHor {{ report.metrics.best_3s_vHor_kmh }} km/h, Avg Winkel {{ report.metrics.best_3s_angle_deg }}&deg;</span>
         </div>
         <div class="score-box">
             <span class="k">Regelnaher 3s Score</span>
@@ -60,7 +60,7 @@
                 <th>Zeit</th>
                 <th>vVert (km/h)</th>
                 <th>vHor (km/h)</th>
-                <th>Winkel (°)</th>
+                <th>Winkel (&deg;)</th>
                 <th>hAGL (m)</th>
             </tr>
             </thead>
@@ -87,9 +87,9 @@
             <tr>
                 <th>Phase</th>
                 <th>Zeitraum</th>
-                <th>Ø vVert</th>
-                <th>Ø vHor</th>
-                <th>Ø Winkel</th>
+                <th>Avg vVert</th>
+                <th>Avg vHor</th>
+                <th>Avg Winkel</th>
                 <th>Kommentar</th>
             </tr>
             </thead>
@@ -149,6 +149,8 @@
 
 <section class="panel">
     <h2>Diagnose</h2>
+    <p><strong>Kurvenfenster:</strong> +{{ report.notes.curve_window_start_s }}s bis +{{ report.notes.curve_window_end_s }}s</p>
+    <p><strong>Fensterlogik:</strong> {{ report.notes.curve_window_reason }}</p>
     <p><strong>t0-Erkennung:</strong> {{ report.notes.t0_reason }}</p>
     <p><strong>Hot-Zone:</strong> {{ report.notes.hot_zone_reason }}</p>
     <p><strong>Negativ/Kippen:</strong> {{ report.notes.negative_details }}</p>
@@ -161,6 +163,27 @@ const chartData = {{ chart_data_json | safe }};
 const report = {{ report | tojson | safe }};
 const fixpoints = report.fixpoints || [];
 const metrics = report.metrics || {};
+const curveStart = Number(report.notes?.curve_window_start_s ?? 0);
+const curveEndRaw = Number(report.notes?.curve_window_end_s ?? Math.max(...(chartData.time_s || [0])));
+const curveEnd = Number.isFinite(curveEndRaw) ? curveEndRaw : Math.max(...(chartData.time_s || [0]));
+
+function filterChartData(data, startS, endS) {
+    const out = {time_s: [], vVert_kmh: [], vHor_kmh: [], angle_deg: [], hAGL_m: [], accVert_mps2: []};
+    const n = data.time_s.length;
+    for (let i = 0; i < n; i++) {
+        const t = data.time_s[i];
+        if (t < startS || t > endS) continue;
+        out.time_s.push(t);
+        out.vVert_kmh.push(data.vVert_kmh[i]);
+        out.vHor_kmh.push(data.vHor_kmh[i]);
+        out.angle_deg.push(data.angle_deg[i]);
+        out.hAGL_m.push(data.hAGL_m[i]);
+        out.accVert_mps2.push(data.accVert_mps2[i]);
+    }
+    return out.time_s.length > 0 ? out : data;
+}
+
+const displayData = filterChartData(chartData, curveStart, curveEnd);
 
 function markerShapes() {
     const shapes = [];
@@ -191,6 +214,7 @@ function markerShapes() {
         });
     }
     for (const fp of fixpoints) {
+        if (fp.t_rel_s < curveStart || fp.t_rel_s > curveEnd) continue;
         shapes.push({
             type: "line",
             xref: "x",
@@ -210,46 +234,46 @@ const baseLayout = {
     paper_bgcolor: "#11161c",
     plot_bgcolor: "#11161c",
     font: {color: "#dce3ea", size: 12},
-    xaxis: {title: "t_rel [s]", gridcolor: "#1f2933"},
+    xaxis: {title: "t_rel [s]", gridcolor: "#1f2933", range: [curveStart, curveEnd]},
     yaxis: {gridcolor: "#1f2933"},
     shapes: markerShapes()
 };
 
 Plotly.newPlot("chart-vvert", [{
-    x: chartData.time_s, y: chartData.vVert_kmh, type: "scatter", mode: "lines", name: "vVert",
+    x: displayData.time_s, y: displayData.vVert_kmh, type: "scatter", mode: "lines", name: "vVert",
     line: {color: "#2ecc71", width: 2}
 }], {...baseLayout, title: "Vertikale Geschwindigkeit", yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
 
 Plotly.newPlot("chart-vhor", [{
-    x: chartData.time_s, y: chartData.vHor_kmh, type: "scatter", mode: "lines", name: "vHor",
+    x: displayData.time_s, y: displayData.vHor_kmh, type: "scatter", mode: "lines", name: "vHor",
     line: {color: "#4aa3ff", width: 2}
 }], {...baseLayout, title: "Horizontale Geschwindigkeit", yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
 
 Plotly.newPlot("chart-angle", [{
-    x: chartData.time_s, y: chartData.angle_deg, type: "scatter", mode: "lines", name: "Winkel",
+    x: displayData.time_s, y: displayData.angle_deg, type: "scatter", mode: "lines", name: "Winkel",
     line: {color: "#ffd166", width: 2}
 }], {
     ...baseLayout,
     title: "Tauchwinkel",
     yaxis: {title: "Grad", gridcolor: "#1f2933", range: [0, 95]},
     shapes: markerShapes().concat([
-        {type: "line", xref: "x", yref: "y", x0: 0, x1: Math.max(...chartData.time_s), y0: 83, y1: 83, line: {color: "rgba(255,255,255,0.25)", width: 1, dash: "dash"}},
-        {type: "line", xref: "x", yref: "y", x0: 0, x1: Math.max(...chartData.time_s), y0: 86, y1: 86, line: {color: "rgba(255,255,255,0.25)", width: 1, dash: "dash"}}
+        {type: "line", xref: "x", yref: "y", x0: curveStart, x1: curveEnd, y0: 83, y1: 83, line: {color: "rgba(255,255,255,0.25)", width: 1, dash: "dash"}},
+        {type: "line", xref: "x", yref: "y", x0: curveStart, x1: curveEnd, y0: 86, y1: 86, line: {color: "rgba(255,255,255,0.25)", width: 1, dash: "dash"}}
     ])
 }, {displayModeBar: false});
 
 Plotly.newPlot("chart-height", [{
-    x: chartData.time_s, y: chartData.hAGL_m, type: "scatter", mode: "lines", name: "hAGL",
+    x: displayData.time_s, y: displayData.hAGL_m, type: "scatter", mode: "lines", name: "hAGL",
     line: {color: "#ff8c66", width: 2}
 }], {...baseLayout, title: "Hoehe AGL", yaxis: {title: "m", gridcolor: "#1f2933"}}, {displayModeBar: false});
 
 Plotly.newPlot("chart-acc", [{
-    x: chartData.time_s, y: chartData.accVert_mps2, type: "scatter", mode: "lines", name: "accVert",
+    x: displayData.time_s, y: displayData.accVert_mps2, type: "scatter", mode: "lines", name: "accVert",
     line: {color: "#c77dff", width: 2}
-}], {...baseLayout, title: "Vertikale Beschleunigung", yaxis: {title: "m/s²", gridcolor: "#1f2933"}}, {displayModeBar: false});
+}], {...baseLayout, title: "Vertikale Beschleunigung", yaxis: {title: "m/s2", gridcolor: "#1f2933"}}, {displayModeBar: false});
 
 Plotly.newPlot("chart-vvert-vhor", [{
-    x: chartData.vHor_kmh, y: chartData.vVert_kmh, type: "scatter", mode: "lines", name: "vVert vs vHor",
+    x: displayData.vHor_kmh, y: displayData.vVert_kmh, type: "scatter", mode: "lines", name: "vVert vs vHor",
     line: {color: "#56cfe1", width: 2}
 }], {
     margin: {l: 48, r: 20, t: 30, b: 42},
@@ -262,7 +286,7 @@ Plotly.newPlot("chart-vvert-vhor", [{
 }, {displayModeBar: false});
 
 Plotly.newPlot("chart-angle-vvert", [{
-    x: chartData.angle_deg, y: chartData.vVert_kmh, type: "scatter", mode: "lines", name: "Winkel vs vVert",
+    x: displayData.angle_deg, y: displayData.vVert_kmh, type: "scatter", mode: "lines", name: "Winkel vs vVert",
     line: {color: "#f8961e", width: 2}
 }], {
     margin: {l: 48, r: 20, t: 30, b: 42},
@@ -270,7 +294,7 @@ Plotly.newPlot("chart-angle-vvert", [{
     plot_bgcolor: "#11161c",
     font: {color: "#dce3ea", size: 12},
     title: "Winkel vs vVert",
-    xaxis: {title: "Winkel [°]", gridcolor: "#1f2933"},
+    xaxis: {title: "Winkel [deg]", gridcolor: "#1f2933"},
     yaxis: {title: "vVert [km/h]", gridcolor: "#1f2933"}
 }, {displayModeBar: false});
 </script>

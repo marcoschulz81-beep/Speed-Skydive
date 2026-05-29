@@ -76,6 +76,7 @@ def test_pipeline_outputs_core_metrics():
     metrics = result["metrics_record"]
     fixpoints = result["report"]["fixpoints"]
     phases = result["report"]["phases"]
+    notes = result["report"]["notes"]
 
     assert jump["sample_rate_hz"] >= 4.9
     assert metrics["best_3s_vVert_kmh"] > 430
@@ -84,4 +85,6 @@ def test_pipeline_outputs_core_metrics():
     assert len(phases) == 4
     assert metrics["hot_zone_start_s"] is not None
     assert metrics["negative_risk_score"] >= 0
-
+    assert notes["curve_window_start_s"] == 0.0
+    assert notes["curve_window_end_s"] > 10.0
+    assert notes["curve_window_end_s"] <= result["report"]["chart_data"]["time_s"][-1]

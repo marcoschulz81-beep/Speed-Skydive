@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.analysis.curve_window import detect_curve_window
 from app.config import (
     DEFAULT_BREAKOFF_ALTITUDE_AGL_M,
     FIXPOINT_SECONDS,
@@ -629,6 +630,7 @@ def analyze_flysight_csv(
 
     hot_start, hot_end, hot_label, hot_reason = _detect_hot_zone(post, best_training)
     neg_score, neg_details = _negative_risk(post)
+    curve_window = detect_curve_window(post, sample_rate_hz=sample_rate_hz)
 
     scorecard = _build_scorecard(fixpoints, hot_label, neg_details["label"], quality_score, best_training)
     tips = _generate_tips(fixpoints, hot_label, neg_details, scorecard)
@@ -702,6 +704,12 @@ def analyze_flysight_csv(
         "negative_details": neg_details["details"],
         "ground_level_estimated": ground_estimated,
         "agl_note": "AGL approximiert" if ground_estimated else "AGL aus Ground Elevation berechnet",
+        "curve_window_start_s": curve_window["curve_window_start_s"],
+        "curve_window_end_s": curve_window["curve_window_end_s"],
+        "decel_start_s": curve_window["decel_start_s"],
+        "canopy_open_s": curve_window["canopy_open_s"],
+        "peak_s": curve_window["peak_s"],
+        "curve_window_reason": curve_window["curve_window_reason"],
     }
 
     metrics_record = {

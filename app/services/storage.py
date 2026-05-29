@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pandas as pd
+
+from app.analysis.curve_window import detect_curve_window
 from app.database import get_connection
 
 
@@ -203,6 +206,17 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
         "accVert_mps2": [float(row["accVert_mps2"]) for row in samples],
     }
 
+    # Backward-compatible fallback for older records without curve window metadata.
+    if "curve_window_start_s" not in notes or "curve_window_end_s" not in notes:
+        sample_df = pd.DataFrame(
+            {
+                "t_rel_s": chart_data["time_s"],
+                "vVert_kmh": chart_data["vVert_kmh"],
+            }
+        )
+        window = detect_curve_window(sample_df, sample_rate_hz=jump_dict.get("sample_rate_hz"))
+        notes.update(window)
+
     return {
         "jump": jump_dict,
         "metrics": metrics_dict,
@@ -214,4 +228,3 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
         "quality_flags": quality_flags,
         "chart_data": chart_data,
     }
-
