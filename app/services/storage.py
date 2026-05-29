@@ -217,6 +217,10 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
         window = detect_curve_window(sample_df, sample_rate_hz=jump_dict.get("sample_rate_hz"))
         notes.update(window)
 
+    notes.setdefault("pw_start_utc", None)
+    notes.setdefault("pw_start_s_from_t0", metrics_dict.get("performance_window_start_s"))
+    notes.setdefault("t0_uncertainty_s", None)
+
     return {
         "jump": jump_dict,
         "metrics": metrics_dict,

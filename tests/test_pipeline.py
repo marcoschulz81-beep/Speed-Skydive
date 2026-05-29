@@ -88,3 +88,6 @@ def test_pipeline_outputs_core_metrics():
     assert notes["curve_window_start_s"] == 0.0
     assert notes["curve_window_end_s"] > 10.0
     assert notes["curve_window_end_s"] <= result["report"]["chart_data"]["time_s"][-1]
+    assert "t0_confidence" in notes
+    assert "t0_uncertainty_s" in notes
+    assert "pw_start_s_from_t0" in notes

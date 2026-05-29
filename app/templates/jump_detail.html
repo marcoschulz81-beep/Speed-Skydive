@@ -151,7 +151,9 @@
     <h2>Diagnose</h2>
     <p><strong>Kurvenfenster:</strong> +{{ report.notes.curve_window_start_s }}s bis +{{ report.notes.curve_window_end_s }}s</p>
     <p><strong>Fensterlogik:</strong> {{ report.notes.curve_window_reason }}</p>
+    <p><strong>Performance-Window Start:</strong> {{ report.notes.pw_start_utc }} (t_rel {{ report.notes.pw_start_s_from_t0 }}s)</p>
     <p><strong>t0-Erkennung:</strong> {{ report.notes.t0_reason }}</p>
+    <p><strong>t0 Confidence:</strong> {{ report.notes.t0_confidence }} (Unsicherheit ±{{ report.notes.t0_uncertainty_s }}s)</p>
     <p><strong>Hot-Zone:</strong> {{ report.notes.hot_zone_reason }}</p>
     <p><strong>Negativ/Kippen:</strong> {{ report.notes.negative_details }}</p>
     <p><strong>AGL:</strong> {{ report.notes.agl_note }}</p>
@@ -299,4 +301,3 @@ Plotly.newPlot("chart-angle-vvert", [{
 }, {displayModeBar: false});
 </script>
 {% endblock %}
-

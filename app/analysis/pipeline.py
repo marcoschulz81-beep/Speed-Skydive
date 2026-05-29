@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import uuid
 from dataclasses import dataclass
 from io import StringIO
@@ -143,65 +142,105 @@ def _compute_quality_flags(df: pd.DataFrame, sample_rate_hz: float, dt: np.ndarr
     return flags, max(score, 0.0)
 
 
-def _detect_t0(df: pd.DataFrame, t_abs_s: np.ndarray, sample_rate_hz: float) -> tuple[int, float, str]:
-    window_samples = max(3, int(sample_rate_hz * 0.8))
+def _first_sustained_index(
+    mask: np.ndarray,
+    *,
+    start_idx: int,
+    min_run: int,
+) -> int | None:
+    run_start: int | None = None
+    run_len = 0
+    for i in range(start_idx, len(mask)):
+        if bool(mask[i]):
+            if run_start is None:
+                run_start = i
+            run_len += 1
+            if run_len >= min_run:
+                return run_start
+        else:
+            run_start = None
+            run_len = 0
+    return None
+
+
+def _detect_t0(df: pd.DataFrame, t_abs_s: np.ndarray, sample_rate_hz: float) -> tuple[int, float, float, str]:
+    """
+    Detect real exit timing (t_exit), not high-speed anchor timing.
+    Returns: index, confidence(0..1), uncertainty_seconds, reason
+    """
+    smooth_window = max(3, int(round(sample_rate_hz * 0.7)))
+    pre_window = max(5, int(round(sample_rate_hz * 2.0)))
+    future_window = max(4, int(round(sample_rate_hz * 0.9)))
+    min_run = max(4, int(round(sample_rate_hz * 0.6)))
+
     smooth = pd.DataFrame(index=df.index)
-    smooth["hMSL"] = df["hMSL"].rolling(window_samples, center=True, min_periods=1).mean()
-    smooth["velD"] = df["velD"].rolling(window_samples, center=True, min_periods=1).mean()
+    smooth["hMSL"] = df["hMSL"].rolling(smooth_window, center=True, min_periods=1).mean()
+    smooth["velD"] = df["velD"].rolling(smooth_window, center=True, min_periods=1).mean()
     smooth["vHor"] = np.sqrt(df["velN"] ** 2 + df["velE"] ** 2).rolling(
-        window_samples, center=True, min_periods=1
+        smooth_window, center=True, min_periods=1
     ).mean()
     smooth["accVert"] = np.gradient(smooth["velD"].to_numpy(), t_abs_s)
-    smooth["hDrop"] = -smooth["hMSL"].diff().fillna(0.0)
+    smooth["hDropRate"] = -np.gradient(smooth["hMSL"].to_numpy(), t_abs_s)
 
-    candidates: list[tuple[int, float, str]] = []
-    max_i = len(df) - max(10, int(sample_rate_hz * 6))
-    for i in range(max(2, window_samples), max_i):
-        vel_now = float(smooth.at[i, "velD"])
-        vel_prev = float(smooth.at[i - 1, "velD"])
+    candidate_mask = np.zeros(len(df), dtype=bool)
+    candidate_details: dict[int, tuple[float, float, float, float, float, float]] = {}
+    max_i = len(df) - future_window - 1
+    for i in range(pre_window, max_i):
+        pre_slice = smooth.iloc[i - pre_window : i]
+        fut_slice = smooth.iloc[i : i + future_window]
+        if pre_slice.empty or fut_slice.empty:
+            continue
+
+        pre_vel = float(pre_slice["velD"].median())
+        fut_vel = float(fut_slice["velD"].median())
+        vel_gain = fut_vel - pre_vel
+
+        pre_hor = float(pre_slice["vHor"].median())
+        fut_hor = float(fut_slice["vHor"].median())
+        vhor_drop = pre_hor - fut_hor
+
+        pre_drop = float(pre_slice["hDropRate"].median())
+        fut_drop = float(fut_slice["hDropRate"].median())
+        drop_gain = fut_drop - pre_drop
+
         acc_now = float(smooth.at[i, "accVert"])
-        h_drop_local = float(smooth["hDrop"].iloc[i : i + max(3, window_samples)].mean())
-        vhor_delta = float(smooth.at[i, "vHor"] - smooth.at[i + max(2, window_samples // 2), "vHor"])
 
-        if vel_now < 10.0:
-            continue
-        if vel_now <= vel_prev:
-            continue
-        if h_drop_local < 0.25:
-            continue
-        if acc_now < 0.25:
-            continue
+        cond_speed = fut_vel >= max(10.0, pre_vel + 8.0) and vel_gain >= 8.0
+        cond_acc = acc_now >= 2.2
+        cond_drop = fut_drop >= max(4.0, pre_drop + 2.0) and drop_gain >= 2.0
+        cond_vhor = vhor_drop >= max(4.0, pre_hor * 0.08)
 
-        future_slice = smooth.iloc[i : i + max(4, int(sample_rate_hz * 5))]
-        if future_slice["velD"].mean() < vel_now + 5.0:
-            continue
+        if cond_speed and cond_acc and cond_drop and cond_vhor:
+            candidate_mask[i] = True
+            candidate_details[i] = (fut_vel, vel_gain, acc_now, fut_drop, vhor_drop, pre_hor)
 
-        t_plus_10 = t_abs_s[i] + 10.0
-        v10 = _safe_interp(t_abs_s, df["velD"].to_numpy(), t_plus_10)
-        plaus = 0.0 if v10 is None else min(max((v10 * 3.6 - 230.0) / 80.0, 0.0), 1.2)
-
-        score = 0.0
-        score += min((vel_now - 10.0) / 20.0, 1.8)
-        score += min(acc_now / 3.0, 1.2)
-        score += min(h_drop_local / 2.0, 1.2)
-        score += min(max(vhor_delta, 0.0) / 30.0, 1.0)
-        score += plaus
+    first_idx = _first_sustained_index(
+        candidate_mask,
+        start_idx=pre_window,
+        min_run=min_run,
+    )
+    if first_idx is not None:
+        fut_vel, vel_gain, acc_now, fut_drop, vhor_drop, pre_hor = candidate_details[first_idx]
+        conf_components = [
+            min(max((vel_gain - 8.0) / 12.0, 0.0), 1.0),
+            min(max((acc_now - 2.2) / 4.0, 0.0), 1.0),
+            min(max((fut_drop - 4.0) / 10.0, 0.0), 1.0),
+            min(max((vhor_drop - max(4.0, pre_hor * 0.08)) / 8.0, 0.0), 1.0),
+        ]
+        confidence = 0.55 + 0.45 * float(np.mean(conf_components))
+        uncertainty_s = max(0.2, min(1.2, (min_run / sample_rate_hz) * 0.6))
         reason = (
-            f"velD={vel_now:.1f}m/s, accVert={acc_now:.2f}m/s², "
-            f"hDrop={h_drop_local:.2f}m/Sample, vHorDelta={vhor_delta:.1f}m/s"
+            f"exit by sustained transition: velD={fut_vel:.1f}m/s (gain {vel_gain:.1f}), "
+            f"accVert={acc_now:.2f}m/s2, hDropRate={fut_drop:.1f}m/s, vHorDrop={vhor_drop:.1f}m/s"
         )
-        candidates.append((i, score, reason))
+        return first_idx, min(confidence, 1.0), uncertainty_s, reason
 
-    if not candidates:
-        above_10 = np.where(df["velD"].to_numpy() >= 10.0)[0]
-        if len(above_10) == 0:
-            return 0, 0.2, "Fallback: kein klarer Kandidat, erster Sample verwendet."
+    above_10 = np.where(df["velD"].to_numpy() >= 10.0)[0]
+    if len(above_10) > 0:
         idx = int(above_10[0])
-        return idx, 0.35, "Fallback: erster velD>=10m/s Punkt als Referenz."
+        return idx, 0.45, 1.5, "Fallback: erster velD>=10m/s als t_exit."
 
-    best = max(candidates, key=lambda item: item[1])
-    confidence = min(best[1] / 5.0, 1.0)
-    return best[0], confidence, best[2]
+    return 0, 0.25, 2.0, "Fallback: kein klarer Exit, erster Sample verwendet."
 
 
 def _calc_derived(df: pd.DataFrame, t_abs_s: np.ndarray, t0_abs_s: float, ground_elevation_m: float | None) -> pd.DataFrame:
@@ -554,10 +593,10 @@ def analyze_flysight_csv(
     sample_rate_hz = float(1.0 / np.median(dt)) if len(dt) else 0.0
     quality_flags, quality_score = _compute_quality_flags(df, sample_rate_hz, dt)
 
-    t0_idx, t0_confidence, t0_reason = _detect_t0(df, t_abs_s, sample_rate_hz)
+    t0_idx, t0_confidence, t0_uncertainty_s, t0_reason = _detect_t0(df, t_abs_s, sample_rate_hz)
     t0_utc = df["time"].iloc[t0_idx].isoformat()
     t0_abs_s = float(t_abs_s[t0_idx])
-    if t0_confidence < 0.55:
+    if t0_confidence < 0.55 or t0_uncertainty_s > 1.2:
         quality_flags.append("NO_CLEAR_EXIT")
 
     ground_estimated = False
@@ -582,8 +621,16 @@ def analyze_flysight_csv(
     if best_training is None:
         raise AnalysisError("3-Sekunden-Fenster konnte nicht bestimmt werden.")
 
-    pw_start_row = post[post["vVert_mps"] >= 10.0].head(1)
-    performance_window_start_s = float(pw_start_row["t_rel_s"].iloc[0]) if not pw_start_row.empty else None
+    vel_d = df["velD"].to_numpy()
+    pw_candidates = np.where(vel_d >= 10.0)[0]
+    pw_candidates = pw_candidates[pw_candidates >= t0_idx]
+    pw_start_idx = int(pw_candidates[0]) if len(pw_candidates) else None
+    performance_window_start_s = None
+    performance_window_start_utc = None
+    if pw_start_idx is not None:
+        performance_window_start_s = float(t_abs_s[pw_start_idx] - t0_abs_s)
+        performance_window_start_utc = df["time"].iloc[pw_start_idx].isoformat()
+
     performance_window_end_s = None
     window_quality = None
     rule_best = None
@@ -699,7 +746,10 @@ def analyze_flysight_csv(
 
     notes = {
         "t0_confidence": round(t0_confidence, 3),
+        "t0_uncertainty_s": round(t0_uncertainty_s, 3),
         "t0_reason": t0_reason,
+        "pw_start_utc": performance_window_start_utc,
+        "pw_start_s_from_t0": None if performance_window_start_s is None else round(performance_window_start_s, 3),
         "hot_zone_reason": hot_reason,
         "negative_details": neg_details["details"],
         "ground_level_estimated": ground_estimated,
