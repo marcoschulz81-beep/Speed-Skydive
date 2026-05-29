@@ -7,6 +7,7 @@ from app.config import DATABASE_PATH
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
 
@@ -30,6 +31,7 @@ def init_db() -> None:
                 jumper_name TEXT NOT NULL,
                 file_name TEXT NOT NULL,
                 device_type TEXT NOT NULL,
+                source_file_sha256 TEXT,
                 raw_start_time_utc TEXT NOT NULL,
                 t0_utc TEXT NOT NULL,
                 exit_altitude_msl_m REAL NOT NULL,
@@ -98,5 +100,15 @@ def init_db() -> None:
             );
             """
         )
-        conn.commit()
 
+        # Lightweight migration path for existing DB files.
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(jumps)").fetchall()
+        }
+        if "source_file_sha256" not in columns:
+            conn.execute("ALTER TABLE jumps ADD COLUMN source_file_sha256 TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_jumps_source_file_sha256_unique ON jumps(source_file_sha256)"
+        )
+        conn.commit()

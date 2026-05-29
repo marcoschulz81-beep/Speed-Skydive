@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -82,7 +83,10 @@ async def analyze_upload(
     except Exception as exc:  # pragma: no cover
         return _render_index_with_error(request, f"Unerwarteter Analysefehler: {exc}")
 
-    jump_id = save_analysis_result(result)
+    source_hash = hashlib.sha256(content).hexdigest()
+    jump_id, is_duplicate = save_analysis_result(result, source_file_sha256=source_hash)
+    if is_duplicate:
+        return RedirectResponse(url=f"/jumps/{jump_id}", status_code=303)
     return RedirectResponse(url=f"/jumps/{jump_id}", status_code=303)
 
 
@@ -153,4 +157,3 @@ def _render_index_with_error(request: Request, error: str):
         },
         status_code=400,
     )
-

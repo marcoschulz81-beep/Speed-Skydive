@@ -9,25 +9,54 @@ from app.analysis.curve_window import detect_curve_window
 from app.database import get_connection
 
 
-def save_analysis_result(result: dict[str, Any]) -> str:
+def save_analysis_result(
+    result: dict[str, Any],
+    *,
+    source_file_sha256: str | None = None,
+) -> tuple[str, bool]:
+    """
+    Returns (jump_id, is_duplicate).
+    When duplicate, no new rows are inserted and existing jump_id is returned.
+    """
     jump = result["jump_record"]
     metrics = result["metrics_record"]
     samples = result["sample_records"]
 
     with get_connection() as conn:
+        duplicate_id = _find_duplicate_jump_id(
+            conn=conn,
+            jumper_name=jump["jumper_name"],
+            file_name=jump["file_name"],
+            raw_start_time_utc=jump["raw_start_time_utc"],
+            source_file_sha256=source_file_sha256,
+        )
+        if duplicate_id is not None:
+            if source_file_sha256:
+                conn.execute(
+                    """
+                    UPDATE jumps
+                    SET source_file_sha256 = COALESCE(source_file_sha256, ?)
+                    WHERE jump_id = ?
+                    """,
+                    (source_file_sha256, duplicate_id),
+                )
+                conn.commit()
+            return duplicate_id, True
+
         conn.execute(
             """
             INSERT INTO jumps (
-                jump_id, jumper_name, file_name, device_type, raw_start_time_utc, t0_utc,
+                jump_id, jumper_name, file_name, device_type, source_file_sha256, raw_start_time_utc, t0_utc,
                 exit_altitude_msl_m, exit_altitude_agl_m, ground_elevation_m, is_valid_altitude,
                 sample_rate_hz, quality_score, quality_flags
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 jump["jump_id"],
                 jump["jumper_name"],
                 jump["file_name"],
                 jump["device_type"],
+                source_file_sha256,
                 jump["raw_start_time_utc"],
                 jump["t0_utc"],
                 jump["exit_altitude_msl_m"],
@@ -112,7 +141,38 @@ def save_analysis_result(result: dict[str, Any]) -> str:
             ),
         )
         conn.commit()
-    return jump["jump_id"]
+    return jump["jump_id"], False
+
+
+def _find_duplicate_jump_id(
+    *,
+    conn,
+    jumper_name: str,
+    file_name: str,
+    raw_start_time_utc: str,
+    source_file_sha256: str | None,
+) -> str | None:
+    if source_file_sha256:
+        row = conn.execute(
+            """
+            SELECT jump_id FROM jumps
+            WHERE source_file_sha256 = ?
+            LIMIT 1
+            """,
+            (source_file_sha256,),
+        ).fetchone()
+        if row is not None:
+            return str(row["jump_id"])
+
+    row = conn.execute(
+        """
+        SELECT jump_id FROM jumps
+        WHERE jumper_name = ? AND file_name = ? AND raw_start_time_utc = ?
+        LIMIT 1
+        """,
+        (jumper_name, file_name, raw_start_time_utc),
+    ).fetchone()
+    return None if row is None else str(row["jump_id"])
 
 
 def list_recent_jumps(limit: int = 30) -> list[dict[str, Any]]:
