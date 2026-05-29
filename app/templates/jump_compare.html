@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Sprungvergleich | Speed-Skydive Analyzer{% endblock %}
+{% block content %}
+<section class="panel">
+    <div class="panel-head">
+        <h1>Sprungvergleich</h1>
+        <div class="actions">
+            <a class="btn secondary" href="/jumps/{{ jump_id }}">Zurueck zum Report</a>
+            <a class="btn secondary" href="/jumpers/{{ base_report.jump.jumper_name | urlencode }}">Springeransicht</a>
+        </div>
+    </div>
+    <div class="meta-grid">
+        <div><span class="label">Aktueller Sprung</span><span>{{ base_report.jump.file_name }}</span></div>
+        <div><span class="label">Springer</span><span>{{ base_report.jump.jumper_name }}</span></div>
+        <div><span class="label">t0 UTC</span><span>{{ base_report.jump.t0_utc }}</span></div>
+        <div><span class="label">3s Max</span><span>{{ "%.2f"|format(base_summary.best_3s_vVert_kmh) }} km/h</span></div>
+    </div>
+</section>
+
+<section class="panel">
+    <div class="panel-head">
+        <h2>Schnellvergleich</h2>
+        <a class="btn" href="/jumps/{{ jump_id }}/compare?preset=best">Mit bestem Sprung vergleichen</a>
+    </div>
+    <p class="muted">Der Vergleich zeigt immer: Delta = Vergleichssprung - aktueller Sprung.</p>
+</section>
+
+<section class="panel">
+    <h2>Mit Sprung desselben Springers vergleichen</h2>
+    <form class="compare-form" method="get" action="/jumps/{{ jump_id }}/compare">
+        <label>
+            <span>Sprung desselben Springers</span>
+            <select name="compare_jump_id" required>
+                <option value="">Bitte waehlen</option>
+                {% for jump in same_candidates %}
+                <option value="{{ jump.jump_id }}" {% if selected_compare_jump_id == jump.jump_id %}selected{% endif %}>
+                    {{ jump.file_name }} | {{ jump.t0_utc }} | 3s {{ "%.2f"|format(jump.best_3s_vVert_kmh) }}
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+        <button type="submit">Vergleich starten</button>
+    </form>
+</section>
+
+<section class="panel">
+    <h2>Mit Sprung eines anderen Springers vergleichen</h2>
+    <form class="compare-form" method="get" action="/jumps/{{ jump_id }}/compare">
+        <label>
+            <span>Sprung anderer Springer</span>
+            <select name="compare_jump_id" required>
+                <option value="">Bitte waehlen</option>
+                {% for jump in other_candidates %}
+                <option value="{{ jump.jump_id }}" {% if selected_compare_jump_id == jump.jump_id %}selected{% endif %}>
+                    {{ jump.jumper_name }} | {{ jump.file_name }} | {{ jump.t0_utc }} | 3s {{ "%.2f"|format(jump.best_3s_vVert_kmh) }}
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+        <button type="submit">Vergleich starten</button>
+    </form>
+</section>
+
+{% if compare_error %}
+<section class="panel">
+    <div class="flash error">{{ compare_error }}</div>
+</section>
+{% endif %}
+
+{% if compare_result %}
+<section class="panel">
+    <h2>Vergleichsergebnis</h2>
+    <p class="muted">
+        Aktuell: {{ compare_result.left.file_name }} ({{ compare_result.left.t0_utc }})<br>
+        Vergleich: {{ compare_result.right.file_name }} ({{ compare_result.right.t0_utc }})
+    </p>
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Kennzahl</th>
+                <th>Aktueller Sprung</th>
+                <th>Vergleichssprung</th>
+                <th>Delta</th>
+                <th>Bewertung</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for row in compare_result.summary %}
+            <tr>
+                <td>{{ row.label }}</td>
+                <td>{{ "%.2f"|format(row.left) if row.left is not none else "-" }} {{ row.unit }}</td>
+                <td>{{ "%.2f"|format(row.right) if row.right is not none else "-" }} {{ row.unit }}</td>
+                <td>
+                    {% if row.delta is not none %}
+                        {% if row.delta > 0 %}+{% endif %}{{ "%.2f"|format(row.delta) }} {{ row.unit }}
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+                <td>{{ row.trend }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="panel">
+    <h2>Fixpunkt-Differenzen</h2>
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Zeit</th>
+                <th>Delta vVert (km/h)</th>
+                <th>Delta vHor (km/h)</th>
+                <th>Delta Winkel (deg)</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for row in compare_result.fixpoint_rows %}
+            <tr>
+                <td>+{{ row.t_rel_s }}s</td>
+                <td>{% if row.delta_vVert_kmh is not none %}{% if row.delta_vVert_kmh > 0 %}+{% endif %}{{ "%.2f"|format(row.delta_vVert_kmh) }}{% else %}-{% endif %}</td>
+                <td>{% if row.delta_vHor_kmh is not none %}{% if row.delta_vHor_kmh > 0 %}+{% endif %}{{ "%.2f"|format(row.delta_vHor_kmh) }}{% else %}-{% endif %}</td>
+                <td>{% if row.delta_angle_deg is not none %}{% if row.delta_angle_deg > 0 %}+{% endif %}{{ "%.2f"|format(row.delta_angle_deg) }}{% else %}-{% endif %}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="panel">
+    <h2>Automatische Analyse</h2>
+    <ul class="tips">
+        {% for insight in compare_result.insights %}
+        <li>{{ insight }}</li>
+        {% endfor %}
+    </ul>
+</section>
+
+<section class="panel">
+    <h2>Kurvenvergleich</h2>
+    <div class="charts-grid">
+        <div id="chart-compare-vvert" class="chart"></div>
+        <div id="chart-compare-vhor" class="chart"></div>
+        <div id="chart-compare-angle" class="chart"></div>
+    </div>
+</section>
+{% endif %}
+
+<script>
+{% if compare_result %}
+const compareCharts = {{ compare_chart_json | safe }};
+const left = compareCharts.left;
+const right = compareCharts.right;
+const compareLayoutBase = {
+    margin: {l: 48, r: 20, t: 26, b: 42},
+    paper_bgcolor: "#11161c",
+    plot_bgcolor: "#11161c",
+    font: {color: "#dce3ea", size: 12},
+    xaxis: {title: "t_rel [s]", gridcolor: "#1f2933"},
+    yaxis: {gridcolor: "#1f2933"}
+};
+
+Plotly.newPlot("chart-compare-vvert", [
+    {x: left.time_s, y: left.vVert_kmh, type: "scatter", mode: "lines", name: "Aktuell: " + left.label, line: {width: 2, color: "#4aa3ff"}},
+    {x: right.time_s, y: right.vVert_kmh, type: "scatter", mode: "lines", name: "Vergleich: " + right.label, line: {width: 2, color: "#2ecc71"}}
+], {...compareLayoutBase, title: "vVert Vergleich", yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
+
+Plotly.newPlot("chart-compare-vhor", [
+    {x: left.time_s, y: left.vHor_kmh, type: "scatter", mode: "lines", name: "Aktuell: " + left.label, line: {width: 2, color: "#4aa3ff"}},
+    {x: right.time_s, y: right.vHor_kmh, type: "scatter", mode: "lines", name: "Vergleich: " + right.label, line: {width: 2, color: "#2ecc71"}}
+], {...compareLayoutBase, title: "vHor Vergleich", yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
+
+Plotly.newPlot("chart-compare-angle", [
+    {x: left.time_s, y: left.angle_deg, type: "scatter", mode: "lines", name: "Aktuell: " + left.label, line: {width: 2, color: "#4aa3ff"}},
+    {x: right.time_s, y: right.angle_deg, type: "scatter", mode: "lines", name: "Vergleich: " + right.label, line: {width: 2, color: "#2ecc71"}}
+], {...compareLayoutBase, title: "Winkel Vergleich", yaxis: {title: "deg", gridcolor: "#1f2933"}}, {displayModeBar: false});
+{% endif %}
+</script>
+{% endblock %}
+

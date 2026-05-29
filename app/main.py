@@ -9,13 +9,16 @@ from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.analysis.comparison import build_jump_comparison
 from app.analysis.pipeline import AnalysisError, analyze_flysight_csv
+from app.analysis.comparison import build_jump_comparison
 from app.config import BASE_DIR
 from app.database import init_db
 from app.report_pdf import build_pdf
 from app.services.storage import (
+    get_best_jump_for_jumper,
     get_jump_report,
+    get_jump_summary,
+    list_compare_candidates,
     list_jumps_for_jumper,
     list_jumpers,
     list_recent_jumps,
@@ -105,6 +108,76 @@ def jump_detail(request: Request, jump_id: str):
             "report": report,
             "chart_data_json": json.dumps(report["chart_data"]),
             "quality_flags_json": json.dumps(report["quality_flags"]),
+        },
+    )
+
+
+@app.get("/jumps/{jump_id}/compare")
+def jump_compare(
+    request: Request,
+    jump_id: str,
+    compare_jump_id: str | None = None,
+    preset: str | None = None,
+):
+    base_report = get_jump_report(jump_id)
+    if base_report is None:
+        raise HTTPException(status_code=404, detail="Basis-Sprung nicht gefunden.")
+
+    base_jump = base_report["jump"]
+    base_summary = get_jump_summary(jump_id)
+    if base_summary is None:
+        raise HTTPException(status_code=404, detail="Basis-Sprung nicht gefunden.")
+
+    same_jumper_jumps = list_jumps_for_jumper(base_jump["jumper_name"])
+    for jump in same_jumper_jumps:
+        jump["is_current"] = jump["jump_id"] == jump_id
+
+    compare_candidates = list_compare_candidates(jump_id)
+    same_candidates = [item for item in compare_candidates if item["jumper_name"] == base_jump["jumper_name"]]
+    other_candidates = [item for item in compare_candidates if item["jumper_name"] != base_jump["jumper_name"]]
+
+    compare_error: str | None = None
+    compare_result: dict[str, Any] | None = None
+    compare_chart_json: str | None = None
+
+    if preset == "best":
+        best = get_best_jump_for_jumper(base_jump["jumper_name"], exclude_jump_id=jump_id)
+        if best is None:
+            compare_error = "Kein weiterer Sprung dieses Springers vorhanden, um mit dem besten Sprung zu vergleichen."
+        else:
+            compare_jump_id = best["jump_id"]
+
+    if compare_jump_id:
+        compare_summary = get_jump_summary(compare_jump_id)
+        if compare_summary is None:
+            compare_error = "Vergleichssprung nicht gefunden."
+        elif compare_jump_id == jump_id:
+            compare_error = "Bitte einen anderen Sprung als Vergleich auswaehlen."
+        else:
+            compare_report = get_jump_report(compare_jump_id)
+            if compare_report is None:
+                compare_error = "Vergleichssprung nicht gefunden."
+            else:
+                compare_result = build_jump_comparison(
+                    left_report=base_report,
+                    right_report=compare_report,
+                )
+                compare_chart_json = json.dumps(compare_result["charts"])
+
+    return templates.TemplateResponse(
+        request,
+        "jump_compare.html",
+        {
+            "jump_id": jump_id,
+            "base_report": base_report,
+            "base_summary": base_summary,
+            "same_jumper_jumps": same_jumper_jumps,
+            "same_candidates": same_candidates,
+            "other_candidates": other_candidates,
+            "compare_error": compare_error,
+            "compare_result": compare_result,
+            "compare_chart_json": compare_chart_json,
+            "selected_compare_jump_id": compare_jump_id,
         },
     )
 

@@ -230,6 +230,98 @@ def list_jumps_for_jumper(jumper_name: str) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def get_jump_summary(jump_id: str) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                j.jump_id,
+                j.jumper_name,
+                j.file_name,
+                j.t0_utc,
+                j.quality_score,
+                j.sample_rate_hz,
+                j.is_valid_altitude,
+                m.best_3s_vVert_kmh,
+                m.rule_based_3s_score,
+                m.negative_risk_score
+            FROM jumps j
+            JOIN metrics m ON m.jump_id = j.jump_id
+            WHERE j.jump_id = ?
+            LIMIT 1
+            """,
+            (jump_id,),
+        ).fetchone()
+    return None if row is None else dict(row)
+
+
+def get_best_jump_for_jumper(
+    jumper_name: str,
+    *,
+    exclude_jump_id: str | None = None,
+) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        if exclude_jump_id:
+            row = conn.execute(
+                """
+                SELECT
+                    j.jump_id,
+                    j.jumper_name,
+                    j.file_name,
+                    j.t0_utc,
+                    m.best_3s_vVert_kmh,
+                    m.rule_based_3s_score
+                FROM jumps j
+                JOIN metrics m ON m.jump_id = j.jump_id
+                WHERE j.jumper_name = ? AND j.jump_id != ?
+                ORDER BY m.best_3s_vVert_kmh DESC, j.created_at DESC
+                LIMIT 1
+                """,
+                (jumper_name, exclude_jump_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT
+                    j.jump_id,
+                    j.jumper_name,
+                    j.file_name,
+                    j.t0_utc,
+                    m.best_3s_vVert_kmh,
+                    m.rule_based_3s_score
+                FROM jumps j
+                JOIN metrics m ON m.jump_id = j.jump_id
+                WHERE j.jumper_name = ?
+                ORDER BY m.best_3s_vVert_kmh DESC, j.created_at DESC
+                LIMIT 1
+                """,
+                (jumper_name,),
+            ).fetchone()
+    return None if row is None else dict(row)
+
+
+def list_compare_candidates(current_jump_id: str) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                j.jump_id,
+                j.jumper_name,
+                j.file_name,
+                j.t0_utc,
+                j.quality_score,
+                m.best_3s_vVert_kmh,
+                m.rule_based_3s_score
+            FROM jumps j
+            JOIN metrics m ON m.jump_id = j.jump_id
+            WHERE j.jump_id != ?
+            ORDER BY j.jumper_name COLLATE NOCASE ASC, j.created_at DESC
+            """,
+            (current_jump_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_jump_report(jump_id: str) -> dict[str, Any] | None:
     with get_connection() as conn:
         jump = conn.execute("SELECT * FROM jumps WHERE jump_id = ?", (jump_id,)).fetchone()
