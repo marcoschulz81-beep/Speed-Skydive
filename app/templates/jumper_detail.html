@@ -38,5 +38,29 @@
         </table>
     </div>
 </section>
-{% endblock %}
 
+<section class="panel">
+    <h2>Trend 3s-Max</h2>
+    <div id="chart-trend" class="chart"></div>
+</section>
+
+<script>
+const jumps = {{ jumps | tojson | safe }};
+const sorted = [...jumps].reverse();
+Plotly.newPlot("chart-trend", [{
+    x: sorted.map(j => j.t0_utc),
+    y: sorted.map(j => j.best_3s_vVert_kmh),
+    type: "scatter",
+    mode: "lines+markers",
+    line: {color: "#2ecc71", width: 2},
+    marker: {size: 7}
+}], {
+    margin: {l: 48, r: 20, t: 20, b: 60},
+    paper_bgcolor: "#11161c",
+    plot_bgcolor: "#11161c",
+    font: {color: "#dce3ea", size: 12},
+    xaxis: {title: "t0 UTC", gridcolor: "#1f2933"},
+    yaxis: {title: "3s Max [km/h]", gridcolor: "#1f2933"}
+}, {displayModeBar: false});
+</script>
+{% endblock %}
