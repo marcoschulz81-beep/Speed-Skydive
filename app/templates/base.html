@@ -8,11 +8,15 @@
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
 <body>
+{% set vm = view_mode if view_mode in ["simple", "expert"] else "expert" %}
 <header class="topbar">
     <div class="container topbar-inner">
-        <a class="brand" href="/">Speed-Skydive Analyzer</a>
+        <a class="brand" href="/?view={{ vm }}">Speed-Skydive Analyzer</a>
         <nav class="nav">
-            <a href="/">Upload</a>
+            <a href="/?view={{ vm }}">Upload</a>
+            {% if coach_view_enabled %}
+            <a href="/coach?view={{ vm }}">Traineransicht</a>
+            {% endif %}
         </nav>
     </div>
 </header>
@@ -21,4 +25,3 @@
 </main>
 </body>
 </html>
-

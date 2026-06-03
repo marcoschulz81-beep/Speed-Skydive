@@ -12,3 +12,5 @@ dist/
 build/
 *.egg-info/
 uploaded_logs/
+tmp/
+uvicorn-*.log

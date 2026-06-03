@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -34,3 +35,13 @@ TARGET_ANGLE_BANDS = [
     {"start_s": 8.0, "end_s": 20.0, "min_deg": 80.0, "max_deg": 85.0, "label": "Hauptaufbau"},
     {"start_s": 20.0, "end_s": 999.0, "min_deg": 83.0, "max_deg": 86.0, "label": "Peak-Haltebereich"},
 ]
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+COACH_VIEW_ENABLED = _env_flag("COACH_VIEW_ENABLED", False)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+from statistics import median
 from typing import Any
 
 import pandas as pd
@@ -12,6 +14,7 @@ from app.database import get_connection
 def save_analysis_result(
     result: dict[str, Any],
     *,
+    is_reference_only: bool = False,
     source_file_sha256: str | None = None,
     source_file_path: str | None = None,
 ) -> tuple[str, bool]:
@@ -45,6 +48,7 @@ def save_analysis_result(
         _insert_analysis_result(
             conn=conn,
             result=result,
+            is_reference_only=is_reference_only,
             source_file_sha256=source_file_sha256,
             source_file_path=source_file_path,
         )
@@ -56,6 +60,7 @@ def replace_analysis_result(
     *,
     jump_id: str,
     result: dict[str, Any],
+    is_reference_only: bool = False,
     source_file_sha256: str | None = None,
     source_file_path: str | None = None,
 ) -> str:
@@ -68,11 +73,25 @@ def replace_analysis_result(
         _insert_analysis_result(
             conn=conn,
             result=result,
+            is_reference_only=is_reference_only,
             source_file_sha256=source_file_sha256,
             source_file_path=source_file_path,
         )
         conn.commit()
     return jump_id
+
+
+def delete_jump(jump_id: str) -> bool:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT jump_id FROM jumps WHERE jump_id = ? LIMIT 1",
+            (jump_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        conn.execute("DELETE FROM jumps WHERE jump_id = ?", (jump_id,))
+        conn.commit()
+    return True
 
 
 def _find_duplicate_jump_id(
@@ -110,6 +129,7 @@ def _insert_analysis_result(
     *,
     conn,
     result: dict[str, Any],
+    is_reference_only: bool,
     source_file_sha256: str | None,
     source_file_path: str | None,
 ) -> None:
@@ -120,16 +140,17 @@ def _insert_analysis_result(
     conn.execute(
         """
         INSERT INTO jumps (
-            jump_id, jumper_name, file_name, device_type, source_file_sha256, source_file_path, raw_start_time_utc, t0_utc,
+            jump_id, jumper_name, file_name, device_type, is_reference_only, source_file_sha256, source_file_path, raw_start_time_utc, t0_utc,
             exit_altitude_msl_m, exit_altitude_agl_m, ground_elevation_m, is_valid_altitude,
             sample_rate_hz, quality_score, quality_flags
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             jump["jump_id"],
             jump["jumper_name"],
             jump["file_name"],
             jump["device_type"],
+            1 if is_reference_only else 0,
             source_file_sha256,
             source_file_path,
             jump["raw_start_time_utc"],
@@ -235,12 +256,14 @@ def list_recent_jumps(limit: int = 30) -> list[dict[str, Any]]:
                 j.t0_utc,
                 j.sample_rate_hz,
                 j.quality_score,
+                j.quality_flags,
                 j.is_valid_altitude,
                 m.best_3s_vVert_kmh,
                 m.rule_based_3s_score
             FROM jumps j
             JOIN metrics m ON m.jump_id = j.jump_id
-            ORDER BY j.created_at DESC
+            WHERE j.is_reference_only = 0
+            ORDER BY j.t0_utc DESC, j.created_at DESC
             LIMIT ?
             """,
             (limit,),
@@ -251,7 +274,12 @@ def list_recent_jumps(limit: int = 30) -> list[dict[str, Any]]:
 def list_jumpers() -> list[str]:
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT jumper_name FROM jumps ORDER BY jumper_name COLLATE NOCASE ASC"
+            """
+            SELECT DISTINCT jumper_name
+            FROM jumps
+            WHERE is_reference_only = 0
+            ORDER BY jumper_name COLLATE NOCASE ASC
+            """
         ).fetchall()
     return [str(row["jumper_name"]) for row in rows]
 
@@ -265,6 +293,7 @@ def list_jumps_for_jumper(jumper_name: str) -> list[dict[str, Any]]:
                 j.file_name,
                 j.t0_utc,
                 j.quality_score,
+                j.quality_flags,
                 j.sample_rate_hz,
                 j.is_valid_altitude,
                 m.best_3s_vVert_kmh,
@@ -272,7 +301,8 @@ def list_jumps_for_jumper(jumper_name: str) -> list[dict[str, Any]]:
             FROM jumps j
             JOIN metrics m ON m.jump_id = j.jump_id
             WHERE j.jumper_name = ?
-            ORDER BY j.created_at DESC
+              AND j.is_reference_only = 0
+            ORDER BY j.t0_utc DESC, j.created_at DESC
             """,
             (jumper_name,),
         ).fetchall()
@@ -341,8 +371,11 @@ def get_best_jump_for_jumper(
                     m.rule_based_3s_score
                 FROM jumps j
                 JOIN metrics m ON m.jump_id = j.jump_id
-                WHERE j.jumper_name = ? AND j.jump_id != ?
-                ORDER BY m.best_3s_vVert_kmh DESC, j.created_at DESC
+                WHERE j.jumper_name = ?
+                  AND j.jump_id != ?
+                  AND j.is_reference_only = 0
+                  AND j.quality_flags NOT LIKE '%EARLY_JUMP_END%'
+                ORDER BY m.best_3s_vVert_kmh DESC, j.t0_utc DESC, j.created_at DESC
                 LIMIT 1
                 """,
                 (jumper_name, exclude_jump_id),
@@ -360,12 +393,96 @@ def get_best_jump_for_jumper(
                 FROM jumps j
                 JOIN metrics m ON m.jump_id = j.jump_id
                 WHERE j.jumper_name = ?
-                ORDER BY m.best_3s_vVert_kmh DESC, j.created_at DESC
+                  AND j.is_reference_only = 0
+                  AND j.quality_flags NOT LIKE '%EARLY_JUMP_END%'
+                ORDER BY m.best_3s_vVert_kmh DESC, j.t0_utc DESC, j.created_at DESC
                 LIMIT 1
                 """,
                 (jumper_name,),
             ).fetchone()
     return None if row is None else dict(row)
+
+
+def get_best_external_reference(
+    *,
+    current_jump_id: str,
+    current_jumper_name: str,
+) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                j.jump_id,
+                j.jumper_name,
+                j.file_name,
+                j.t0_utc,
+                m.best_3s_vVert_kmh,
+                m.rule_based_3s_score
+            FROM jumps j
+            JOIN metrics m ON m.jump_id = j.jump_id
+            WHERE j.jump_id != ?
+              AND j.jumper_name != ?
+              AND j.quality_flags NOT LIKE '%EARLY_JUMP_END%'
+              AND j.quality_flags NOT LIKE '%SPEED_SPIKE%'
+            ORDER BY m.best_3s_vVert_kmh DESC, j.t0_utc DESC, j.created_at DESC
+            LIMIT 1
+            """,
+            (current_jump_id, current_jumper_name),
+        ).fetchone()
+    return None if row is None else dict(row)
+
+
+def list_top_global_references(
+    *,
+    limit: int = 5,
+    exclude_jump_id: str | None = None,
+) -> list[dict[str, Any]]:
+    hard_flags = [
+        "EARLY_JUMP_END",
+        "SPEED_SPIKE",
+        "NO_CLEAR_EXIT",
+        "INVALID_EXIT_ALTITUDE",
+        "HIGH_SPEED_ACCURACY_ERROR",
+        "LOW_GPS_FIX",
+    ]
+
+    where_lines = [
+        "j.quality_flags NOT LIKE ?",
+        "j.quality_flags NOT LIKE ?",
+        "j.quality_flags NOT LIKE ?",
+        "j.quality_flags NOT LIKE ?",
+        "j.quality_flags NOT LIKE ?",
+        "j.quality_flags NOT LIKE ?",
+    ]
+    params: list[Any] = [f"%{flag}%" for flag in hard_flags]
+
+    if exclude_jump_id:
+        where_lines.append("j.jump_id != ?")
+        params.append(exclude_jump_id)
+
+    params.append(max(1, int(limit)))
+
+    query = f"""
+        SELECT
+            j.jump_id,
+            j.jumper_name,
+            j.file_name,
+            j.t0_utc,
+            j.quality_score,
+            j.quality_flags,
+            j.is_reference_only,
+            m.best_3s_vVert_kmh,
+            m.rule_based_3s_score
+        FROM jumps j
+        JOIN metrics m ON m.jump_id = j.jump_id
+        WHERE {' AND '.join(where_lines)}
+        ORDER BY m.best_3s_vVert_kmh DESC, j.t0_utc DESC, j.created_at DESC
+        LIMIT ?
+    """
+
+    with get_connection() as conn:
+        rows = conn.execute(query, tuple(params)).fetchall()
+    return [dict(row) for row in rows]
 
 
 def list_compare_candidates(current_jump_id: str) -> list[dict[str, Any]]:
@@ -383,7 +500,8 @@ def list_compare_candidates(current_jump_id: str) -> list[dict[str, Any]]:
             FROM jumps j
             JOIN metrics m ON m.jump_id = j.jump_id
             WHERE j.jump_id != ?
-            ORDER BY j.jumper_name COLLATE NOCASE ASC, j.created_at DESC
+              AND j.is_reference_only = 0
+            ORDER BY j.t0_utc DESC, j.created_at DESC, j.jumper_name COLLATE NOCASE ASC
             """,
             (current_jump_id,),
         ).fetchall()
@@ -397,7 +515,7 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
         samples = conn.execute(
             """
             SELECT
-                t_rel_s, vVert_kmh, vHor_kmh, angle_deg, hAGL_m, accVert_mps2
+                t_rel_s, vVert_kmh, vHor_kmh, angle_deg, hAGL_m, accVert_mps2, velN_mps, velE_mps
             FROM samples
             WHERE jump_id = ?
             ORDER BY t_rel_s ASC
@@ -424,7 +542,13 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
         "angle_deg": [float(row["angle_deg"]) for row in samples],
         "hAGL_m": [None if row["hAGL_m"] is None else float(row["hAGL_m"]) for row in samples],
         "accVert_mps2": [float(row["accVert_mps2"]) for row in samples],
+        "velN_mps": [float(row["velN_mps"]) for row in samples],
+        "velE_mps": [float(row["velE_mps"]) for row in samples],
     }
+    forward_track = _build_forward_track_from_samples(samples)
+    chart_data["forward_m"] = forward_track["forward_m"]
+    chart_data["backtrack_m"] = forward_track["backtrack_m"]
+    notes["forward_track"] = forward_track["summary"]
 
     # Backward-compatible fallback for older records without curve window metadata.
     if "curve_window_start_s" not in notes or "curve_window_end_s" not in notes:
@@ -440,6 +564,14 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
     notes.setdefault("pw_start_utc", None)
     notes.setdefault("pw_start_s_from_t0", metrics_dict.get("performance_window_start_s"))
     notes.setdefault("t0_uncertainty_s", None)
+    notes.setdefault(
+        "t0_review_required",
+        bool(
+            notes.get("t0_confidence") is not None
+            and notes.get("t0_uncertainty_s") is not None
+            and (float(notes["t0_confidence"]) < 0.55 or float(notes["t0_uncertainty_s"]) > 1.2)
+        ),
+    )
 
     return {
         "jump": jump_dict,
@@ -451,4 +583,102 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
         "tips": tips,
         "quality_flags": quality_flags,
         "chart_data": chart_data,
+    }
+
+
+def _build_forward_track_from_samples(samples: list[Any]) -> dict[str, Any]:
+    if not samples:
+        return {
+            "forward_m": [],
+            "backtrack_m": [],
+            "summary": {"available": False},
+        }
+
+    t: list[float] = []
+    vn: list[float] = []
+    ve: list[float] = []
+    for row in samples:
+        t.append(float(row["t_rel_s"]))
+        vn.append(float(row["velN_mps"]))
+        ve.append(float(row["velE_mps"]))
+
+    if len(t) < 2:
+        return {
+            "forward_m": [0.0 for _ in t],
+            "backtrack_m": [0.0 for _ in t],
+            "summary": {"available": False},
+        }
+
+    ref_indices = [i for i, ts in enumerate(t) if 1.0 <= ts <= 8.0]
+    if len(ref_indices) < 3:
+        ref_indices = [i for i, ts in enumerate(t) if 0.0 <= ts <= 12.0]
+    if len(ref_indices) < 3:
+        ref_indices = list(range(min(20, len(t))))
+
+    ref_vn = [vn[i] for i in ref_indices]
+    ref_ve = [ve[i] for i in ref_indices]
+    axis_n = float(median(ref_vn)) if ref_vn else 0.0
+    axis_e = float(median(ref_ve)) if ref_ve else 0.0
+    axis_norm = math.hypot(axis_n, axis_e)
+    if axis_norm < 1e-6:
+        speeds = [math.hypot(vn[i], ve[i]) for i in range(len(t))]
+        best_idx = int(max(range(len(speeds)), key=lambda i: speeds[i]))
+        axis_n = float(vn[best_idx])
+        axis_e = float(ve[best_idx])
+        axis_norm = math.hypot(axis_n, axis_e)
+    if axis_norm < 1e-6:
+        return {
+            "forward_m": [0.0 for _ in t],
+            "backtrack_m": [0.0 for _ in t],
+            "summary": {"available": False},
+        }
+
+    unit_n = axis_n / axis_norm
+    unit_e = axis_e / axis_norm
+    forward_v = [vn[i] * unit_n + ve[i] * unit_e for i in range(len(t))]
+
+    forward_m: list[float] = [0.0]
+    for i in range(1, len(t)):
+        dt = float(max(0.0, t[i] - t[i - 1]))
+        seg = 0.5 * (forward_v[i - 1] + forward_v[i]) * dt
+        forward_m.append(float(forward_m[-1] + seg))
+
+    running_max: list[float] = []
+    backtrack_m: list[float] = []
+    cur_max = float("-inf")
+    for value in forward_m:
+        cur_max = max(cur_max, float(value))
+        running_max.append(cur_max)
+        backtrack_m.append(float(cur_max - float(value)))
+
+    max_forward = float(max(forward_m)) if forward_m else 0.0
+    max_backtrack = float(max(backtrack_m)) if backtrack_m else 0.0
+    backtrack_ratio_pct = float((max_backtrack / max(max_forward, 1e-6)) * 100.0) if max_forward > 0 else 0.0
+    threshold = max(8.0, 0.08 * max_forward)
+    drift_start_s = None
+    for i in range(len(t)):
+        if t[i] < 8.0:
+            continue
+        if backtrack_m[i] >= threshold:
+            drift_start_s = float(t[i])
+            break
+
+    label = "stabil"
+    if max_backtrack >= 28.0 and backtrack_ratio_pct >= 12.0:
+        label = "negativ"
+    elif max_backtrack >= 14.0 and backtrack_ratio_pct >= 7.0:
+        label = "leicht_negativ"
+
+    summary = {
+        "available": True,
+        "max_forward_m": round(max_forward, 2),
+        "max_backtrack_m": round(max_backtrack, 2),
+        "backtrack_ratio_pct": round(backtrack_ratio_pct, 2),
+        "drift_start_s": None if drift_start_s is None else round(drift_start_s, 2),
+        "label": label,
+    }
+    return {
+        "forward_m": [round(float(x), 3) for x in forward_m],
+        "backtrack_m": [round(float(x), 3) for x in backtrack_m],
+        "summary": summary,
     }

@@ -13,6 +13,7 @@
     {% endif %}
 
     <form class="grid-form" method="post" action="/analyze" enctype="multipart/form-data">
+        <input type="hidden" name="view_mode" value="{{ view_mode or 'expert' }}">
         <label>
             <span>Springername</span>
             <input type="text" name="jumper_name" placeholder="z. B. Marlene" required>
@@ -45,14 +46,13 @@
                 <th>t0 UTC</th>
                 <th>3s Max (km/h)</th>
                 <th>Rule Score (km/h)</th>
-                <th>Qualitaet</th>
                 <th>Detail</th>
             </tr>
             </thead>
             <tbody>
             {% for jump in recent_jumps %}
             <tr>
-                <td><a href="/jumpers/{{ jump.jumper_name | urlencode }}">{{ jump.jumper_name }}</a></td>
+                <td><a href="/jumpers/{{ jump.jumper_name | urlencode }}?view={{ view_mode or 'expert' }}">{{ jump.jumper_name }}</a></td>
                 <td>{{ jump.file_name }}</td>
                 <td>{{ jump.t0_utc }}</td>
                 <td>{{ "%.2f"|format(jump.best_3s_vVert_kmh) }}</td>
@@ -63,8 +63,7 @@
                         -
                     {% endif %}
                 </td>
-                <td>{{ "%.1f"|format(jump.quality_score) }}</td>
-                <td><a href="/jumps/{{ jump.jump_id }}">Report</a></td>
+                <td><a href="/jumps/{{ jump.jump_id }}?view={{ view_mode or 'expert' }}">Report</a></td>
             </tr>
             {% endfor %}
             </tbody>
@@ -76,16 +75,76 @@
 </section>
 
 <section class="panel">
-    <h2>Springer</h2>
+    <div class="panel-head">
+        <h2>Springer</h2>
+        <div class="actions">
+            <a class="btn {% if (view_mode or 'expert') == 'simple' %}secondary{% endif %}" href="/?view=expert">Experten-Ansicht</a>
+            <a class="btn {% if (view_mode or 'expert') == 'expert' %}secondary{% endif %}" href="/?view=simple">Einfache Ansicht</a>
+        </div>
+    </div>
     {% if jumpers %}
     <div class="chips">
         {% for jumper in jumpers %}
-        <a class="chip" href="/jumpers/{{ jumper | urlencode }}">{{ jumper }}</a>
+        <a class="chip" href="/jumpers/{{ jumper | urlencode }}?view={{ view_mode or 'expert' }}">{{ jumper }}</a>
         {% endfor %}
     </div>
+    {% if jumper_overview %}
+    <div class="table-wrap">
+        {% if (view_mode or 'expert') == 'simple' %}
+        <table>
+            <thead>
+            <tr>
+                <th>Springer</th>
+                <th>Form</th>
+                <th>Hauptfokus</th>
+                <th>Letzter Sprung</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for row in jumper_overview %}
+            <tr>
+                <td><a href="/jumpers/{{ row.jumper_name | urlencode }}?view={{ view_mode or 'expert' }}">{{ row.jumper_name }}</a></td>
+                <td>
+                    {{ row.simple_status }}<br>
+                    <span class="muted">{{ row.jump_count }} Spruenge</span>
+                </td>
+                <td>{{ row.focus_short }}</td>
+                <td>{{ row.latest_t0_utc or "-" }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <table>
+            <thead>
+            <tr>
+                <th>Springer</th>
+                <th>Datenbasis</th>
+                <th>Stabil gut bei</th>
+                <th>Wird oft unruhig bei</th>
+                <th>Letzter Sprung</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for row in jumper_overview %}
+            <tr>
+                <td><a href="/jumpers/{{ row.jumper_name | urlencode }}?view={{ view_mode or 'expert' }}">{{ row.jumper_name }}</a></td>
+                <td>
+                    {{ row.jump_count }} Spruenge<br>
+                    <span class="muted">stabil {{ row.stable_count }}, unruhig {{ row.unstable_count }}</span>
+                </td>
+                <td>{{ row.stable_short }}</td>
+                <td>{{ row.unstable_short }}</td>
+                <td>{{ row.latest_t0_utc or "-" }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+    {% endif %}
     {% else %}
     <p class="muted">Noch keine Springer vorhanden.</p>
     {% endif %}
 </section>
 {% endblock %}
-

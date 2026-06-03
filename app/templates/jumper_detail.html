@@ -4,23 +4,183 @@
 <section class="panel">
     <div class="panel-head">
         <h1>Springer: {{ jumper_name }}</h1>
-        <a class="btn secondary" href="/">Zurueck</a>
+        <div class="actions">
+            <a class="btn {% if (view_mode or 'expert') == 'simple' %}secondary{% endif %}" href="/jumpers/{{ jumper_name | urlencode }}?view=expert">Experten-Ansicht</a>
+            <a class="btn {% if (view_mode or 'expert') == 'expert' %}secondary{% endif %}" href="/jumpers/{{ jumper_name | urlencode }}?view=simple">Einfache Ansicht</a>
+            <a class="btn secondary" href="/?view={{ view_mode or 'expert' }}">Zurueck</a>
+        </div>
     </div>
+
+    {% if jumper_summary and jumper_summary.available %}
+    {% if (view_mode or 'expert') == 'simple' %}
+    <div class="score-grid vertical-grid">
+        <div class="score-box">
+            <span class="k">Gesamtbild</span>
+            <p>
+                {{ jumper_summary.jump_count }} Spruenge ausgewertet.<br>
+                Bester Sprung:
+                {% if jumper_summary.best_speed_kmh is not none %}
+                    {{ "%.2f"|format(jumper_summary.best_speed_kmh) }} km/h
+                {% else %}
+                    -
+                {% endif %}
+                ({{ jumper_summary.best_file_name or "-" }}).
+            </p>
+            <p>{{ jumper_summary.trend_summary }}</p>
+        </div>
+        <div class="score-box">
+            <span class="k">Was wurde besser?</span>
+            <ul class="tips compact">
+                {% if jumper_summary.improved_points %}
+                    {% for item in jumper_summary.improved_points[:2] %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                {% else %}
+                    <li>Aktuell keine klare Verbesserung sichtbar.</li>
+                {% endif %}
+            </ul>
+        </div>
+        <div class="score-box">
+            <span class="k">Wichtigster Fokus</span>
+            <ul class="tips compact">
+                {% if jumper_summary.focus_actions %}
+                    {% for item in jumper_summary.focus_actions[:3] %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                {% else %}
+                    <li>Noch kein klarer Schwerpunkt.</li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+    {% else %}
+    <div class="score-grid vertical-grid">
+        <div class="score-box">
+            <span class="k">Gesamtbild</span>
+            <p>
+                Datenbasis: {{ jumper_summary.jump_count }} Spruenge.<br>
+                Schnellster Sprung:
+                {% if jumper_summary.best_speed_kmh is not none %}
+                    {{ "%.2f"|format(jumper_summary.best_speed_kmh) }} km/h
+                {% else %}
+                    -
+                {% endif %}
+                ({{ jumper_summary.best_file_name or "-" }}, {{ jumper_summary.best_t0_utc or "-" }}).
+            </p>
+            <p>{{ jumper_summary.trend_summary }}</p>
+        </div>
+        <div class="score-box">
+            <span class="k">Was wurde besser?</span>
+            <ul class="tips compact">
+                {% if jumper_summary.improved_points %}
+                    {% for item in jumper_summary.improved_points %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                {% else %}
+                    <li>Keine klare Verbesserung im Verlauf erkennbar.</li>
+                {% endif %}
+            </ul>
+        </div>
+        <div class="score-box">
+            <span class="k">Was wurde schlechter?</span>
+            <ul class="tips compact">
+                {% if jumper_summary.worse_points %}
+                    {% for item in jumper_summary.worse_points %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                {% else %}
+                    <li>Keine klare Verschlechterung im Verlauf erkennbar.</li>
+                {% endif %}
+            </ul>
+        </div>
+        <div class="score-box">
+            <span class="k">Frueher besser / jetzt Fokus</span>
+            <ul class="tips compact">
+                {% if jumper_summary.earlier_better_points %}
+                    {% for item in jumper_summary.earlier_better_points %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                {% endif %}
+                {% for item in jumper_summary.focus_actions %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% if jumper_summary.stability_reference and jumper_summary.stability_reference.available %}
+        <div class="score-box">
+            <span class="k">Persoenliche Stabilitaets-Referenz</span>
+            <p class="muted">Aus {{ jumper_summary.stability_reference.stable_count }} stabilen und {{ jumper_summary.stability_reference.unstable_count }} unruhigen Spruengen.</p>
+            <ul class="tips compact">
+                {% for item in jumper_summary.stability_reference.stable_lines %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        <div class="score-box">
+            <span class="k">Wann wird es unruhig?</span>
+            <ul class="tips compact">
+                {% for item in jumper_summary.stability_reference.unstable_lines %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if jumper_summary.trend_rows %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Kriterium</th>
+                <th>Frueher (Durchschnitt)</th>
+                <th>Zuletzt (Durchschnitt)</th>
+                <th>Delta</th>
+                <th>Verlauf</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for row in jumper_summary.trend_rows %}
+            <tr>
+                <td>{{ row.name }}</td>
+                <td>{{ "%.2f"|format(row.early_value) }} {{ row.unit }}</td>
+                <td>{{ "%.2f"|format(row.recent_value) }} {{ row.unit }}</td>
+                <td>
+                    {% if row.delta > 0 %}+{% endif %}{{ "%.2f"|format(row.delta) }} {{ row.unit }}
+                </td>
+                <td>{{ row.status|capitalize }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+    {% endif %}
+    {% endif %}
 
     <div class="table-wrap">
         <table>
             <thead>
+            {% if (view_mode or 'expert') == 'simple' %}
+            <tr>
+                <th>Markierung</th>
+                <th>Datei</th>
+                <th>Datum</th>
+                <th>Speed</th>
+                <th>Detail</th>
+            </tr>
+            {% else %}
             <tr>
                 <th>Markierung</th>
                 <th>Datei</th>
                 <th>t0 UTC</th>
                 <th>3s Max (km/h)</th>
                 <th>Rule Score (km/h)</th>
-                <th>Qualitaet</th>
                 <th>Samplingrate</th>
                 <th>Exit valid</th>
                 <th>Detail</th>
             </tr>
+            {% endif %}
             </thead>
             <tbody>
             {% for jump in jumps %}
@@ -34,12 +194,16 @@
                 </td>
                 <td>{{ jump.file_name }}</td>
                 <td>{{ jump.t0_utc }}</td>
+                {% if (view_mode or 'expert') == 'simple' %}
+                <td>{{ "%.2f"|format(jump.best_3s_vVert_kmh) }} km/h</td>
+                <td><a href="/jumps/{{ jump.jump_id }}?view={{ view_mode or 'expert' }}">Report</a></td>
+                {% else %}
                 <td>{{ "%.2f"|format(jump.best_3s_vVert_kmh) }}</td>
                 <td>{{ "%.2f"|format(jump.rule_based_3s_score) if jump.rule_based_3s_score is not none else "-" }}</td>
-                <td>{{ "%.1f"|format(jump.quality_score) }}</td>
                 <td>{{ jump.sample_rate_hz }} Hz</td>
                 <td>{{ "Ja" if jump.is_valid_altitude else "Nein" }}</td>
-                <td><a href="/jumps/{{ jump.jump_id }}">Report</a></td>
+                <td><a href="/jumps/{{ jump.jump_id }}?view={{ view_mode or 'expert' }}">Report</a></td>
+                {% endif %}
             </tr>
             {% endfor %}
             </tbody>
@@ -50,6 +214,7 @@
 <section class="panel">
     <h2>Spruenge vergleichen</h2>
     <form class="compare-form" method="get" action="/jumpers/{{ jumper_name | urlencode }}/compare">
+        <input type="hidden" name="view" value="{{ view_mode or 'expert' }}">
         <label>
             <span>Sprung A (Referenz)</span>
             <select name="left_jump_id" required>
@@ -82,10 +247,53 @@
 
 {% if compare_result %}
 <section class="panel">
+    <h2>Vergleich im Klartext</h2>
+    <p class="muted">Beim Vergleich wird der schnellere Sprung automatisch als Referenz gesetzt und die Auswertung neu berechnet.</p>
+    {% for line in compare_result.brief.basis_lines %}
+    <p class="muted">{{ line }}</p>
+    {% endfor %}
+    <div class="score-grid">
+        <div class="score-box">
+            <span class="k">Kurzfazit</span>
+            <p>{{ compare_result.brief.summary }}</p>
+            <ul class="tips compact">
+                {% for item in compare_result.brief.key_facts %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        <div class="score-box">
+            <span class="k">Hauptprobleme im Vergleich</span>
+            <ul class="tips">
+                {% for item in compare_result.brief.main_issues %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        <div class="score-box">
+            <span class="k">Was war bei welchem Sprung besser?</span>
+            <ul class="tips">
+                {% for item in compare_result.brief.strengths %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        <div class="score-box">
+            <span class="k">Konkrete Trainings-Tipps</span>
+            <ul class="tips">
+                {% for item in compare_result.brief.actions %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</section>
+
+<section class="panel">
     <h2>Vergleichsergebnis</h2>
     <p class="muted">
-        A: {{ compare_result.left.file_name }} ({{ compare_result.left.t0_utc }})<br>
-        B: {{ compare_result.right.file_name }} ({{ compare_result.right.t0_utc }})
+        Referenz (schneller): {{ compare_result.reference.file_name }} ({{ compare_result.reference.t0_utc }})<br>
+        Vergleich: {{ compare_result.comparison.file_name }} ({{ compare_result.comparison.t0_utc }})
     </p>
 
     <div class="table-wrap">
@@ -93,9 +301,9 @@
             <thead>
             <tr>
                 <th>Kennzahl</th>
-                <th>Sprung A</th>
-                <th>Sprung B</th>
-                <th>Delta (B-A)</th>
+                <th>Referenz</th>
+                <th>Vergleich</th>
+                <th>Delta (Vergleich - Referenz)</th>
                 <th>Bewertung</th>
             </tr>
             </thead>
@@ -174,8 +382,30 @@
 </section>
 
 <section class="panel">
+    <h2>Was war bei welchem Sprung besser?</h2>
+    <div class="score-grid">
+        <div class="score-box">
+            <span class="k">Staerken der Referenz</span>
+            <ul class="tips">
+                {% for insight in compare_result.reference_strengths %}
+                <li>{{ insight }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        <div class="score-box">
+            <span class="k">Staerken des Vergleichssprungs</span>
+            <ul class="tips">
+                {% for insight in compare_result.comparison_strengths %}
+                <li>{{ insight }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</section>
+
+<section class="panel">
     <h2>Kurvenvergleich</h2>
-    <div class="charts-grid">
+    <div class="charts-grid charts-grid-compare">
         <div id="chart-compare-vvert" class="chart"></div>
         <div id="chart-compare-vhor" class="chart"></div>
         <div id="chart-compare-angle" class="chart"></div>
@@ -226,30 +456,53 @@ Plotly.newPlot("chart-trend", [
 const compareCharts = {{ compare_chart_json | safe }};
 const left = compareCharts.left;
 const right = compareCharts.right;
+const compareXStart = Number(compareCharts.x_axis_start_s ?? 0);
+const compareXEnd = Number(compareCharts.x_axis_end_s ?? Math.max(
+    ...(left.time_s || [0]),
+    ...(right.time_s || [0])
+));
 const compareLayoutBase = {
-    margin: {l: 48, r: 20, t: 26, b: 42},
+    margin: {l: 56, r: 20, t: 52, b: 54},
     paper_bgcolor: "#11161c",
     plot_bgcolor: "#11161c",
-    font: {color: "#dce3ea", size: 12},
-    xaxis: {title: "t_rel [s]", gridcolor: "#1f2933"},
-    yaxis: {gridcolor: "#1f2933"}
+    font: {color: "#dce3ea", size: 13},
+    xaxis: {
+        title: {text: "t_rel [s]", standoff: 12},
+        gridcolor: "#1f2933",
+        range: [compareXStart, compareXEnd],
+        tickfont: {size: 12},
+        automargin: true
+    },
+    yaxis: {gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true},
+    legend: {orientation: "h", yanchor: "bottom", y: 1.02, xanchor: "left", x: 0, font: {size: 12}}
 };
 
 Plotly.newPlot("chart-compare-vvert", [
-    {x: left.time_s, y: left.vVert_kmh, type: "scatter", mode: "lines", name: "A: " + left.label, line: {width: 2, color: "#4aa3ff"}},
-    {x: right.time_s, y: right.vVert_kmh, type: "scatter", mode: "lines", name: "B: " + right.label, line: {width: 2, color: "#2ecc71"}}
-], {...compareLayoutBase, title: "vVert Vergleich", yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
+    {x: left.time_s, y: left.vVert_kmh, type: "scatter", mode: "lines", name: "Referenz", line: {width: 2, color: "#4aa3ff"}},
+    {x: right.time_s, y: right.vVert_kmh, type: "scatter", mode: "lines", name: "Vergleich", line: {width: 2, color: "#2ecc71"}}
+], {
+    ...compareLayoutBase,
+    title: "vVert Vergleich",
+    yaxis: {title: {text: "km/h", standoff: 10}, gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true}
+}, {displayModeBar: false, responsive: true});
 
 Plotly.newPlot("chart-compare-vhor", [
-    {x: left.time_s, y: left.vHor_kmh, type: "scatter", mode: "lines", name: "A: " + left.label, line: {width: 2, color: "#4aa3ff"}},
-    {x: right.time_s, y: right.vHor_kmh, type: "scatter", mode: "lines", name: "B: " + right.label, line: {width: 2, color: "#2ecc71"}}
-], {...compareLayoutBase, title: "vHor Vergleich", yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
+    {x: left.time_s, y: left.vHor_kmh, type: "scatter", mode: "lines", name: "Referenz", line: {width: 2, color: "#4aa3ff"}},
+    {x: right.time_s, y: right.vHor_kmh, type: "scatter", mode: "lines", name: "Vergleich", line: {width: 2, color: "#2ecc71"}}
+], {
+    ...compareLayoutBase,
+    title: "vHor Vergleich",
+    yaxis: {title: {text: "km/h", standoff: 10}, gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true}
+}, {displayModeBar: false, responsive: true});
 
 Plotly.newPlot("chart-compare-angle", [
-    {x: left.time_s, y: left.angle_deg, type: "scatter", mode: "lines", name: "A: " + left.label, line: {width: 2, color: "#4aa3ff"}},
-    {x: right.time_s, y: right.angle_deg, type: "scatter", mode: "lines", name: "B: " + right.label, line: {width: 2, color: "#2ecc71"}}
-], {...compareLayoutBase, title: "Winkel Vergleich", yaxis: {title: "deg", gridcolor: "#1f2933"}}, {displayModeBar: false});
+    {x: left.time_s, y: left.angle_deg, type: "scatter", mode: "lines", name: "Referenz", line: {width: 2, color: "#4aa3ff"}},
+    {x: right.time_s, y: right.angle_deg, type: "scatter", mode: "lines", name: "Vergleich", line: {width: 2, color: "#2ecc71"}}
+], {
+    ...compareLayoutBase,
+    title: "Winkel Vergleich",
+    yaxis: {title: {text: "deg", standoff: 10}, gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true}
+}, {displayModeBar: false, responsive: true});
 {% endif %}
 </script>
 {% endblock %}
-

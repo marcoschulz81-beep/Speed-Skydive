@@ -1,16 +1,24 @@
 {% extends "base.html" %}
 {% block title %}Sprungreport | Speed-Skydive Analyzer{% endblock %}
 {% block content %}
+{% set vm = view_mode if view_mode in ["simple", "expert"] else "expert" %}
 <section class="panel">
     <div class="panel-head">
         <h1>Sprungreport</h1>
         <div class="actions">
-            <a class="btn secondary" href="/jumps/{{ jump_id }}/compare?preset=best">Mit bestem Sprung vergleichen</a>
-            <form method="post" action="/jumps/{{ jump_id }}/reprocess-t0" class="inline-form">
+            <a class="btn {% if vm == 'simple' %}secondary{% endif %}" href="/jumps/{{ jump_id }}?view=expert">Experten-Ansicht</a>
+            <a class="btn {% if vm == 'expert' %}secondary{% endif %}" href="/jumps/{{ jump_id }}?view=simple">Einfache Ansicht</a>
+            <a class="btn secondary" href="/jumps/{{ jump_id }}/compare?preset=best&view={{ vm }}">Mit bestem Sprung vergleichen</a>
+            <form method="post" action="/jumps/{{ jump_id }}/reprocess-t0?view={{ vm }}" class="inline-form">
                 <button type="submit" class="btn secondary">Absprung neu erkennen</button>
             </form>
-            <a class="btn" href="/jumps/{{ jump_id }}/report.pdf">PDF Export</a>
-            <a class="btn secondary" href="/">Neuer Upload</a>
+            {% if quality_issue_lines or report.notes.analysis_blocked %}
+            <form method="post" action="/jumps/{{ jump_id }}/delete?view={{ vm }}" class="inline-form" onsubmit="return confirm('Datensatz wirklich loeschen? Diese Aktion kann nicht rueckgaengig gemacht werden.');">
+                <button type="submit" class="btn danger">Datensatz loeschen</button>
+            </form>
+            {% endif %}
+            <a class="btn" href="/jumps/{{ jump_id }}/report.pdf?view={{ vm }}">PDF Export</a>
+            <a class="btn secondary" href="/?view={{ vm }}">Neuer Upload</a>
         </div>
     </div>
     {% if message %}
@@ -19,32 +27,50 @@
     {% if error %}
     <div class="flash error">{{ error }}</div>
     {% endif %}
+    {% if quality_issue_lines %}
+    <div class="flash warn">
+        <strong>Datenhinweis:</strong>
+        <ul class="tips compact">
+            {% for line in quality_issue_lines %}
+            <li>{{ line }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
 
     <div class="meta-grid">
         <div><span class="label">Springer</span><span>{{ report.jump.jumper_name }}</span></div>
         <div><span class="label">Datei</span><span>{{ report.jump.file_name }}</span></div>
         <div><span class="label">t0 UTC</span><span>{{ report.jump.t0_utc }}</span></div>
+        {% if vm == "expert" %}
         <div><span class="label">Samplingrate</span><span>{{ report.jump.sample_rate_hz }} Hz</span></div>
         <div><span class="label">Exit MSL</span><span>{{ report.jump.exit_altitude_msl_m }} m</span></div>
         <div><span class="label">Exit AGL</span><span>{{ report.jump.exit_altitude_agl_m }} m</span></div>
         <div><span class="label">Gueltige Exit-Hoehe</span><span>{{ "Ja" if report.jump.is_valid_altitude else "Nein" }}</span></div>
-        <div><span class="label">Qualitaet</span><span>{{ report.jump.quality_score }}</span></div>
+        {% endif %}
     </div>
 </section>
 
 <section class="panel">
-    <h2>Speed Score</h2>
-    <div class="score-grid">
+    <h2>{% if vm == "simple" %}Speed Uebersicht{% else %}Speed Score{% endif %}</h2>
+    <div class="score-grid vertical-grid">
         <div class="score-box">
             <span class="k">Training 3s Max</span>
             <span class="v">{{ report.metrics.best_3s_vVert_kmh }} km/h</span>
+            {% if vm == "expert" %}
             <span class="m">{{ report.metrics.best_3s_vVert_mps }} m/s</span>
+            {% endif %}
         </div>
         <div class="score-box">
             <span class="k">Bestes Fenster</span>
             <span class="v">+{{ report.metrics.best_3s_start_s }}s bis +{{ report.metrics.best_3s_end_s }}s</span>
+            {% if vm == "expert" %}
             <span class="m">Avg vHor {{ report.metrics.best_3s_vHor_kmh }} km/h, Avg Winkel {{ report.metrics.best_3s_angle_deg }}&deg;</span>
+            {% else %}
+            <span class="m">Hier war deine schnellste Phase.</span>
+            {% endif %}
         </div>
+        {% if vm == "expert" %}
         <div class="score-box">
             <span class="k">Regelnaher 3s Score</span>
             <span class="v">
@@ -58,9 +84,147 @@
                 Window: {{ report.metrics.performance_window_start_s }}s bis {{ report.metrics.performance_window_end_s }}s
             </span>
         </div>
+        {% endif %}
     </div>
 </section>
 
+<section class="panel">
+    <h2>Sprungbewertung</h2>
+    {% if vm == "simple" %}
+        {% if jump_brief_simple.basis_line_ui %}
+        <p class="muted">{{ jump_brief_simple.basis_line_ui | safe }}</p>
+        {% endif %}
+        <div class="score-grid vertical-grid">
+            <div class="score-box">
+                <span class="k">Kurzfazit</span>
+                <p>{{ jump_brief_simple.summary_ui | safe }}</p>
+            </div>
+            <div class="score-box">
+                <span class="k">Wichtigste Probleme</span>
+                <ul class="tips">
+                    {% for item in jump_brief_simple.main_issues_ui[:2] %}
+                    <li>{{ item | safe }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            <div class="score-box">
+                <span class="k">Was war gut?</span>
+                <ul class="tips">
+                    {% for item in jump_brief_simple.strengths_ui[:2] %}
+                    <li>{{ item | safe }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            <div class="score-box">
+                <span class="k">Naechste Schritte</span>
+                <ol class="tips">
+                    {% for item in jump_brief_simple.actions_ui[:3] %}
+                    <li>{{ item | safe }}</li>
+                    {% endfor %}
+                </ol>
+            </div>
+        </div>
+    {% else %}
+        {% for line in jump_brief.basis_lines %}
+        <p class="muted">{{ line }}</p>
+        {% endfor %}
+        <div class="score-grid vertical-grid">
+            <div class="score-box">
+                <span class="k">Kurzfazit</span>
+                <p>{{ jump_brief.summary }}</p>
+                <ul class="tips compact">
+                    {% for item in jump_brief.key_facts %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            <div class="score-box">
+                <span class="k">Hauptprobleme</span>
+                <ul class="tips">
+                    {% for item in jump_brief.main_issues %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            <div class="score-box">
+                <span class="k">Was war gut?</span>
+                <ul class="tips">
+                    {% for item in jump_brief.strengths %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            <div class="score-box">
+                <span class="k">Konkrete Trainings-Tipps</span>
+                <ul class="tips">
+                    {% for item in jump_brief.actions %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    {% endif %}
+</section>
+
+{% if vm == "expert" and tip_follow_up and tip_follow_up.available %}
+<section class="panel">
+    <h2>Tipp-Umsetzung Seit Letztem Sprung</h2>
+    <p class="muted">{{ tip_follow_up.summary }}</p>
+    <p class="muted">Referenz: {{ tip_follow_up.previous_file_name }} ({{ tip_follow_up.previous_t0_utc }}).</p>
+    <div class="scorecard-stack">
+        {% for item in tip_follow_up.entries %}
+        <article class="scorecard-item">
+            <div class="scorecard-head">
+                <h3>{{ item.phase }}</h3>
+                <div class="scorecard-meta">
+                    <span class="chip">{{ item.status }}</span>
+                </div>
+            </div>
+            <ul class="tips compact">
+                <li>{{ item.detail }}</li>
+            </ul>
+        </article>
+        {% endfor %}
+    </div>
+</section>
+{% elif vm == "expert" and tip_follow_up and tip_follow_up.reason %}
+<section class="panel">
+    <h2>Tipp-Umsetzung Seit Letztem Sprung</h2>
+    <p class="muted">{{ tip_follow_up.reason }}</p>
+</section>
+{% endif %}
+
+{% if vm == "expert" %}
+<section class="panel">
+    <h2>Potenzial-Schaetzung (Test)</h2>
+    {% if speed_potential.available %}
+    <div class="score-grid vertical-grid">
+        <div class="score-box">
+            <span class="k">Aktuell / moeglich</span>
+            <span class="v">{{ "%.2f"|format(speed_potential.baseline_kmh) }} -> {{ "%.2f"|format(speed_potential.potential_kmh) }} km/h</span>
+            <span class="m">Bandbreite: {{ "%.2f"|format(speed_potential.potential_low_kmh) }} bis {{ "%.2f"|format(speed_potential.potential_high_kmh) }} km/h</span>
+        </div>
+        <div class="score-box">
+            <span class="k">Erwarteter Zugewinn</span>
+            <span class="v">+{{ "%.2f"|format(speed_potential.expected_gain_kmh) }} km/h</span>
+            <span class="m">Confidence: {{ speed_potential.confidence }}, RMSE {{ "%.2f"|format(speed_potential.rmse_kmh) }} km/h, n={{ speed_potential.sample_size }}</span>
+        </div>
+        <div class="score-box">
+            <span class="k">Groesste Hebel</span>
+            <ul class="tips">
+                {% for item in speed_potential.lever_contributions %}
+                <li>{{ item.label }}: +{{ "%.2f"|format(item.delta_kmh) }} km/h</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    {% else %}
+    <p class="muted">{{ speed_potential.reason }}</p>
+    {% endif %}
+</section>
+{% endif %}
+
+{% if vm == "expert" %}
 <section class="panel">
     <h2>Fixpunkte (+10/+15/+20/+24/+28s)</h2>
     <div class="table-wrap">
@@ -88,9 +252,14 @@
         </table>
     </div>
 </section>
+{% endif %}
 
+{% if vm == "expert" %}
 <section class="panel">
     <h2>Phasen</h2>
+    {% if best_history_reference %}
+    <p class="muted">Referenz in Klammern: schnellster gespeicherter Sprung dieses Springers ({{ best_history_reference.file_name }}, {{ best_history_reference.t0_utc }}).</p>
+    {% endif %}
     <div class="table-wrap">
         <table>
             <thead>
@@ -100,63 +269,72 @@
                 <th>Avg vVert</th>
                 <th>Avg vHor</th>
                 <th>Avg Winkel</th>
-                <th>Kommentar</th>
             </tr>
             </thead>
             <tbody>
-            {% for phase in report.phases %}
+            {% for phase in phase_rows %}
             <tr>
                 <td>{{ phase.name }}</td>
                 <td>+{{ phase.start_s }}s bis +{{ phase.end_s }}s</td>
-                <td>{{ phase.avg_vVert_kmh if phase.avg_vVert_kmh is not none else "-" }}</td>
-                <td>{{ phase.avg_vHor_kmh if phase.avg_vHor_kmh is not none else "-" }}</td>
-                <td>{{ phase.avg_angle_deg if phase.avg_angle_deg is not none else "-" }}</td>
-                <td>{{ phase.comment }}</td>
+                <td>{{ phase.avg_vVert_display if phase.avg_vVert_display is defined else (phase.avg_vVert_kmh if phase.avg_vVert_kmh is not none else "-") }}</td>
+                <td>{{ phase.avg_vHor_display if phase.avg_vHor_display is defined else (phase.avg_vHor_kmh if phase.avg_vHor_kmh is not none else "-") }}</td>
+                <td>{{ phase.avg_angle_display if phase.avg_angle_display is defined else (phase.avg_angle_deg if phase.avg_angle_deg is not none else "-") }}</td>
             </tr>
             {% endfor %}
             </tbody>
         </table>
     </div>
 </section>
+{% endif %}
 
+{% if vm == "expert" %}
 <section class="panel">
     <h2>Scorecard</h2>
-    <div class="table-wrap">
-        <table>
-            <tbody>
-            {% for k, v in report.scorecard.items() %}
-            <tr>
-                <th>{{ k }}</th>
-                <td>{{ v }}</td>
-            </tr>
-            {% endfor %}
-            </tbody>
-        </table>
+    <div class="scorecard-stack">
+        {% for row in scorecard_rows %}
+        <article class="scorecard-item">
+            <div class="scorecard-head">
+                <h3>{{ row.name }}</h3>
+                <div class="scorecard-meta">
+                    <span class="chip">{{ row.status }}</span>
+                    <span class="chip">Score {{ row.score }}</span>
+                </div>
+            </div>
+            <ul class="tips compact">
+                {% for line in row.reason_lines %}
+                <li>{{ line }}</li>
+                {% endfor %}
+            </ul>
+            {% if row.benchmark_lines %}
+            <ul class="tips compact">
+                {% for line in row.benchmark_lines %}
+                <li>{{ line }}</li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+        </article>
+        {% endfor %}
     </div>
 </section>
-
-<section class="panel">
-    <h2>Konkrete Tipps</h2>
-    <ul class="tips">
-        {% for tip in report.tips %}
-        <li>{{ tip }}</li>
-        {% endfor %}
-    </ul>
-</section>
+{% endif %}
 
 <section class="panel">
     <h2>Kurvenanalyse</h2>
     <div class="charts-grid">
+        <div id="chart-forward-track" class="chart"></div>
         <div id="chart-vvert" class="chart"></div>
         <div id="chart-vhor" class="chart"></div>
         <div id="chart-angle" class="chart"></div>
+        {% if vm == "expert" %}
         <div id="chart-height" class="chart"></div>
         <div id="chart-acc" class="chart"></div>
         <div id="chart-vvert-vhor" class="chart"></div>
         <div id="chart-angle-vvert" class="chart"></div>
+        {% endif %}
     </div>
 </section>
 
+{% if vm == "expert" %}
 <section class="panel">
     <h2>Diagnose</h2>
     <p><strong>Kurvenfenster:</strong> +{{ report.notes.curve_window_start_s }}s bis +{{ report.notes.curve_window_end_s }}s</p>
@@ -164,11 +342,15 @@
     <p><strong>Performance-Window Start:</strong> {{ report.notes.pw_start_utc }} (t_rel {{ report.notes.pw_start_s_from_t0 }}s)</p>
     <p><strong>t0-Erkennung:</strong> {{ report.notes.t0_reason }}</p>
     <p><strong>t0 Confidence:</strong> {{ report.notes.t0_confidence }} (Unsicherheit ±{{ report.notes.t0_uncertainty_s }}s)</p>
+    <p><strong>t0 Review noetig:</strong> {{ "Ja" if report.notes.t0_review_required else "Nein" }}</p>
     <p><strong>Hot-Zone:</strong> {{ report.notes.hot_zone_reason }}</p>
     <p><strong>Negativ/Kippen:</strong> {{ report.notes.negative_details }}</p>
     <p><strong>AGL:</strong> {{ report.notes.agl_note }}</p>
-    <p><strong>Qualitaetsflags:</strong> {{ report.quality_flags | join(", ") if report.quality_flags else "-" }}</p>
+    {% if quality_issue_lines %}
+    <p><strong>Datenhinweise:</strong> {{ quality_issue_lines | join(" | ") }}</p>
+    {% endif %}
 </section>
+{% endif %}
 
 <script>
 const chartData = {{ chart_data_json | safe }};
@@ -178,9 +360,22 @@ const metrics = report.metrics || {};
 const curveStart = Number(report.notes?.curve_window_start_s ?? 0);
 const curveEndRaw = Number(report.notes?.curve_window_end_s ?? Math.max(...(chartData.time_s || [0])));
 const curveEnd = Number.isFinite(curveEndRaw) ? curveEndRaw : Math.max(...(chartData.time_s || [0]));
+const decelStartRaw = Number(report.notes?.decel_start_s ?? NaN);
+const decelStart = Number.isFinite(decelStartRaw) && decelStartRaw > 0 ? decelStartRaw : null;
+const xAxisStart = Math.min(0, curveStart);
+const forwardEnd = decelStart === null ? curveEnd : Math.min(curveEnd, decelStart);
 
 function filterChartData(data, startS, endS) {
-    const out = {time_s: [], vVert_kmh: [], vHor_kmh: [], angle_deg: [], hAGL_m: [], accVert_mps2: []};
+    const out = {
+        time_s: [],
+        vVert_kmh: [],
+        vHor_kmh: [],
+        angle_deg: [],
+        hAGL_m: [],
+        accVert_mps2: [],
+        forward_m: [],
+        backtrack_m: []
+    };
     const n = data.time_s.length;
     for (let i = 0; i < n; i++) {
         const t = data.time_s[i];
@@ -191,14 +386,27 @@ function filterChartData(data, startS, endS) {
         out.angle_deg.push(data.angle_deg[i]);
         out.hAGL_m.push(data.hAGL_m[i]);
         out.accVert_mps2.push(data.accVert_mps2[i]);
+        out.forward_m.push(Array.isArray(data.forward_m) ? data.forward_m[i] : null);
+        out.backtrack_m.push(Array.isArray(data.backtrack_m) ? data.backtrack_m[i] : null);
     }
     return out.time_s.length > 0 ? out : data;
 }
 
-const displayData = filterChartData(chartData, curveStart, curveEnd);
+const displayData = filterChartData(chartData, xAxisStart, curveEnd);
+const displayDataForward = filterChartData(chartData, xAxisStart, forwardEnd);
 
 function markerShapes() {
     const shapes = [];
+    shapes.push({
+        type: "line",
+        xref: "x",
+        yref: "paper",
+        x0: 0,
+        x1: 0,
+        y0: 0,
+        y1: 1,
+        line: {color: "#ff6b6b", width: 2, dash: "dash"}
+    });
     if (metrics.best_3s_start_s !== null && metrics.best_3s_end_s !== null) {
         shapes.push({
             type: "rect",
@@ -246,10 +454,66 @@ const baseLayout = {
     paper_bgcolor: "#11161c",
     plot_bgcolor: "#11161c",
     font: {color: "#dce3ea", size: 12},
-    xaxis: {title: "t_rel [s]", gridcolor: "#1f2933", range: [curveStart, curveEnd]},
+    xaxis: {title: "t_rel [s]", gridcolor: "#1f2933", range: [xAxisStart, curveEnd]},
     yaxis: {gridcolor: "#1f2933"},
     shapes: markerShapes()
 };
+
+const hasForwardTrack =
+    Array.isArray(displayDataForward.forward_m) &&
+    displayDataForward.forward_m.length === displayDataForward.time_s.length &&
+    displayDataForward.forward_m.some(v => v !== null && v !== undefined);
+
+if (hasForwardTrack) {
+    const runningMax = [];
+    let currentMax = -Infinity;
+    for (const raw of displayDataForward.forward_m) {
+        const val = Number(raw ?? 0);
+        currentMax = Math.max(currentMax, val);
+        runningMax.push(currentMax);
+    }
+    Plotly.newPlot("chart-forward-track", [
+        {
+            x: displayDataForward.time_s, y: displayDataForward.forward_m, type: "scatter", mode: "lines",
+            name: "Vorwaerts-Strecke", line: {color: "#56cfe1", width: 2}
+        },
+        {
+            x: displayDataForward.time_s, y: runningMax, type: "scatter", mode: "lines",
+            name: "Bestwert-Linie", line: {color: "rgba(255,255,255,0.35)", width: 1, dash: "dot"}
+        },
+        {
+            x: [0], y: [Number(displayDataForward.forward_m[0] ?? 0)], type: "scatter", mode: "markers+text",
+            name: "Absprung",
+            marker: {color: "#ff6b6b", size: 9},
+            text: ["Absprung (t0)"],
+            textposition: "top right",
+            textfont: {color: "#ff6b6b", size: 12}
+        }
+    ], {
+        ...baseLayout,
+        title: "Fluglinie Vorwaerts bis Abbremsbeginn (Absprung markiert)",
+        xaxis: {title: "t_rel [s]", gridcolor: "#1f2933", range: [xAxisStart, forwardEnd]},
+        yaxis: {title: "Vorwaerts-Strecke [m]", gridcolor: "#1f2933"},
+        shapes: markerShapes().concat([
+            {
+                type: "line", xref: "x", yref: "y",
+                x0: xAxisStart, x1: forwardEnd, y0: 0, y1: 0,
+                line: {color: "rgba(255,255,255,0.22)", width: 1, dash: "dash"}
+            }
+        ])
+    }, {displayModeBar: false});
+} else {
+    Plotly.newPlot("chart-forward-track", [], {
+        ...baseLayout,
+        title: "Fluglinie Vorwaerts bis Abbremsbeginn (Absprung markiert)",
+        xaxis: {title: "t_rel [s]", gridcolor: "#1f2933", range: [xAxisStart, forwardEnd]},
+        annotations: [{
+            text: "Keine Vorwaerts-Linie verfuegbar",
+            xref: "paper", yref: "paper", x: 0.5, y: 0.5,
+            showarrow: false, font: {color: "#a9bbcd", size: 13}
+        }]
+    }, {displayModeBar: false});
+}
 
 Plotly.newPlot("chart-vvert", [{
     x: displayData.time_s, y: displayData.vVert_kmh, type: "scatter", mode: "lines", name: "vVert",
@@ -274,6 +538,7 @@ Plotly.newPlot("chart-angle", [{
     ])
 }, {displayModeBar: false});
 
+{% if vm == "expert" %}
 Plotly.newPlot("chart-height", [{
     x: displayData.time_s, y: displayData.hAGL_m, type: "scatter", mode: "lines", name: "hAGL",
     line: {color: "#ff8c66", width: 2}
@@ -309,5 +574,6 @@ Plotly.newPlot("chart-angle-vvert", [{
     xaxis: {title: "Winkel [deg]", gridcolor: "#1f2933"},
     yaxis: {title: "vVert [km/h]", gridcolor: "#1f2933"}
 }, {displayModeBar: false});
+{% endif %}
 </script>
 {% endblock %}

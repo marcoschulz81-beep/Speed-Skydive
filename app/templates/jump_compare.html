@@ -22,7 +22,7 @@
         <h2>Schnellvergleich</h2>
         <a class="btn" href="/jumps/{{ jump_id }}/compare?preset=best">Mit bestem Sprung vergleichen</a>
     </div>
-    <p class="muted">Der Vergleich zeigt immer: Delta = Vergleichssprung - aktueller Sprung.</p>
+    <p class="muted">Der schnellere Sprung wird automatisch als Referenz gesetzt. Delta bedeutet immer: Vergleichssprung minus Referenz.</p>
 </section>
 
 <section class="panel">
@@ -69,19 +69,62 @@
 
 {% if compare_result %}
 <section class="panel">
+    <h2>Vergleich im Klartext</h2>
+    <p class="muted">Beim Vergleich wird der schnellere Sprung automatisch als Referenz gesetzt und die Auswertung neu berechnet.</p>
+    {% for line in compare_result.brief.basis_lines %}
+    <p class="muted">{{ line }}</p>
+    {% endfor %}
+    <div class="score-grid vertical-grid">
+        <div class="score-box">
+            <span class="k">Kurzfazit</span>
+            <p>{{ compare_result.brief.summary }}</p>
+            <ul class="tips compact">
+                {% for item in compare_result.brief.key_facts %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        <div class="score-box">
+            <span class="k">Hauptprobleme im Vergleich</span>
+            <ul class="tips">
+                {% for item in compare_result.brief.main_issues %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        <div class="score-box">
+            <span class="k">Was war bei welchem Sprung besser?</span>
+            <ul class="tips">
+                {% for item in compare_result.brief.strengths %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        <div class="score-box">
+            <span class="k">Konkrete Trainings-Tipps</span>
+            <ul class="tips">
+                {% for item in compare_result.brief.actions %}
+                <li>{{ item }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</section>
+
+<section class="panel">
     <h2>Vergleichsergebnis</h2>
     <p class="muted">
-        Aktuell: {{ compare_result.left.file_name }} ({{ compare_result.left.t0_utc }})<br>
-        Vergleich: {{ compare_result.right.file_name }} ({{ compare_result.right.t0_utc }})
+        Referenz (schneller): {{ compare_result.reference.file_name }} ({{ compare_result.reference.t0_utc }})<br>
+        Vergleich: {{ compare_result.comparison.file_name }} ({{ compare_result.comparison.t0_utc }})
     </p>
     <div class="table-wrap">
         <table>
             <thead>
             <tr>
                 <th>Kennzahl</th>
-                <th>Aktueller Sprung</th>
+                <th>Referenz</th>
                 <th>Vergleichssprung</th>
-                <th>Delta</th>
+                <th>Delta (Vergleich - Referenz)</th>
                 <th>Bewertung</th>
             </tr>
             </thead>
@@ -142,8 +185,30 @@
 </section>
 
 <section class="panel">
+    <h2>Was war bei welchem Sprung besser?</h2>
+    <div class="score-grid">
+        <div class="score-box">
+            <span class="k">Staerken der Referenz</span>
+            <ul class="tips">
+                {% for insight in compare_result.reference_strengths %}
+                <li>{{ insight }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        <div class="score-box">
+            <span class="k">Staerken des Vergleichssprungs</span>
+            <ul class="tips">
+                {% for insight in compare_result.comparison_strengths %}
+                <li>{{ insight }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</section>
+
+<section class="panel">
     <h2>Kurvenvergleich</h2>
-    <div class="charts-grid">
+    <div class="charts-grid charts-grid-compare">
         <div id="chart-compare-vvert" class="chart"></div>
         <div id="chart-compare-vhor" class="chart"></div>
         <div id="chart-compare-angle" class="chart"></div>
@@ -156,30 +221,53 @@
 const compareCharts = {{ compare_chart_json | safe }};
 const left = compareCharts.left;
 const right = compareCharts.right;
+const compareXStart = Number(compareCharts.x_axis_start_s ?? 0);
+const compareXEnd = Number(compareCharts.x_axis_end_s ?? Math.max(
+    ...(left.time_s || [0]),
+    ...(right.time_s || [0])
+));
 const compareLayoutBase = {
-    margin: {l: 48, r: 20, t: 26, b: 42},
+    margin: {l: 56, r: 20, t: 52, b: 54},
     paper_bgcolor: "#11161c",
     plot_bgcolor: "#11161c",
-    font: {color: "#dce3ea", size: 12},
-    xaxis: {title: "t_rel [s]", gridcolor: "#1f2933"},
-    yaxis: {gridcolor: "#1f2933"}
+    font: {color: "#dce3ea", size: 13},
+    xaxis: {
+        title: {text: "t_rel [s]", standoff: 12},
+        gridcolor: "#1f2933",
+        range: [compareXStart, compareXEnd],
+        tickfont: {size: 12},
+        automargin: true
+    },
+    yaxis: {gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true},
+    legend: {orientation: "h", yanchor: "bottom", y: 1.02, xanchor: "left", x: 0, font: {size: 12}}
 };
 
 Plotly.newPlot("chart-compare-vvert", [
-    {x: left.time_s, y: left.vVert_kmh, type: "scatter", mode: "lines", name: "Aktuell: " + left.label, line: {width: 2, color: "#4aa3ff"}},
-    {x: right.time_s, y: right.vVert_kmh, type: "scatter", mode: "lines", name: "Vergleich: " + right.label, line: {width: 2, color: "#2ecc71"}}
-], {...compareLayoutBase, title: "vVert Vergleich", yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
+    {x: left.time_s, y: left.vVert_kmh, type: "scatter", mode: "lines", name: "Referenz", line: {width: 2, color: "#4aa3ff"}},
+    {x: right.time_s, y: right.vVert_kmh, type: "scatter", mode: "lines", name: "Vergleich", line: {width: 2, color: "#2ecc71"}}
+], {
+    ...compareLayoutBase,
+    title: "vVert Vergleich",
+    yaxis: {title: {text: "km/h", standoff: 10}, gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true}
+}, {displayModeBar: false, responsive: true});
 
 Plotly.newPlot("chart-compare-vhor", [
-    {x: left.time_s, y: left.vHor_kmh, type: "scatter", mode: "lines", name: "Aktuell: " + left.label, line: {width: 2, color: "#4aa3ff"}},
-    {x: right.time_s, y: right.vHor_kmh, type: "scatter", mode: "lines", name: "Vergleich: " + right.label, line: {width: 2, color: "#2ecc71"}}
-], {...compareLayoutBase, title: "vHor Vergleich", yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
+    {x: left.time_s, y: left.vHor_kmh, type: "scatter", mode: "lines", name: "Referenz", line: {width: 2, color: "#4aa3ff"}},
+    {x: right.time_s, y: right.vHor_kmh, type: "scatter", mode: "lines", name: "Vergleich", line: {width: 2, color: "#2ecc71"}}
+], {
+    ...compareLayoutBase,
+    title: "vHor Vergleich",
+    yaxis: {title: {text: "km/h", standoff: 10}, gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true}
+}, {displayModeBar: false, responsive: true});
 
 Plotly.newPlot("chart-compare-angle", [
-    {x: left.time_s, y: left.angle_deg, type: "scatter", mode: "lines", name: "Aktuell: " + left.label, line: {width: 2, color: "#4aa3ff"}},
-    {x: right.time_s, y: right.angle_deg, type: "scatter", mode: "lines", name: "Vergleich: " + right.label, line: {width: 2, color: "#2ecc71"}}
-], {...compareLayoutBase, title: "Winkel Vergleich", yaxis: {title: "deg", gridcolor: "#1f2933"}}, {displayModeBar: false});
+    {x: left.time_s, y: left.angle_deg, type: "scatter", mode: "lines", name: "Referenz", line: {width: 2, color: "#4aa3ff"}},
+    {x: right.time_s, y: right.angle_deg, type: "scatter", mode: "lines", name: "Vergleich", line: {width: 2, color: "#2ecc71"}}
+], {
+    ...compareLayoutBase,
+    title: "Winkel Vergleich",
+    yaxis: {title: {text: "deg", standoff: 10}, gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true}
+}, {displayModeBar: false, responsive: true});
 {% endif %}
 </script>
 {% endblock %}
-

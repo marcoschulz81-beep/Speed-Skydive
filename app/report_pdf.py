@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from typing import Any
 
 from fpdf import FPDF
@@ -28,7 +29,6 @@ def build_pdf(report: dict[str, Any]) -> bytes:
     _line(pdf, f"Springer: {jump['jumper_name']}")
     _line(pdf, f"Datei: {jump['file_name']}")
     _line(pdf, f"t0 UTC: {jump['t0_utc']}")
-    _line(pdf, f"Qualitaetsscore: {jump['quality_score']}")
     _line(pdf, f"Exit AGL: {jump['exit_altitude_agl_m']} m")
     _line(pdf, f"Exit gueltig <=4267.2m: {'Ja' if jump['is_valid_altitude'] else 'Nein'}")
     pdf.ln(2)
@@ -83,6 +83,11 @@ def build_pdf(report: dict[str, Any]) -> bytes:
     _line(pdf, f"Hot-Zone: {notes.get('hot_zone_reason', '-')}")
     _line(pdf, f"Negativ/Kippen: {notes.get('negative_details', '-')}")
     _line(pdf, f"AGL-Hinweis: {notes.get('agl_note', '-')}")
+    quality_issues = _quality_issue_lines(report.get("quality_flags", []))
+    if quality_issues:
+        _line(pdf, "Datenhinweise:")
+        for line in quality_issues:
+            _line(pdf, f"- {line}")
     pdf.ln(2)
 
     pdf.set_font("Helvetica", "B", 12)
@@ -107,3 +112,34 @@ def _fmt(value: Any) -> str:
     except Exception:
         return str(value)
 
+
+def _quality_issue_lines(raw_flags: Any) -> list[str]:
+    if raw_flags is None:
+        return []
+    try:
+        if isinstance(raw_flags, str):
+            flags = set(json.loads(raw_flags))
+        else:
+            flags = set(raw_flags)
+    except Exception:
+        return []
+
+    mapping = {
+        "EARLY_JUMP_END": "Sprung endet fuer die Auswertung zu frueh.",
+        "NO_CLEAR_EXIT": "Absprungzeit war nicht eindeutig; Detailwerte koennen verschoben sein.",
+        "INVALID_EXIT_ALTITUDE": "Exit-Hoehe wirkt unplausibel.",
+        "TIME_GAPS": "Im relevanten Bereich gibt es Datenluecken.",
+        "LOW_GPS_FIX": "GPS-Fix war zeitweise schwach.",
+        "HIGH_SPEED_ACCURACY_ERROR": "Geschwindigkeitsgenauigkeit war zeitweise eingeschraenkt.",
+        "SPEED_SPIKE": "Unplausible Speed-Spitze erkannt.",
+    }
+    priority = [
+        "EARLY_JUMP_END",
+        "NO_CLEAR_EXIT",
+        "INVALID_EXIT_ALTITUDE",
+        "TIME_GAPS",
+        "LOW_GPS_FIX",
+        "HIGH_SPEED_ACCURACY_ERROR",
+        "SPEED_SPIKE",
+    ]
+    return [mapping[flag] for flag in priority if flag in flags]

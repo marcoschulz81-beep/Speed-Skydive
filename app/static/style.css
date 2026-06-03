@@ -55,6 +55,7 @@ a:hover {
 
 .nav a {
     color: var(--muted);
+    margin-left: 0.8rem;
 }
 
 .page {
@@ -124,6 +125,11 @@ button,
     color: var(--txt);
 }
 
+.btn.danger {
+    background: var(--danger);
+    color: #1b0f0f;
+}
+
 .panel-head {
     display: flex;
     justify-content: space-between;
@@ -183,6 +189,11 @@ th {
     border: 1px solid rgba(255, 107, 107, 0.5);
 }
 
+.flash.warn {
+    background: rgba(241, 196, 15, 0.12);
+    border: 1px solid rgba(241, 196, 15, 0.55);
+}
+
 .chips {
     display: flex;
     flex-wrap: wrap;
@@ -225,6 +236,10 @@ th {
     gap: 0.8rem;
 }
 
+.vertical-grid {
+    grid-template-columns: 1fr;
+}
+
 .score-box {
     border: 1px solid #22303d;
     border-radius: 6px;
@@ -252,6 +267,40 @@ th {
     font-size: 0.82rem;
 }
 
+.scorecard-stack {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.scorecard-item {
+    border: 1px solid #22303d;
+    border-radius: 6px;
+    background: #0f151d;
+    padding: 0.75rem;
+}
+
+.scorecard-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.45rem;
+}
+
+.scorecard-head h3 {
+    margin: 0;
+    font-size: 0.95rem;
+}
+
+.scorecard-meta {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: flex-start;
+}
+
 .tips {
     margin: 0;
     padding-left: 1.2rem;
@@ -260,6 +309,16 @@ th {
 .tips li {
     margin: 0.25rem 0;
     color: #d4e0ea;
+}
+
+.tips.compact {
+    margin: 0;
+    padding-left: 1rem;
+}
+
+.tips.compact li {
+    margin: 0.15rem 0;
+    font-size: 0.83rem;
 }
 
 .charts-grid {
@@ -272,6 +331,15 @@ th {
     min-height: 290px;
     border: 1px solid #22303d;
     border-radius: 6px;
+}
+
+.charts-grid-compare {
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    gap: 1rem;
+}
+
+.charts-grid-compare .chart {
+    min-height: 360px;
 }
 
 .best-row {
@@ -289,6 +357,27 @@ th {
     font-weight: 600;
 }
 
+.status-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    margin-right: 0.35rem;
+    vertical-align: middle;
+}
+
+.status-dot.green {
+    background: #2ecc71;
+}
+
+.status-dot.yellow {
+    background: #f1c40f;
+}
+
+.status-dot.red {
+    background: #e74c3c;
+}
+
 .compare-form {
     display: grid;
     gap: 0.8rem;
@@ -300,8 +389,22 @@ th {
     width: fit-content;
 }
 
+.glossary-term {
+    border-bottom: 1px dotted #7aa2c6;
+    cursor: help;
+}
+
+.glossary-term:focus {
+    outline: 1px solid #7aa2c6;
+    outline-offset: 2px;
+}
+
 @media (max-width: 760px) {
     .charts-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .charts-grid-compare {
         grid-template-columns: 1fr;
     }
 }

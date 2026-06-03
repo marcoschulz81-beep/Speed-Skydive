@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Traineransicht | Speed-Skydive Analyzer{% endblock %}
+{% block content %}
+<section class="panel">
+    <div class="panel-head">
+        <h1>Traineransicht</h1>
+        <a class="btn secondary" href="/?view={{ view_mode or 'expert' }}">Zurueck zum Upload</a>
+    </div>
+    <p class="muted">Ampel je Sprung, wichtigste Staerken und die 3 priorisierten Massnahmen fuer das naechste Training.</p>
+
+    <form class="compare-form" method="get" action="/coach">
+        <input type="hidden" name="view" value="{{ view_mode or 'expert' }}">
+        <label>
+            <span>Springer filtern</span>
+            <select name="jumper_name">
+                <option value="">Alle Springer</option>
+                {% for jumper in jumpers %}
+                <option value="{{ jumper }}" {% if selected_jumper == jumper %}selected{% endif %}>{{ jumper }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <button type="submit">Anzeigen</button>
+    </form>
+</section>
+
+{% for group in groups %}
+<section class="panel">
+    <div class="panel-head">
+        <h2>{{ group.jumper_name }}</h2>
+        <div class="actions">
+            <span class="chip">Bester Sprung: {{ "%.2f"|format(group.best_score) }} km/h ({{ group.best_file_name }})</span>
+            <a class="btn secondary" href="/jumpers/{{ group.jumper_name | urlencode }}?view={{ view_mode or 'expert' }}">Springer-Detail</a>
+        </div>
+    </div>
+    {% if group.stability_reference and group.stability_reference.available %}
+    <p class="muted"><strong>Stabil gut bei:</strong> {{ group.stability_reference.stable_short }}</p>
+    <p class="muted"><strong>Wird oft unruhig bei:</strong> {{ group.stability_reference.unstable_short }}</p>
+    {% endif %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Ampel</th>
+                <th>Sprung</th>
+                <th>3s Max</th>
+                <th>Zum besten Sprung</th>
+                <th>Was war gut?</th>
+                <th>Was war nicht gut?</th>
+                <th>Naechste 3 Massnahmen</th>
+                <th>Detail</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for jump in group.jumps %}
+            <tr>
+                <td>
+                    <span class="status-dot {{ jump.status.level }}"></span>
+                    <strong>{{ jump.status.label }}</strong><br>
+                    <span class="muted">{{ jump.status.reason }}</span>
+                </td>
+                <td>
+                    {{ jump.file_name }}<br>
+                    <span class="muted">{{ jump.t0_utc }}</span>
+                    {% if jump.is_best %}
+                    <div><span class="best-badge">Bester Sprung</span></div>
+                    {% endif %}
+                </td>
+                <td>{{ "%.2f"|format(jump.best_3s_vVert_kmh) }} km/h</td>
+                <td>
+                    {% if jump.is_best %}
+                        Referenz
+                    {% elif jump.delta_to_best is not none %}
+                        {% if jump.delta_to_best > 0 %}+{% endif %}{{ "%.2f"|format(jump.delta_to_best) }} km/h
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+                <td>
+                    <ul class="tips compact">
+                        {% for item in jump.good_points %}
+                        <li>{{ item }}</li>
+                        {% endfor %}
+                    </ul>
+                </td>
+                <td>
+                    <ul class="tips compact">
+                        {% for item in jump.weak_points %}
+                        <li>{{ item }}</li>
+                        {% endfor %}
+                    </ul>
+                </td>
+                <td>
+                    <ol class="tips compact">
+                        {% for item in jump.actions %}
+                        <li>{{ item }}</li>
+                        {% endfor %}
+                    </ol>
+                </td>
+                <td><a href="/jumps/{{ jump.jump_id }}?view={{ view_mode or 'expert' }}">Report</a></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endfor %}
+{% endblock %}
