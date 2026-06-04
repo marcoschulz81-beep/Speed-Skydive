@@ -209,15 +209,28 @@
 <section class="panel">
     <h2>Kurvenvergleich</h2>
     <div class="charts-grid charts-grid-compare">
-        <div id="chart-compare-vvert" class="chart"></div>
-        <div id="chart-compare-vhor" class="chart"></div>
-        <div id="chart-compare-angle" class="chart"></div>
+        <div class="chart-card">
+            <h3 class="chart-title">Vertikale Geschwindigkeit</h3>
+            <div id="chart-compare-vvert" class="chart"></div>
+        </div>
+        <div class="chart-card">
+            <h3 class="chart-title">Horizontale Geschwindigkeit</h3>
+            <div id="chart-compare-vhor" class="chart"></div>
+        </div>
+        <div class="chart-card">
+            <h3 class="chart-title">Tauchwinkel</h3>
+            <div id="chart-compare-angle" class="chart"></div>
+        </div>
     </div>
 </section>
 {% endif %}
 
 <script>
 {% if compare_result %}
+if (!window.Plotly) {
+    window.showPlotlyLoadError?.();
+    throw new Error("Plotly unavailable");
+}
 const compareCharts = {{ compare_chart_json | safe }};
 const left = compareCharts.left;
 const right = compareCharts.right;
@@ -247,7 +260,6 @@ Plotly.newPlot("chart-compare-vvert", [
     {x: right.time_s, y: right.vVert_kmh, type: "scatter", mode: "lines", name: "Vergleich", line: {width: 2, color: "#2ecc71"}}
 ], {
     ...compareLayoutBase,
-    title: "vVert Vergleich",
     yaxis: {title: {text: "km/h", standoff: 10}, gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true}
 }, {displayModeBar: false, responsive: true});
 
@@ -256,7 +268,6 @@ Plotly.newPlot("chart-compare-vhor", [
     {x: right.time_s, y: right.vHor_kmh, type: "scatter", mode: "lines", name: "Vergleich", line: {width: 2, color: "#2ecc71"}}
 ], {
     ...compareLayoutBase,
-    title: "vHor Vergleich",
     yaxis: {title: {text: "km/h", standoff: 10}, gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true}
 }, {displayModeBar: false, responsive: true});
 
@@ -265,7 +276,6 @@ Plotly.newPlot("chart-compare-angle", [
     {x: right.time_s, y: right.angle_deg, type: "scatter", mode: "lines", name: "Vergleich", line: {width: 2, color: "#2ecc71"}}
 ], {
     ...compareLayoutBase,
-    title: "Winkel Vergleich",
     yaxis: {title: {text: "deg", standoff: 10}, gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true}
 }, {displayModeBar: false, responsive: true});
 {% endif %}

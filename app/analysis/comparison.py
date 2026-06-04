@@ -89,8 +89,8 @@ def build_jump_comparison(
         comparison_strengths=comparison_strengths,
     )
 
-    left_chart = _windowed_chart_series(reference_report)
-    right_chart = _windowed_chart_series(comparison_report)
+    left_chart = _downsample_chart_series(_windowed_chart_series(reference_report), max_points=2400)
+    right_chart = _downsample_chart_series(_windowed_chart_series(comparison_report), max_points=2400)
     x_end_candidates = [left_chart["window_end_s"], right_chart["window_end_s"]]
     x_end = max(x_end_candidates) if x_end_candidates else 0.0
 
@@ -407,6 +407,60 @@ def _windowed_chart_series(report: dict[str, Any]) -> dict[str, Any]:
         "window_start_s": round(start_s, 2),
         "window_end_s": round(end_s, 2),
     }
+
+
+def _downsample_chart_series(series: dict[str, Any], *, max_points: int) -> dict[str, Any]:
+    time_s = series.get("time_s", []) or []
+    n = len(time_s)
+    max_points = max(2, int(max_points))
+    if n <= max_points:
+        return series
+
+    value_keys = [
+        key
+        for key in ["vVert_kmh", "vHor_kmh", "angle_deg"]
+        if isinstance(series.get(key), list) and len(series.get(key)) == n
+    ]
+    max_indices_per_bucket = max(2, 2 + (2 * len(value_keys)))
+    bucket_count = max(1, max_points // max_indices_per_bucket)
+    bucket_size = n / float(bucket_count)
+    selected: set[int] = {0, n - 1}
+
+    for bucket in range(bucket_count):
+        start = int(bucket * bucket_size)
+        end = int((bucket + 1) * bucket_size)
+        end = min(n, max(start + 1, end))
+        selected.add(start)
+        selected.add(end - 1)
+        for key in value_keys:
+            values = series.get(key, [])
+            numeric_items: list[tuple[float, int]] = []
+            for idx in range(start, end):
+                value = _num(values[idx])
+                if value is not None:
+                    numeric_items.append((float(value), idx))
+            if not numeric_items:
+                continue
+            selected.add(min(numeric_items, key=lambda item: item[0])[1])
+            selected.add(max(numeric_items, key=lambda item: item[0])[1])
+
+    selected_indices = sorted(selected)
+    if len(selected_indices) > max_points:
+        step = (len(selected_indices) - 1) / float(max_points - 1)
+        selected_indices = sorted({selected_indices[int(round(i * step))] for i in range(max_points)})
+        selected_indices[0] = 0
+        selected_indices[-1] = n - 1
+
+    out: dict[str, Any] = {}
+    for key, value in series.items():
+        if isinstance(value, list) and len(value) == n:
+            out[key] = [value[i] for i in selected_indices]
+        else:
+            out[key] = value
+    out["display_downsampled"] = True
+    out["source_points"] = n
+    out["display_points"] = len(selected_indices)
+    return out
 
 
 def _build_compare_brief(

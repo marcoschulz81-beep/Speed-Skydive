@@ -8,6 +8,8 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA busy_timeout = 5000;")
+    conn.execute("PRAGMA temp_store = MEMORY;")
     return conn
 
 
@@ -73,7 +75,10 @@ def init_db() -> None:
             );
 
             CREATE INDEX IF NOT EXISTS idx_samples_jump_id ON samples(jump_id);
+            CREATE INDEX IF NOT EXISTS idx_samples_jump_id_t_rel_s ON samples(jump_id, t_rel_s);
             CREATE INDEX IF NOT EXISTS idx_jumps_jumper_name ON jumps(jumper_name);
+            CREATE INDEX IF NOT EXISTS idx_jumps_active_recent ON jumps(is_reference_only, t0_utc DESC, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_jumps_jumper_active_recent ON jumps(jumper_name, is_reference_only, t0_utc DESC, created_at DESC);
 
             CREATE TABLE IF NOT EXISTS metrics (
                 jump_id TEXT PRIMARY KEY,
@@ -100,6 +105,8 @@ def init_db() -> None:
                 quality_flags TEXT NOT NULL,
                 FOREIGN KEY(jump_id) REFERENCES jumps(jump_id) ON DELETE CASCADE
             );
+
+            CREATE INDEX IF NOT EXISTS idx_metrics_best_3s ON metrics(best_3s_vVert_kmh DESC);
             """
         )
 

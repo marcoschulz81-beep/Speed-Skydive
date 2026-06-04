@@ -26,6 +26,7 @@ from app.database import init_db
 from app.report_pdf import build_pdf
 from app.services.storage import (
     delete_jump,
+    find_duplicate_jump_by_source_hash,
     get_best_jump_for_jumper,
     get_jump_report,
     get_jump_source_metadata,
@@ -45,6 +46,8 @@ templates.env.globals["coach_view_enabled"] = COACH_VIEW_ENABLED
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), name="static")
 
 _MARCO_PROFILE_CACHE: dict[int, tuple[str, dict[str, Any] | None]] = {}
+_JUMPER_SUMMARY_CACHE: dict[str, tuple[str, dict[str, Any]]] = {}
+_PLOTLY_JS_CACHE: str | None = None
 _SEMANTIC_DEDUPE_STOPWORDS: set[str] = {
     "der",
     "die",
@@ -90,6 +93,8 @@ _SEMANTIC_DEDUPE_STOPWORDS: set[str] = {
 
 _VIEW_MODE_SIMPLE = "simple"
 _VIEW_MODE_EXPERT = "expert"
+_INDEX_RECENT_JUMPS_LIMIT = 10
+_TRUTHY_QUERY_VALUES = {"1", "true", "yes", "open"}
 
 _SIMPLE_GLOSSARY_ITEMS: list[tuple[str, str]] = [
     ("Druck halten", "Koerper ruhig und fest im Luftstrom lassen, ohne hektische Bewegungen."),
@@ -124,6 +129,113 @@ def _normalize_view_mode(raw: str | None) -> str:
     return _VIEW_MODE_EXPERT
 
 
+def _is_enabled_query(raw: str | None) -> bool:
+    return str(raw or "").strip().lower() in _TRUTHY_QUERY_VALUES
+
+
+def _clear_derived_caches() -> None:
+    _JUMPER_SUMMARY_CACHE.clear()
+    _MARCO_PROFILE_CACHE.clear()
+
+
+def _report_for_client(report: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in report.items() if key != "chart_data"}
+
+
+def _chart_data_for_client(report: dict[str, Any], *, max_points: int = 3200) -> dict[str, Any]:
+    chart = report.get("chart_data", {}) if isinstance(report.get("chart_data"), dict) else {}
+    time_s = chart.get("time_s", []) if isinstance(chart.get("time_s"), list) else []
+    if not time_s:
+        return chart
+
+    notes = report.get("notes", {}) if isinstance(report.get("notes"), dict) else {}
+    curve_start = _to_float(notes.get("curve_window_start_s"))
+    curve_end = _to_float(notes.get("curve_window_end_s"))
+    max_time = _max_time_s(time_s)
+    start_s = min(0.0, float(curve_start if curve_start is not None else 0.0))
+    end_s = float(curve_end if curve_end is not None else (max_time if max_time is not None else time_s[-1]))
+
+    indices: list[int] = []
+    for i, raw_t in enumerate(time_s):
+        t = _to_float(raw_t)
+        if t is None:
+            continue
+        if start_s <= float(t) <= end_s:
+            indices.append(i)
+
+    filtered = _chart_data_at_indices(chart, indices) if indices else chart
+    return _downsample_chart_data(filtered, max_points=max_points)
+
+
+def _chart_data_at_indices(chart: dict[str, Any], indices: list[int]) -> dict[str, Any]:
+    time_s = chart.get("time_s", []) if isinstance(chart.get("time_s"), list) else []
+    source_len = len(time_s)
+    out: dict[str, Any] = {}
+    for key, value in chart.items():
+        if isinstance(value, list) and len(value) == source_len:
+            out[key] = [value[i] for i in indices]
+        else:
+            out[key] = value
+    return out
+
+
+def _downsample_chart_data(chart: dict[str, Any], *, max_points: int) -> dict[str, Any]:
+    time_s = chart.get("time_s", []) if isinstance(chart.get("time_s"), list) else []
+    n = len(time_s)
+    if n <= max(2, int(max_points)):
+        return chart
+
+    value_keys = [
+        key
+        for key in [
+            "vVert_kmh",
+            "vHor_kmh",
+            "angle_deg",
+            "hAGL_m",
+            "accVert_mps2",
+            "forward_m",
+            "backtrack_m",
+        ]
+        if isinstance(chart.get(key), list) and len(chart.get(key)) == n
+    ]
+    max_points = max(2, int(max_points))
+    max_indices_per_bucket = max(2, 2 + (2 * len(value_keys)))
+    bucket_count = max(1, max_points // max_indices_per_bucket)
+    bucket_size = n / float(bucket_count)
+    selected: set[int] = {0, n - 1}
+
+    for bucket in range(bucket_count):
+        start = int(bucket * bucket_size)
+        end = int((bucket + 1) * bucket_size)
+        end = min(n, max(start + 1, end))
+        selected.add(start)
+        selected.add(end - 1)
+        for key in value_keys:
+            values = chart.get(key, [])
+            numeric_items: list[tuple[float, int]] = []
+            for idx in range(start, end):
+                value = _to_float(values[idx])
+                if value is not None:
+                    numeric_items.append((float(value), idx))
+            if not numeric_items:
+                continue
+            selected.add(min(numeric_items, key=lambda item: item[0])[1])
+            selected.add(max(numeric_items, key=lambda item: item[0])[1])
+
+    selected_indices = sorted(selected)
+    if len(selected_indices) > max_points:
+        step = (len(selected_indices) - 1) / float(max_points - 1)
+        selected_indices = sorted({selected_indices[int(round(i * step))] for i in range(max_points)})
+        selected_indices[0] = 0
+        selected_indices[-1] = n - 1
+
+    out = _chart_data_at_indices(chart, selected_indices)
+    out["display_downsampled"] = True
+    out["source_points"] = n
+    out["display_points"] = len(selected_indices)
+    return out
+
+
 def _jumper_overview_simple_status(*, stable_count: int, unstable_count: int) -> str:
     total = max(0, int(stable_count)) + max(0, int(unstable_count))
     if total < 2:
@@ -142,15 +254,32 @@ def startup() -> None:
     RAW_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
+@app.get("/plotly.min.js", include_in_schema=False)
+def plotly_bundle() -> Response:
+    global _PLOTLY_JS_CACHE
+    if _PLOTLY_JS_CACHE is None:
+        from plotly.offline import get_plotlyjs
+
+        _PLOTLY_JS_CACHE = get_plotlyjs()
+
+    return Response(
+        content=_PLOTLY_JS_CACHE,
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
 @app.get("/")
 def index(
     request: Request,
     message: str | None = None,
     error: str | None = None,
     view: str | None = None,
+    show_jumpers: str | None = None,
 ):
     jumpers = list_jumpers()
     view_mode = _normalize_view_mode(view)
+    show_jumpers_panel = _is_enabled_query(show_jumpers)
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -158,9 +287,11 @@ def index(
             "message": message,
             "error": error,
             "view_mode": view_mode,
-            "recent_jumps": list_recent_jumps(),
+            "recent_jumps": list_recent_jumps(limit=_INDEX_RECENT_JUMPS_LIMIT),
             "jumpers": jumpers,
-            "jumper_overview": _build_jumpers_overview(jumpers),
+            "show_jumpers_panel": show_jumpers_panel,
+            "jumper_overview": _build_jumpers_overview(jumpers) if show_jumpers_panel else [],
+            "needs_plotly": False,
         },
     )
 
@@ -192,6 +323,14 @@ async def analyze_upload(
     except ValueError as exc:
         return _render_index_with_error(request, str(exc), view_mode=resolved_view_mode)
 
+    source_hash = hashlib.sha256(content).hexdigest()
+    duplicate_id = find_duplicate_jump_by_source_hash(
+        jumper_name=jumper,
+        source_file_sha256=source_hash,
+    )
+    if duplicate_id is not None:
+        return RedirectResponse(url=f"/jumps/{duplicate_id}?view={resolved_view_mode}", status_code=303)
+
     try:
         result = analyze_flysight_csv(
             content=content,
@@ -205,13 +344,14 @@ async def analyze_upload(
     except Exception as exc:  # pragma: no cover
         return _render_index_with_error(request, f"Unerwarteter Analysefehler: {exc}", view_mode=resolved_view_mode)
 
-    source_hash = hashlib.sha256(content).hexdigest()
     source_path = _cache_uploaded_file(source_hash=source_hash, original_name=csv_file.filename, content=content)
     jump_id, is_duplicate = save_analysis_result(
         result,
         source_file_sha256=source_hash,
         source_file_path=str(source_path),
     )
+    if not is_duplicate:
+        _clear_derived_caches()
     jump_url = f"/jumps/{jump_id}?view={resolved_view_mode}"
     if is_duplicate:
         return RedirectResponse(url=jump_url, status_code=303)
@@ -343,12 +483,14 @@ def jump_detail(
             "top_reference_jumps": top_reference_jumps,
             "phase_rows": phase_rows,
             "tip_follow_up": tip_follow_up,
-            "chart_data_json": json.dumps(report["chart_data"]),
+            "chart_data_json": json.dumps(_chart_data_for_client(report)),
+            "report_meta_json": json.dumps(_report_for_client(report)),
             "quality_flags_json": json.dumps(report["quality_flags"]),
             "quality_issue_lines": quality_issue_lines,
             "message": message,
             "error": error,
             "view_mode": view_mode,
+            "needs_plotly": True,
         },
     )
 
@@ -388,6 +530,7 @@ def reprocess_t0(jump_id: str, view: str | None = None):
             source_file_sha256=source_hash,
             source_file_path=str(cached_path),
         )
+        _clear_derived_caches()
     except AnalysisError as exc:
         return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(str(exc))}", status_code=303)
     except Exception as exc:  # pragma: no cover
@@ -410,6 +553,7 @@ def delete_jump_dataset(jump_id: str, view: str | None = None):
     if not deleted:
         msg = "Datensatz konnte nicht geloescht werden."
         return RedirectResponse(url=f"/?view={view_mode}&error={quote_plus(msg)}", status_code=303)
+    _clear_derived_caches()
 
     ok_msg = f"Datensatz geloescht: {file_name}"
     return RedirectResponse(url=f"/?view={view_mode}&message={quote_plus(ok_msg)}", status_code=303)
@@ -484,6 +628,7 @@ def jump_compare(
             "compare_chart_json": compare_chart_json,
             "selected_compare_jump_id": compare_jump_id,
             "view_mode": view_mode,
+            "needs_plotly": True,
         },
     )
 
@@ -521,6 +666,7 @@ def jumper_view(request: Request, jumper_name: str, view: str | None = None):
             "compare_error": None,
             "left_jump_id": None,
             "right_jump_id": None,
+            "needs_plotly": True,
         },
     )
 
@@ -571,6 +717,7 @@ def jumper_compare(
             "compare_error": compare_error,
             "left_jump_id": left_jump_id,
             "right_jump_id": right_jump_id,
+            "needs_plotly": True,
         },
     )
 
@@ -1440,6 +1587,28 @@ def _marco_profile_signature(rows: list[dict[str, Any]]) -> str:
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
+def _jumper_summary_signature(rows: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for row in rows:
+        parts.append(
+            "|".join(
+                [
+                    str(row.get("jump_id") or ""),
+                    str(row.get("file_name") or ""),
+                    str(row.get("t0_utc") or ""),
+                    str(row.get("quality_score") or ""),
+                    str(row.get("quality_flags") or ""),
+                    str(row.get("sample_rate_hz") or ""),
+                    str(row.get("is_valid_altitude") or ""),
+                    str(row.get("best_3s_vVert_kmh") or ""),
+                    str(row.get("rule_based_3s_score") or ""),
+                ]
+            )
+        )
+    parts.sort()
+    return hashlib.sha1("||".join(parts).encode("utf-8")).hexdigest()
+
+
 def _build_marco_top15_profile(
     *,
     limit: int = 15,
@@ -2091,6 +2260,12 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
         return {"available": False, "reason": "Keine Spruenge vorhanden."}
 
     rows = _sort_by_t0_desc(jumps)
+    signature = _jumper_summary_signature(rows)
+    cache_key = jumper_name.casefold()
+    cached = _JUMPER_SUMMARY_CACHE.get(cache_key)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+
     reports: list[dict[str, Any]] = []
     for row in rows:
         report = get_jump_report(str(row.get("jump_id")))
@@ -2098,14 +2273,18 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
             reports.append(report)
 
     if not reports:
-        return {"available": False, "reason": "Keine auswertbaren Spruenge vorhanden."}
+        result = {"available": False, "reason": "Keine auswertbaren Spruenge vorhanden."}
+        _JUMPER_SUMMARY_CACHE[cache_key] = (signature, result)
+        return result
 
     reports = sorted(reports, key=lambda item: _t0_sort_key(item.get("jump", {}).get("t0_utc")))
     marco_profile = _get_marco_top15_profile(limit=15)
     records = [_build_jumper_record(item, marco_profile=marco_profile) for item in reports]
     records = [item for item in records if item]
     if not records:
-        return {"available": False, "reason": "Keine auswertbaren Spruenge vorhanden."}
+        result = {"available": False, "reason": "Keine auswertbaren Spruenge vorhanden."}
+        _JUMPER_SUMMARY_CACHE[cache_key] = (signature, result)
+        return result
 
     best_record = max(records, key=lambda item: item.get("best_3s_kmh", float("-inf")))
     trend_rows = _build_jumper_trend_rows(records)
@@ -2130,7 +2309,7 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
     stability_reference = _build_jumper_stability_reference(records)
     tip_effect_profile = _build_tip_effect_profile(records)
 
-    return {
+    result = {
         "available": True,
         "jumper_name": jumper_name,
         "jump_count": len(records),
@@ -2146,6 +2325,8 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
         "stability_reference": stability_reference,
         "tip_effect_profile": tip_effect_profile,
     }
+    _JUMPER_SUMMARY_CACHE[cache_key] = (signature, result)
+    return result
 
 
 def _build_jumpers_overview(jumpers: list[str]) -> list[dict[str, Any]]:
@@ -4378,9 +4559,11 @@ def _render_index_with_error(request: Request, error: str, view_mode: str | None
             "message": None,
             "error": error,
             "view_mode": resolved_view_mode,
-            "recent_jumps": list_recent_jumps(),
+            "recent_jumps": list_recent_jumps(limit=_INDEX_RECENT_JUMPS_LIMIT),
             "jumpers": jumpers,
-            "jumper_overview": _build_jumpers_overview(jumpers),
+            "show_jumpers_panel": False,
+            "jumper_overview": [],
+            "needs_plotly": False,
         },
         status_code=400,
     )

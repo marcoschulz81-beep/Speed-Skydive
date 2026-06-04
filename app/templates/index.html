@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Upload | Speed-Skydive Analyzer{% endblock %}
 {% block content %}
+{% set vm = view_mode if view_mode in ["simple", "expert"] else "expert" %}
 <section class="panel">
     <h1>FlySight CSV auswerten</h1>
     <p class="muted">Upload pro Sprung, Speicherung unter Springername, automatischer Trainingsreport.</p>
@@ -13,7 +14,7 @@
     {% endif %}
 
     <form class="grid-form" method="post" action="/analyze" enctype="multipart/form-data">
-        <input type="hidden" name="view_mode" value="{{ view_mode or 'expert' }}">
+        <input type="hidden" name="view_mode" value="{{ vm }}">
         <label>
             <span>Springername</span>
             <input type="text" name="jumper_name" placeholder="z. B. Marlene" required>
@@ -52,7 +53,7 @@
             <tbody>
             {% for jump in recent_jumps %}
             <tr>
-                <td><a href="/jumpers/{{ jump.jumper_name | urlencode }}?view={{ view_mode or 'expert' }}">{{ jump.jumper_name }}</a></td>
+                <td><a href="/jumpers/{{ jump.jumper_name | urlencode }}?view={{ vm }}">{{ jump.jumper_name }}</a></td>
                 <td>{{ jump.file_name }}</td>
                 <td>{{ jump.t0_utc }}</td>
                 <td>{{ "%.2f"|format(jump.best_3s_vVert_kmh) }}</td>
@@ -63,7 +64,7 @@
                         -
                     {% endif %}
                 </td>
-                <td><a href="/jumps/{{ jump.jump_id }}?view={{ view_mode or 'expert' }}">Report</a></td>
+                <td><a href="/jumps/{{ jump.jump_id }}?view={{ vm }}">Report</a></td>
             </tr>
             {% endfor %}
             </tbody>
@@ -78,19 +79,36 @@
     <div class="panel-head">
         <h2>Springer</h2>
         <div class="actions">
-            <a class="btn {% if (view_mode or 'expert') == 'simple' %}secondary{% endif %}" href="/?view=expert">Experten-Ansicht</a>
-            <a class="btn {% if (view_mode or 'expert') == 'expert' %}secondary{% endif %}" href="/?view=simple">Einfache Ansicht</a>
+            {% if show_jumpers_panel %}
+            <a class="btn secondary" href="/?view={{ vm }}">Springer ausblenden</a>
+            {% else %}
+            <a class="btn" href="/?view={{ vm }}&amp;show_jumpers=1">Springer anzeigen</a>
+            {% endif %}
+            <details class="settings-menu">
+                <summary class="btn secondary">Einstellungen</summary>
+                <div class="settings-actions">
+                    <a class="settings-option {% if vm == 'expert' %}active{% endif %}" href="/?view=expert{% if show_jumpers_panel %}&amp;show_jumpers=1{% endif %}">Experten-Ansicht</a>
+                    <a class="settings-option {% if vm == 'simple' %}active{% endif %}" href="/?view=simple{% if show_jumpers_panel %}&amp;show_jumpers=1{% endif %}">Einfache Ansicht</a>
+                </div>
+            </details>
         </div>
     </div>
+    {% if not show_jumpers_panel %}
+    {% if jumpers %}
+    <p class="muted">Springerliste und historische Ableitungen werden erst nach Klick geladen.</p>
+    {% else %}
+    <p class="muted">Noch keine Springer vorhanden.</p>
+    {% endif %}
+    {% else %}
     {% if jumpers %}
     <div class="chips">
         {% for jumper in jumpers %}
-        <a class="chip" href="/jumpers/{{ jumper | urlencode }}?view={{ view_mode or 'expert' }}">{{ jumper }}</a>
+        <a class="chip" href="/jumpers/{{ jumper | urlencode }}?view={{ vm }}">{{ jumper }}</a>
         {% endfor %}
     </div>
     {% if jumper_overview %}
     <div class="table-wrap">
-        {% if (view_mode or 'expert') == 'simple' %}
+        {% if vm == 'simple' %}
         <table>
             <thead>
             <tr>
@@ -103,7 +121,7 @@
             <tbody>
             {% for row in jumper_overview %}
             <tr>
-                <td><a href="/jumpers/{{ row.jumper_name | urlencode }}?view={{ view_mode or 'expert' }}">{{ row.jumper_name }}</a></td>
+                <td><a href="/jumpers/{{ row.jumper_name | urlencode }}?view={{ vm }}">{{ row.jumper_name }}</a></td>
                 <td>
                     {{ row.simple_status }}<br>
                     <span class="muted">{{ row.jump_count }} Spruenge</span>
@@ -128,7 +146,7 @@
             <tbody>
             {% for row in jumper_overview %}
             <tr>
-                <td><a href="/jumpers/{{ row.jumper_name | urlencode }}?view={{ view_mode or 'expert' }}">{{ row.jumper_name }}</a></td>
+                <td><a href="/jumpers/{{ row.jumper_name | urlencode }}?view={{ vm }}">{{ row.jumper_name }}</a></td>
                 <td>
                     {{ row.jump_count }} Spruenge<br>
                     <span class="muted">stabil {{ row.stable_count }}, unruhig {{ row.unstable_count }}</span>
@@ -145,6 +163,7 @@
     {% endif %}
     {% else %}
     <p class="muted">Noch keine Springer vorhanden.</p>
+    {% endif %}
     {% endif %}
 </section>
 {% endblock %}

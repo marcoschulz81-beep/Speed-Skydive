@@ -1448,16 +1448,21 @@ def analyze_flysight_csv(
     )
     tips = _generate_tips(fixpoints, hot_label, neg_details, scorecard)
 
-    t_rel = post["t_rel_s"].to_numpy()
+    post_rows = post.reset_index(drop=True)
+    row_count = len(post_rows)
+    t_rel = post_rows["t_rel_s"].to_numpy(dtype=float)
     per_sample_flags: list[str] = []
     median_dt = float(np.median(np.diff(t_rel))) if len(t_rel) > 1 else 0.2
-    for i, row in post.reset_index(drop=True).iterrows():
+    gps_fix_values = post_rows["gpsFix"].to_numpy()
+    sacc_values = post_rows["sAcc"].to_numpy()
+    numsv_values = post_rows["numSV"].to_numpy()
+    for i in range(row_count):
         row_flags: list[str] = []
-        if row.get("gpsFix", 3) != 3:
+        if gps_fix_values[i] != 3:
             row_flags.append("LOW_GPS_FIX")
-        if row.get("sAcc", 0.0) >= MAX_SACC_MPS:
+        if sacc_values[i] >= MAX_SACC_MPS:
             row_flags.append("HIGH_SPEED_ACCURACY_ERROR")
-        if row.get("numSV", MIN_NUM_SV) < MIN_NUM_SV:
+        if numsv_values[i] < MIN_NUM_SV:
             row_flags.append("LOW_NUM_SV")
         if i > 0 and (t_rel[i] - t_rel[i - 1]) > max(0.6, median_dt * 2.5):
             row_flags.append("TIME_GAPS")
@@ -1466,30 +1471,44 @@ def analyze_flysight_csv(
     jump_id = str(uuid.uuid4())
 
     sample_records: list[dict[str, Any]] = []
-    post_rows = post.reset_index(drop=True)
-    for i, row in post_rows.iterrows():
+    time_values = post_rows["time"].tolist()
+    lat_values = post_rows["lat"].to_numpy()
+    lon_values = post_rows["lon"].to_numpy()
+    hmsl_values = post_rows["hMSL"].to_numpy()
+    hagl_values = post_rows["hAGL_m"].to_numpy()
+    veln_values = post_rows["velN"].to_numpy()
+    vele_values = post_rows["velE"].to_numpy()
+    veld_values = post_rows["velD"].to_numpy()
+    vvert_values = post_rows["vVert_kmh"].to_numpy()
+    vhor_values = post_rows["vHor_kmh"].to_numpy()
+    vtotal_values = post_rows["vTotal_kmh"].to_numpy()
+    angle_values = post_rows["angle_deg"].to_numpy()
+    acc_values = post_rows["accVert_mps2"].to_numpy()
+    hacc_values = post_rows["hAcc"].to_numpy()
+    vacc_values = post_rows["vAcc"].to_numpy()
+    for i in range(row_count):
         sample_records.append(
             {
                 "jump_id": jump_id,
-                "time_utc": row["time"].isoformat(),
-                "t_rel_s": float(row["t_rel_s"]),
-                "lat": None if pd.isna(row["lat"]) else float(row["lat"]),
-                "lon": None if pd.isna(row["lon"]) else float(row["lon"]),
-                "hMSL_m": float(row["hMSL"]),
-                "hAGL_m": None if pd.isna(row["hAGL_m"]) else float(row["hAGL_m"]),
-                "velN_mps": float(row["velN"]),
-                "velE_mps": float(row["velE"]),
-                "velD_mps": float(row["velD"]),
-                "vVert_kmh": float(row["vVert_kmh"]),
-                "vHor_kmh": float(row["vHor_kmh"]),
-                "vTotal_kmh": float(row["vTotal_kmh"]),
-                "angle_deg": float(row["angle_deg"]),
-                "accVert_mps2": float(row["accVert_mps2"]),
-                "hAcc": None if pd.isna(row["hAcc"]) else float(row["hAcc"]),
-                "vAcc": None if pd.isna(row["vAcc"]) else float(row["vAcc"]),
-                "sAcc": None if pd.isna(row["sAcc"]) else float(row["sAcc"]),
-                "gpsFix": None if pd.isna(row["gpsFix"]) else int(row["gpsFix"]),
-                "numSV": None if pd.isna(row["numSV"]) else int(row["numSV"]),
+                "time_utc": time_values[i].isoformat(),
+                "t_rel_s": float(t_rel[i]),
+                "lat": None if pd.isna(lat_values[i]) else float(lat_values[i]),
+                "lon": None if pd.isna(lon_values[i]) else float(lon_values[i]),
+                "hMSL_m": float(hmsl_values[i]),
+                "hAGL_m": None if pd.isna(hagl_values[i]) else float(hagl_values[i]),
+                "velN_mps": float(veln_values[i]),
+                "velE_mps": float(vele_values[i]),
+                "velD_mps": float(veld_values[i]),
+                "vVert_kmh": float(vvert_values[i]),
+                "vHor_kmh": float(vhor_values[i]),
+                "vTotal_kmh": float(vtotal_values[i]),
+                "angle_deg": float(angle_values[i]),
+                "accVert_mps2": float(acc_values[i]),
+                "hAcc": None if pd.isna(hacc_values[i]) else float(hacc_values[i]),
+                "vAcc": None if pd.isna(vacc_values[i]) else float(vacc_values[i]),
+                "sAcc": None if pd.isna(sacc_values[i]) else float(sacc_values[i]),
+                "gpsFix": None if pd.isna(gps_fix_values[i]) else int(gps_fix_values[i]),
+                "numSV": None if pd.isna(numsv_values[i]) else int(numsv_values[i]),
                 "quality_flags": per_sample_flags[i],
             }
         )

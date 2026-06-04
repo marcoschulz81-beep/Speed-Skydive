@@ -140,8 +140,98 @@ button,
 
 .actions {
     display: flex;
+    align-items: flex-start;
     gap: 0.5rem;
     flex-wrap: wrap;
+}
+
+.actions > .btn,
+.actions > .inline-form > .btn,
+.actions > .settings-menu > summary.btn {
+    height: 2.5rem;
+    min-height: 2.5rem;
+    padding-top: 0;
+    padding-bottom: 0;
+    line-height: 1;
+}
+
+.actions > .inline-form {
+    display: inline-flex;
+}
+
+.settings-menu {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    height: 2.5rem;
+    overflow: visible;
+}
+
+.settings-menu[open] {
+    z-index: 100;
+}
+
+.settings-menu > summary {
+    list-style: none;
+    white-space: nowrap;
+    box-sizing: border-box;
+}
+
+.settings-menu > summary::-webkit-details-marker {
+    display: none;
+}
+
+.settings-menu[open] > summary {
+    background: #31465a;
+}
+
+.settings-actions {
+    position: absolute;
+    left: 0;
+    top: calc(100% + 0.35rem);
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 210px;
+    padding: 0.4rem;
+    background: #0f151c;
+    border: 1px solid #314254;
+    border-radius: 10px;
+    box-shadow: 0 12px 30px rgb(0 0 0 / 0.35);
+}
+
+.settings-option {
+    display: flex;
+    align-items: center;
+    min-height: 2.25rem;
+    width: 100%;
+    padding: 0.55rem 0.65rem;
+    color: var(--txt);
+    border-radius: 7px;
+    justify-content: flex-start;
+    font-weight: 600;
+}
+
+.settings-option:hover {
+    background: #1b2a38;
+    text-decoration: none;
+}
+
+.settings-option.active {
+    background: #263646;
+    color: var(--txt);
+    outline: 1px solid #4aa3ff;
+}
+
+.report-actions .btn {
+    background: #263646;
+    color: var(--txt);
+}
+
+.report-actions .btn.danger {
+    background: var(--danger);
+    color: #1b0f0f;
 }
 
 .inline-form {
@@ -327,10 +417,34 @@ th {
     gap: 0.8rem;
 }
 
+.chart-card {
+    display: grid;
+    gap: 0.45rem;
+    min-width: 0;
+}
+
+.chart-title {
+    margin: 0;
+    color: #a9bbcd;
+    font-size: 0.92rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+}
+
 .chart {
     min-height: 290px;
     border: 1px solid #22303d;
     border-radius: 6px;
+}
+
+.chart-error {
+    min-height: inherit;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    color: var(--muted);
+    text-align: center;
 }
 
 .charts-grid-compare {

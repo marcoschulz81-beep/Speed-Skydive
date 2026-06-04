@@ -5,9 +5,14 @@
 <section class="panel">
     <div class="panel-head">
         <h1>Sprungreport</h1>
-        <div class="actions">
-            <a class="btn {% if vm == 'simple' %}secondary{% endif %}" href="/jumps/{{ jump_id }}?view=expert">Experten-Ansicht</a>
-            <a class="btn {% if vm == 'expert' %}secondary{% endif %}" href="/jumps/{{ jump_id }}?view=simple">Einfache Ansicht</a>
+        <div class="actions report-actions">
+            <details class="settings-menu">
+                <summary class="btn secondary">Einstellungen</summary>
+                <div class="settings-actions">
+                    <a class="settings-option {% if vm == 'expert' %}active{% endif %}" href="/jumps/{{ jump_id }}?view=expert">Experten-Ansicht</a>
+                    <a class="settings-option {% if vm == 'simple' %}active{% endif %}" href="/jumps/{{ jump_id }}?view=simple">Einfache Ansicht</a>
+                </div>
+            </details>
             <a class="btn secondary" href="/jumps/{{ jump_id }}/compare?preset=best&view={{ vm }}">Mit bestem Sprung vergleichen</a>
             <form method="post" action="/jumps/{{ jump_id }}/reprocess-t0?view={{ vm }}" class="inline-form">
                 <button type="submit" class="btn secondary">Absprung neu erkennen</button>
@@ -17,7 +22,7 @@
                 <button type="submit" class="btn danger">Datensatz loeschen</button>
             </form>
             {% endif %}
-            <a class="btn" href="/jumps/{{ jump_id }}/report.pdf?view={{ vm }}">PDF Export</a>
+            <a class="btn secondary" href="/jumps/{{ jump_id }}/report.pdf?view={{ vm }}">PDF Export</a>
             <a class="btn secondary" href="/?view={{ vm }}">Neuer Upload</a>
         </div>
     </div>
@@ -321,15 +326,39 @@
 <section class="panel">
     <h2>Kurvenanalyse</h2>
     <div class="charts-grid">
-        <div id="chart-forward-track" class="chart"></div>
-        <div id="chart-vvert" class="chart"></div>
-        <div id="chart-vhor" class="chart"></div>
-        <div id="chart-angle" class="chart"></div>
+        <div class="chart-card">
+            <h3 class="chart-title">Fluglinie Vorwaerts</h3>
+            <div id="chart-forward-track" class="chart"></div>
+        </div>
+        <div class="chart-card">
+            <h3 class="chart-title">Vertikale Geschwindigkeit</h3>
+            <div id="chart-vvert" class="chart"></div>
+        </div>
+        <div class="chart-card">
+            <h3 class="chart-title">Horizontale Geschwindigkeit</h3>
+            <div id="chart-vhor" class="chart"></div>
+        </div>
+        <div class="chart-card">
+            <h3 class="chart-title">Tauchwinkel</h3>
+            <div id="chart-angle" class="chart"></div>
+        </div>
         {% if vm == "expert" %}
-        <div id="chart-height" class="chart"></div>
-        <div id="chart-acc" class="chart"></div>
-        <div id="chart-vvert-vhor" class="chart"></div>
-        <div id="chart-angle-vvert" class="chart"></div>
+        <div class="chart-card">
+            <h3 class="chart-title">Hoehe AGL</h3>
+            <div id="chart-height" class="chart"></div>
+        </div>
+        <div class="chart-card">
+            <h3 class="chart-title">Vertikale Beschleunigung</h3>
+            <div id="chart-acc" class="chart"></div>
+        </div>
+        <div class="chart-card">
+            <h3 class="chart-title">vVert vs vHor</h3>
+            <div id="chart-vvert-vhor" class="chart"></div>
+        </div>
+        <div class="chart-card">
+            <h3 class="chart-title">Winkel vs vVert</h3>
+            <div id="chart-angle-vvert" class="chart"></div>
+        </div>
         {% endif %}
     </div>
 </section>
@@ -353,8 +382,12 @@
 {% endif %}
 
 <script>
+if (!window.Plotly) {
+    window.showPlotlyLoadError?.();
+    throw new Error("Plotly unavailable");
+}
 const chartData = {{ chart_data_json | safe }};
-const report = {{ report | tojson | safe }};
+const report = {{ report_meta_json | safe }};
 const fixpoints = report.fixpoints || [];
 const metrics = report.metrics || {};
 const curveStart = Number(report.notes?.curve_window_start_s ?? 0);
@@ -491,7 +524,6 @@ if (hasForwardTrack) {
         }
     ], {
         ...baseLayout,
-        title: "Fluglinie Vorwaerts bis Abbremsbeginn (Absprung markiert)",
         xaxis: {title: "t_rel [s]", gridcolor: "#1f2933", range: [xAxisStart, forwardEnd]},
         yaxis: {title: "Vorwaerts-Strecke [m]", gridcolor: "#1f2933"},
         shapes: markerShapes().concat([
@@ -505,7 +537,6 @@ if (hasForwardTrack) {
 } else {
     Plotly.newPlot("chart-forward-track", [], {
         ...baseLayout,
-        title: "Fluglinie Vorwaerts bis Abbremsbeginn (Absprung markiert)",
         xaxis: {title: "t_rel [s]", gridcolor: "#1f2933", range: [xAxisStart, forwardEnd]},
         annotations: [{
             text: "Keine Vorwaerts-Linie verfuegbar",
@@ -518,19 +549,18 @@ if (hasForwardTrack) {
 Plotly.newPlot("chart-vvert", [{
     x: displayData.time_s, y: displayData.vVert_kmh, type: "scatter", mode: "lines", name: "vVert",
     line: {color: "#2ecc71", width: 2}
-}], {...baseLayout, title: "Vertikale Geschwindigkeit", yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
+}], {...baseLayout, yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
 
 Plotly.newPlot("chart-vhor", [{
     x: displayData.time_s, y: displayData.vHor_kmh, type: "scatter", mode: "lines", name: "vHor",
     line: {color: "#4aa3ff", width: 2}
-}], {...baseLayout, title: "Horizontale Geschwindigkeit", yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
+}], {...baseLayout, yaxis: {title: "km/h", gridcolor: "#1f2933"}}, {displayModeBar: false});
 
 Plotly.newPlot("chart-angle", [{
     x: displayData.time_s, y: displayData.angle_deg, type: "scatter", mode: "lines", name: "Winkel",
     line: {color: "#ffd166", width: 2}
 }], {
     ...baseLayout,
-    title: "Tauchwinkel",
     yaxis: {title: "Grad", gridcolor: "#1f2933", range: [0, 95]},
     shapes: markerShapes().concat([
         {type: "line", xref: "x", yref: "y", x0: curveStart, x1: curveEnd, y0: 83, y1: 83, line: {color: "rgba(255,255,255,0.25)", width: 1, dash: "dash"}},
@@ -542,12 +572,12 @@ Plotly.newPlot("chart-angle", [{
 Plotly.newPlot("chart-height", [{
     x: displayData.time_s, y: displayData.hAGL_m, type: "scatter", mode: "lines", name: "hAGL",
     line: {color: "#ff8c66", width: 2}
-}], {...baseLayout, title: "Hoehe AGL", yaxis: {title: "m", gridcolor: "#1f2933"}}, {displayModeBar: false});
+}], {...baseLayout, yaxis: {title: "m", gridcolor: "#1f2933"}}, {displayModeBar: false});
 
 Plotly.newPlot("chart-acc", [{
     x: displayData.time_s, y: displayData.accVert_mps2, type: "scatter", mode: "lines", name: "accVert",
     line: {color: "#c77dff", width: 2}
-}], {...baseLayout, title: "Vertikale Beschleunigung", yaxis: {title: "m/s2", gridcolor: "#1f2933"}}, {displayModeBar: false});
+}], {...baseLayout, yaxis: {title: "m/s2", gridcolor: "#1f2933"}}, {displayModeBar: false});
 
 Plotly.newPlot("chart-vvert-vhor", [{
     x: displayData.vHor_kmh, y: displayData.vVert_kmh, type: "scatter", mode: "lines", name: "vVert vs vHor",
@@ -557,7 +587,6 @@ Plotly.newPlot("chart-vvert-vhor", [{
     paper_bgcolor: "#11161c",
     plot_bgcolor: "#11161c",
     font: {color: "#dce3ea", size: 12},
-    title: "vVert vs vHor",
     xaxis: {title: "vHor [km/h]", gridcolor: "#1f2933"},
     yaxis: {title: "vVert [km/h]", gridcolor: "#1f2933"}
 }, {displayModeBar: false});
@@ -570,7 +599,6 @@ Plotly.newPlot("chart-angle-vvert", [{
     paper_bgcolor: "#11161c",
     plot_bgcolor: "#11161c",
     font: {color: "#dce3ea", size: 12},
-    title: "Winkel vs vVert",
     xaxis: {title: "Winkel [deg]", gridcolor: "#1f2933"},
     yaxis: {title: "vVert [km/h]", gridcolor: "#1f2933"}
 }, {displayModeBar: false});

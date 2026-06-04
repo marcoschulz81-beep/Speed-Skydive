@@ -56,6 +56,21 @@ def save_analysis_result(
     return jump["jump_id"], False
 
 
+def find_duplicate_jump_by_source_hash(*, jumper_name: str, source_file_sha256: str) -> str | None:
+    if not source_file_sha256:
+        return None
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT jump_id FROM jumps
+            WHERE jumper_name = ? AND source_file_sha256 = ?
+            LIMIT 1
+            """,
+            (jumper_name, source_file_sha256),
+        ).fetchone()
+    return None if row is None else str(row["jump_id"])
+
+
 def replace_analysis_result(
     *,
     jump_id: str,
@@ -173,7 +188,7 @@ def _insert_analysis_result(
             gpsFix, numSV, quality_flags
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        [
+        (
             (
                 s["jump_id"],
                 s["time_utc"],
@@ -198,7 +213,7 @@ def _insert_analysis_result(
                 s["quality_flags"],
             )
             for s in samples
-        ],
+        ),
     )
 
     conn.execute(

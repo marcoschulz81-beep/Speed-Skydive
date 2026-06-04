@@ -5,8 +5,13 @@
     <div class="panel-head">
         <h1>Springer: {{ jumper_name }}</h1>
         <div class="actions">
-            <a class="btn {% if (view_mode or 'expert') == 'simple' %}secondary{% endif %}" href="/jumpers/{{ jumper_name | urlencode }}?view=expert">Experten-Ansicht</a>
-            <a class="btn {% if (view_mode or 'expert') == 'expert' %}secondary{% endif %}" href="/jumpers/{{ jumper_name | urlencode }}?view=simple">Einfache Ansicht</a>
+            <details class="settings-menu">
+                <summary class="btn secondary">Einstellungen</summary>
+                <div class="settings-actions">
+                    <a class="settings-option {% if (view_mode or 'expert') == 'expert' %}active{% endif %}" href="/jumpers/{{ jumper_name | urlencode }}?view=expert">Experten-Ansicht</a>
+                    <a class="settings-option {% if (view_mode or 'expert') == 'simple' %}active{% endif %}" href="/jumpers/{{ jumper_name | urlencode }}?view=simple">Einfache Ansicht</a>
+                </div>
+            </details>
             <a class="btn secondary" href="/?view={{ view_mode or 'expert' }}">Zurueck</a>
         </div>
     </div>
@@ -406,19 +411,35 @@
 <section class="panel">
     <h2>Kurvenvergleich</h2>
     <div class="charts-grid charts-grid-compare">
-        <div id="chart-compare-vvert" class="chart"></div>
-        <div id="chart-compare-vhor" class="chart"></div>
-        <div id="chart-compare-angle" class="chart"></div>
+        <div class="chart-card">
+            <h3 class="chart-title">Vertikale Geschwindigkeit</h3>
+            <div id="chart-compare-vvert" class="chart"></div>
+        </div>
+        <div class="chart-card">
+            <h3 class="chart-title">Horizontale Geschwindigkeit</h3>
+            <div id="chart-compare-vhor" class="chart"></div>
+        </div>
+        <div class="chart-card">
+            <h3 class="chart-title">Tauchwinkel</h3>
+            <div id="chart-compare-angle" class="chart"></div>
+        </div>
     </div>
 </section>
 {% endif %}
 
 <section class="panel">
     <h2>Trend 3s-Max</h2>
-    <div id="chart-trend" class="chart"></div>
+    <div class="chart-card">
+        <h3 class="chart-title">3s-Max Verlauf</h3>
+        <div id="chart-trend" class="chart"></div>
+    </div>
 </section>
 
 <script>
+if (!window.Plotly) {
+    window.showPlotlyLoadError?.();
+    throw new Error("Plotly unavailable");
+}
 const jumps = {{ jumps | tojson | safe }};
 const sorted = [...jumps].reverse();
 const bestId = (jumps.find(j => j.is_best) || {}).jump_id;
@@ -482,7 +503,6 @@ Plotly.newPlot("chart-compare-vvert", [
     {x: right.time_s, y: right.vVert_kmh, type: "scatter", mode: "lines", name: "Vergleich", line: {width: 2, color: "#2ecc71"}}
 ], {
     ...compareLayoutBase,
-    title: "vVert Vergleich",
     yaxis: {title: {text: "km/h", standoff: 10}, gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true}
 }, {displayModeBar: false, responsive: true});
 
@@ -491,7 +511,6 @@ Plotly.newPlot("chart-compare-vhor", [
     {x: right.time_s, y: right.vHor_kmh, type: "scatter", mode: "lines", name: "Vergleich", line: {width: 2, color: "#2ecc71"}}
 ], {
     ...compareLayoutBase,
-    title: "vHor Vergleich",
     yaxis: {title: {text: "km/h", standoff: 10}, gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true}
 }, {displayModeBar: false, responsive: true});
 
@@ -500,7 +519,6 @@ Plotly.newPlot("chart-compare-angle", [
     {x: right.time_s, y: right.angle_deg, type: "scatter", mode: "lines", name: "Vergleich", line: {width: 2, color: "#2ecc71"}}
 ], {
     ...compareLayoutBase,
-    title: "Winkel Vergleich",
     yaxis: {title: {text: "deg", standoff: 10}, gridcolor: "#1f2933", tickfont: {size: 12}, automargin: true}
 }, {displayModeBar: false, responsive: true});
 {% endif %}
