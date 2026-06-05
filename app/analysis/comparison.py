@@ -202,21 +202,21 @@ def _build_insights(
                 f"{comparison_name} ist beim 3s-Max um {abs(score_row['delta']):.2f} km/h langsamer als die Referenz."
             )
         else:
-            insights.append("3s-Max ist in beiden Spruengen gleich.")
+            insights.append("3s-Max ist in beiden Sprüngen gleich.")
 
     vvert_rows = [row for row in fixpoint_rows if row.get("delta_vVert_kmh") is not None]
     if vvert_rows:
         biggest_loss = min(vvert_rows, key=lambda row: float(row["delta_vVert_kmh"]))
         if float(biggest_loss["delta_vVert_kmh"]) < -5.0:
             insights.append(
-                f"Groesster Unterschied bei vVert: um +{biggest_loss['t_rel_s']}s liegt {comparison_name} "
+                f"Größter Unterschied bei vVert: um +{biggest_loss['t_rel_s']}s liegt {comparison_name} "
                 f"{abs(float(biggest_loss['delta_vVert_kmh'])):.1f} km/h unter der Referenz."
             )
         biggest_gain = max(vvert_rows, key=lambda row: float(row["delta_vVert_kmh"]))
         if float(biggest_gain["delta_vVert_kmh"]) > 5.0:
             insights.append(
                 f"Positiver Punkt im langsameren Sprung: um +{biggest_gain['t_rel_s']}s liegt {comparison_name} "
-                f"{float(biggest_gain['delta_vVert_kmh']):.1f} km/h ueber der Referenz."
+                f"{float(biggest_gain['delta_vVert_kmh']):.1f} km/h über der Referenz."
             )
 
     vhor_rows = [row for row in fixpoint_rows if row.get("delta_vHor_kmh") is not None]
@@ -230,16 +230,16 @@ def _build_insights(
         biggest_vhor_loss = min(vhor_rows, key=lambda row: float(row["delta_vHor_kmh"]))
         if float(biggest_vhor_loss["delta_vHor_kmh"]) < -6.0:
             insights.append(
-                f"Schwaechster Punkt in vHor: bei +{biggest_vhor_loss['t_rel_s']}s liegt {comparison_name} um "
+                f"Schwächster Punkt in vHor: bei +{biggest_vhor_loss['t_rel_s']}s liegt {comparison_name} um "
                 f"{abs(float(biggest_vhor_loss['delta_vHor_kmh'])):.1f} km/h unter der Referenz."
             )
 
     risk_row = next((row for row in summary if row["label"] == "Negativ-Risiko"), None)
     if risk_row and risk_row["delta"] is not None:
         if risk_row["delta"] < -2.0:
-            insights.append(f"{comparison_name} hat hier ein niedrigeres Stabilitaetsrisiko als die Referenz.")
+            insights.append(f"{comparison_name} hat hier ein niedrigeres Stabilitätsrisiko als die Referenz.")
         elif risk_row["delta"] > 2.0:
-            insights.append(f"{comparison_name} zeigt ein hoeheres Stabilitaetsrisiko als die Referenz.")
+            insights.append(f"{comparison_name} zeigt ein höheres Stabilitätsrisiko als die Referenz.")
 
     if not insights:
         insights.append("Keine belastbaren Unterschiede gefunden (fehlende oder identische Werte).")
@@ -312,7 +312,7 @@ def _build_both_sides_strengths(
         cmp_dist = abs(float(row["right_angle_deg"]) - 84.0)
         if ref_dist + 0.8 < cmp_dist:
             reference_strengths.append(
-                f"{reference_name}: bei +{row['t_rel_s']}s naeher am Zielwinkel."
+                f"{reference_name}: bei +{row['t_rel_s']}s näher am Zielwinkel."
             )
             break
     for row in angle_rows:
@@ -320,7 +320,7 @@ def _build_both_sides_strengths(
         cmp_dist = abs(float(row["right_angle_deg"]) - 84.0)
         if cmp_dist + 0.8 < ref_dist:
             comparison_strengths.append(
-                f"{comparison_name}: bei +{row['t_rel_s']}s naeher am Zielwinkel."
+                f"{comparison_name}: bei +{row['t_rel_s']}s näher am Zielwinkel."
             )
             break
 
@@ -495,14 +495,14 @@ def _build_compare_brief(
     worst_vvert = _pick_fixpoint_row(fixpoint_rows, key="delta_vVert_kmh", direction="min")
     if worst_vvert and _num(worst_vvert.get("delta_vVert_kmh")) is not None and float(worst_vvert["delta_vVert_kmh"]) < -5.0:
         key_facts.append(
-            f"Groesster Rueckstand vVert bei +{float(worst_vvert['t_rel_s']):.0f}s: "
+            f"Größter Rückstand vVert bei +{float(worst_vvert['t_rel_s']):.0f}s: "
             f"{abs(float(worst_vvert['delta_vVert_kmh'])):.1f} km/h."
         )
 
     worst_vhor = _pick_fixpoint_row(fixpoint_rows, key="delta_vHor_kmh", direction="min")
     if worst_vhor and _num(worst_vhor.get("delta_vHor_kmh")) is not None and float(worst_vhor["delta_vHor_kmh"]) < -4.0:
         key_facts.append(
-            f"Groesster Rueckstand vHor bei +{float(worst_vhor['t_rel_s']):.0f}s: "
+            f"Größter Rückstand vHor bei +{float(worst_vhor['t_rel_s']):.0f}s: "
             f"{abs(float(worst_vhor['delta_vHor_kmh'])):.1f} km/h."
         )
 
@@ -536,7 +536,7 @@ def _build_compare_brief(
                 f"Im Segment {label} baut der Vergleich klar weniger vertikalen Speed auf ({gain_delta:.1f} km/h Delta)."
             )
             actions.append(
-                f"Im Segment {label} frueher konstant Druck aufbauen, damit der vVert-Aufbau nicht abreisst."
+                f"Im Segment {label} früher konstant Druck aufbauen, damit der vVert-Aufbau nicht abreißt."
             )
 
         if label in {"10-15s", "15-20s"} and angle_delta is not None and angle_delta < -2.0:
@@ -544,7 +544,7 @@ def _build_compare_brief(
                 f"Im Segment {label} ist der Vergleich flacher als die Referenz ({angle_delta:.1f} Grad Delta)."
             )
             actions.append(
-                f"Im Segment {label} den Tauchwinkel frueher stabil in den Zielbereich bringen (kleine, fruehe Korrekturen)."
+                f"Im Segment {label} den Tauchwinkel früher stabil in den Zielbereich bringen (kleine, frühe Korrekturen)."
             )
 
         if label in {"20-25s"} and angle_delta is not None and angle_delta > 2.0:
@@ -557,10 +557,10 @@ def _build_compare_brief(
 
         if label in {"20-25s"} and min_vhor_delta is not None and min_vhor_delta < -5.0:
             main_issues.append(
-                f"Im Segment {label} faellt vHor im Vergleich deutlich tiefer ({min_vhor_delta:.1f} km/h Delta)."
+                f"Im Segment {label} fällt vHor im Vergleich deutlich tiefer ({min_vhor_delta:.1f} km/h Delta)."
             )
             actions.append(
-                "Ab +20s Koerperspannung frueher stabilisieren, damit vHor nicht zu stark einbricht."
+                "Ab +20s Körperspannung früher stabilisieren, damit vHor nicht zu stark einbricht."
             )
 
         if label in {"20-25s"} and turns_delta is not None and turns_delta >= 2.0:
@@ -568,7 +568,7 @@ def _build_compare_brief(
                 f"Im Segment {label} zeigt der Vergleich mehr Nachkorrekturen als die Referenz (+{turns_delta:.0f})."
             )
             actions.append(
-                "In der Endphase kleinere Korrekturen frueher setzen statt spaete grobe Gegenbewegungen."
+                "In der Endphase kleinere Korrekturen früher setzen statt späte grobe Gegenbewegungen."
             )
 
         if gain_delta is not None and gain_delta > 8.0:
@@ -585,22 +585,22 @@ def _build_compare_brief(
     actions = _unique_keep_order(actions)[:5]
 
     if not strengths:
-        strengths = ["Beide Spruenge sind verwertbar; die Unterschiede liegen vor allem in der spaeten Stabilitaet."]
+        strengths = ["Beide Sprünge sind verwertbar; die Unterschiede liegen vor allem in der späten Stabilität."]
     if not main_issues:
-        main_issues = ["Keine grosse technische Abweichung zwischen den beiden Spruengen erkennbar."]
+        main_issues = ["Keine große technische Abweichung zwischen den beiden Sprüngen erkennbar."]
     if not actions:
-        actions = ["Ablauf des schnelleren Sprungs moeglichst exakt reproduzieren und nur kleine Korrekturen setzen."]
+        actions = ["Ablauf des schnelleren Sprungs möglichst exakt reproduzieren und nur kleine Korrekturen setzen."]
 
     if delta_3s is None:
-        summary_text = "Vergleich liegt vor, aber 3s-Max konnte nicht sicher gegenuebergestellt werden."
+        summary_text = "Vergleich liegt vor, aber 3s-Max konnte nicht sicher gegenübergestellt werden."
     elif delta_3s <= -8.0:
         summary_text = (
             "Der Vergleichssprung ist klar langsamer. Hauptunterschied: "
-            "in den spaeten Phasen geht Stabilitaet verloren und der Aufbau bricht frueher ab."
+            "in den späten Phasen geht Stabilität verloren und der Aufbau bricht früher ab."
         )
     elif delta_3s < 0.0:
         summary_text = (
-            "Der Vergleichssprung ist etwas langsamer. Mit stabilerer Linie in der Hot-Zone ist der Rueckstand schliessbar."
+            "Der Vergleichssprung ist etwas langsamer. Mit stabilerer Linie in der Hot-Zone ist der Rückstand schließbar."
         )
     else:
         summary_text = (

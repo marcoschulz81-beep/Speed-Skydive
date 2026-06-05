@@ -23,7 +23,6 @@ from app.analysis.potential import build_speed_potential_preview
 from app.analysis.review import build_jump_review
 from app.config import BASE_DIR, COACH_VIEW_ENABLED, RAW_UPLOAD_DIR
 from app.database import init_db
-from app.report_pdf import build_pdf
 from app.services.storage import (
     delete_jump,
     find_duplicate_jump_by_source_hash,
@@ -39,6 +38,7 @@ from app.services.storage import (
     replace_analysis_result,
     save_analysis_result,
 )
+from app.text_utils import normalize_german_text
 
 app = FastAPI(title="Speed-Skydive Analyzer", version="1.0.0")
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
@@ -69,7 +69,7 @@ _SEMANTIC_DEDUPE_STOPWORDS: set[str] = {
     "bis",
     "von",
     "zu",
-    "fuer",
+    "für",
     "nach",
     "vor",
     "ist",
@@ -90,6 +90,9 @@ _SEMANTIC_DEDUPE_STOPWORDS: set[str] = {
     "diesen",
     "dieser",
 }
+_SEMANTIC_DEDUPE_STOPWORDS = {
+    normalize_german_text(item) for item in _SEMANTIC_DEDUPE_STOPWORDS
+}
 
 _VIEW_MODE_SIMPLE = "simple"
 _VIEW_MODE_EXPERT = "expert"
@@ -97,20 +100,20 @@ _INDEX_RECENT_JUMPS_LIMIT = 10
 _TRUTHY_QUERY_VALUES = {"1", "true", "yes", "open"}
 
 _SIMPLE_GLOSSARY_ITEMS: list[tuple[str, str]] = [
-    ("Druck halten", "Koerper ruhig und fest im Luftstrom lassen, ohne hektische Bewegungen."),
-    ("Druck", "Wie stark du den Koerper in den Luftstrom stellst, um Geschwindigkeit aufzubauen."),
-    ("kleine Korrekturen", "Kurze, minimale Bewegungen statt grosser spaeter Gegenbewegungen."),
+    ("Druck halten", "Körper ruhig und fest im Luftstrom lassen, ohne hektische Bewegungen."),
+    ("Druck", "Wie stark du den Körper in den Luftstrom stellst, um Geschwindigkeit aufzubauen."),
+    ("kleine Korrekturen", "Kurze, minimale Bewegungen statt großer später Gegenbewegungen."),
     ("Korrekturen", "Bewusste kleine Bewegungen, um Richtung und Lage nachzujustieren."),
-    ("Linie", "Deine Flugrichtung und Koerperlage, die moeglichst ruhig bleiben soll."),
+    ("Linie", "Deine Flugrichtung und Körperlage, die möglichst ruhig bleiben soll."),
     ("Aufbauphase", "Abschnitt nach dem Start, in dem du kontrolliert Geschwindigkeit aufbaust."),
     ("schnelle Phase", "Der schnellste Teil des Sprungs kurz vor dem Abbremsen."),
     ("Beschleunigung", "Wie schnell deine Geschwindigkeit zunimmt."),
     ("flacher gehen", "Winkel etwas weniger steil machen, um den Flug zu beruhigen."),
     ("Richtungswechsel", "Wenn die Flugrichtung oft hin und her springt."),
-    ("Vorwaertsrichtung", "Der Anteil deiner Bewegung, der sauber nach vorne zeigt."),
+    ("Vorwärtsrichtung", "Der Anteil deiner Bewegung, der sauber nach vorne zeigt."),
 ]
 _SIMPLE_GLOSSARY_LOOKUP: dict[str, str] = {
-    key.casefold(): tip for key, tip in _SIMPLE_GLOSSARY_ITEMS
+    normalize_german_text(key): tip for key, tip in _SIMPLE_GLOSSARY_ITEMS
 }
 _SIMPLE_GLOSSARY_PATTERN: re.Pattern[str] | None = (
     re.compile(
@@ -516,11 +519,17 @@ def reprocess_t0(jump_id: str, view: str | None = None):
             original_name=report["jump"]["file_name"],
             content=content,
         )
+        quality_flags = set(report.get("quality_flags") or [])
+        ground_elevation_m = (
+            None
+            if "NO_GROUND_LEVEL" in quality_flags
+            else report["jump"].get("ground_elevation_m")
+        )
         new_result = analyze_flysight_csv(
             content=content,
             file_name=report["jump"]["file_name"],
             jumper_name=report["jump"]["jumper_name"],
-            ground_elevation_m=report["jump"].get("ground_elevation_m"),
+            ground_elevation_m=ground_elevation_m,
             breakoff_altitude_agl_m=None,
         )
         replace_analysis_result(
@@ -551,11 +560,11 @@ def delete_jump_dataset(jump_id: str, view: str | None = None):
     file_name = str(summary.get("file_name") or jump_id)
     deleted = delete_jump(jump_id)
     if not deleted:
-        msg = "Datensatz konnte nicht geloescht werden."
+        msg = "Datensatz konnte nicht gelöscht werden."
         return RedirectResponse(url=f"/?view={view_mode}&error={quote_plus(msg)}", status_code=303)
     _clear_derived_caches()
 
-    ok_msg = f"Datensatz geloescht: {file_name}"
+    ok_msg = f"Datensatz gelöscht: {file_name}"
     return RedirectResponse(url=f"/?view={view_mode}&message={quote_plus(ok_msg)}", status_code=303)
 
 
@@ -601,7 +610,7 @@ def jump_compare(
         if compare_summary is None:
             compare_error = "Vergleichssprung nicht gefunden."
         elif compare_jump_id == jump_id:
-            compare_error = "Bitte einen anderen Sprung als Vergleich auswaehlen."
+            compare_error = "Bitte einen anderen Sprung als Vergleich auswählen."
         else:
             compare_report = get_jump_report(compare_jump_id)
             if compare_report is None:
@@ -631,17 +640,6 @@ def jump_compare(
             "needs_plotly": True,
         },
     )
-
-
-@app.get("/jumps/{jump_id}/report.pdf")
-def jump_pdf(jump_id: str):
-    report = get_jump_report(jump_id)
-    if report is None:
-        raise HTTPException(status_code=404, detail="Sprung nicht gefunden.")
-    pdf_bytes = build_pdf(report)
-    file_name = f"speed_report_{jump_id}.pdf"
-    headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
-    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 
 @app.get("/jumpers/{jumper_name}")
@@ -692,14 +690,14 @@ def jumper_compare(
     compare_chart_json: str | None = None
 
     if left_jump_id == right_jump_id:
-        compare_error = "Bitte zwei unterschiedliche Spruenge auswaehlen."
+        compare_error = "Bitte zwei unterschiedliche Sprünge auswählen."
     elif left_jump_id not in jump_ids or right_jump_id not in jump_ids:
-        compare_error = "Vergleich ungueltig: Spruenge gehoeren nicht zu diesem Springer."
+        compare_error = "Vergleich ungültig: Sprünge gehoeren nicht zu diesem Springer."
     else:
         left_report = get_jump_report(left_jump_id)
         right_report = get_jump_report(right_jump_id)
         if left_report is None or right_report is None:
-            compare_error = "Vergleich ungueltig: Mindestens ein Sprung wurde nicht gefunden."
+            compare_error = "Vergleich ungültig: Mindestens ein Sprung wurde nicht gefunden."
         else:
             compare_result = build_jump_comparison(left_report=left_report, right_report=right_report)
             compare_chart_json = json.dumps(compare_result["charts"])
@@ -848,7 +846,7 @@ def _parse_optional_float(raw: str) -> float | None:
     try:
         return float(raw.replace(",", "."))
     except ValueError as exc:
-        raise ValueError(f"Ungueltiger Zahlenwert: {raw}") from exc
+        raise ValueError(f"Ungültiger Zahlenwert: {raw}") from exc
 
 
 def _build_scorecard_rows(
@@ -946,7 +944,7 @@ def _build_scorecard_rows(
         phase_window_label=build_window_label,
     )
     if build_coverage < 0.75:
-        build_reason_lines.insert(0, "Die Aufbauphase ist im individuellen Messfenster nicht vollstaendig abgedeckt.")
+        build_reason_lines.insert(0, "Die Aufbauphase ist im individuellen Messfenster nicht vollständig abgedeckt.")
     build_reason = _join_reason_lines(build_reason_lines)
 
     # 3) Hot-Zone
@@ -959,9 +957,9 @@ def _build_scorecard_rows(
     hot_reason = str(hot_zone["reason"])
     hot_reason_lines = list(hot_zone.get("reason_lines") or [hot_reason])
     if hot_coverage < 0.75:
-        hot_reason_lines.insert(0, "Die Hot-Zone ist im individuellen Messfenster nur eingeschraenkt abgedeckt.")
+        hot_reason_lines.insert(0, "Die Hot-Zone ist im individuellen Messfenster nur eingeschränkt abgedeckt.")
 
-    # 4) Stabilitaet / Kipp-Risiko
+    # 4) Stabilität / Kipp-Risiko
     risk_score_raw = _to_float(metrics.get("negative_risk_score"))
     risk_label = str(scorecard.get("kipp_risiko") or "")
     if risk_score_raw is not None:
@@ -1023,7 +1021,7 @@ def _build_scorecard_rows(
             "reason_lines": hot_reason_lines,
         },
         {
-            "name": "Stabilitaet / Kipp-Risiko",
+            "name": "Stabilität / Kipp-Risiko",
             "status": _score_status_label(stability_score),
             "score": stability_score,
             "reason": stability_reason,
@@ -1055,9 +1053,9 @@ def _build_phase_rows_with_reference(
         item = dict(row)
         gap_in_phase = bool(phase_has_gap.get(name))
         if gap_in_phase:
-            item["avg_vVert_display"] = "nicht belastbar (Datenluecke)"
-            item["avg_vHor_display"] = "nicht belastbar (Datenluecke)"
-            item["avg_angle_display"] = "nicht belastbar (Datenluecke)"
+            item["avg_vVert_display"] = "nicht belastbar (Datenlücke)"
+            item["avg_vHor_display"] = "nicht belastbar (Datenlücke)"
+            item["avg_angle_display"] = "nicht belastbar (Datenlücke)"
             out.append(item)
             continue
         item["avg_vVert_display"] = _format_value_with_reference(
@@ -1104,7 +1102,7 @@ def _build_normalized_phase_rows(report: dict[str, Any]) -> list[dict[str, Any]]
         ("Aufbauphase", 0.15, 0.45),
         ("Hauptbeschleunigung", 0.45, 0.70),
         ("Hot-Zone", 0.70, 0.90),
-        ("Spaetphase", 0.90, 1.00),
+        ("Spätphase", 0.90, 1.00),
     ]
     rows: list[dict[str, Any]] = []
     for name, tau0, tau1 in phase_specs:
@@ -1257,7 +1255,7 @@ def _phase_comment_light(name: str, avg_vvert: float, avg_vhor: float, avg_angle
         return "Hot-Zone ist stabil nutzbar."
     if avg_vvert > 380.0:
         return "Speed bleibt hoch, Ausstieg sauber timen."
-    return "Spaetphase kontrolliert."
+    return "Spätphase kontrolliert."
 
 
 def _phase_gap_map(report: dict[str, Any]) -> dict[str, bool]:
@@ -1418,7 +1416,7 @@ def _annotate_scorecard_with_reference(
             )
             if line:
                 benchmark_lines.append(line)
-        elif name == "Stabilitaet / Kipp-Risiko":
+        elif name == "Stabilität / Kipp-Risiko":
             line = _metric_compare_line(
                 label="vHor-Min Hot-Zone",
                 current=current.get("vhor_min_20_25"),
@@ -1890,7 +1888,7 @@ def _build_jump_brief_summary(
             f"({best_reference.get('file_name')}, {best_reference.get('t0_utc')})."
         )
     if top_reference_jumps:
-        basis_lines.append("Zusatz-Benchmark: Top-5 schnellste plausible Spruenge aller Springer.")
+        basis_lines.append("Zusatz-Benchmark: Top-5 schnellste plausible Sprünge aller Springer.")
 
     best_3s_kmh = _to_float(metrics.get("best_3s_vVert_kmh"))
     best_3s_start = _to_float(metrics.get("best_3s_start_s"))
@@ -1909,16 +1907,16 @@ def _build_jump_brief_summary(
         key_facts.append(f"Ausgewerteter Bereich: +{curve_start:.1f}s bis +{curve_end:.1f}s.")
 
     if blocked:
-        summary = blocked_reason or "Sprungdaten nicht korrekt. Der Sprung endet zu frueh."
+        summary = blocked_reason or "Sprungdaten nicht korrekt. Der Sprung endet zu früh."
         return {
             "summary": summary,
             "basis_lines": basis_lines,
             "key_facts": key_facts,
             "main_issues": [summary],
-            "strengths": ["Keine belastbare Technikbewertung moeglich."],
+            "strengths": ["Keine belastbare Technikbewertung möglich."],
             "actions": [
                 "Sprung mit korrekter Absprungerkennung neu einlesen.",
-                "Wenn der Track wirklich so kurz ist, nicht fuer Technikvergleich nutzen.",
+                "Wenn der Track wirklich so kurz ist, nicht für Technikvergleich nutzen.",
             ],
         }
 
@@ -1950,7 +1948,7 @@ def _build_jump_brief_summary(
     else:
         focus_names = ", ".join(str(row.get("name", "")).strip() for row in weak_rows[:2] if row.get("name"))
         speed_text = f" Top-Speed: {best_3s_kmh:.1f} km/h." if best_3s_kmh is not None else ""
-        summary = f"Die groessten Baustellen liegen bei {focus_names}.{speed_text}".strip()
+        summary = f"Die größten Baustellen liegen bei {focus_names}.{speed_text}".strip()
 
     review_not_good = _sort_texts_by_timeline(review.get("not_good", [])[:4])
     main_issue_candidates = (
@@ -1974,7 +1972,7 @@ def _build_jump_brief_summary(
         + review.get("good", [])[:3]
     )[:4]
     if not strengths:
-        strengths = ["Der Sprung ist insgesamt verwertbar und stabil genug fuer Coaching."]
+        strengths = ["Der Sprung ist insgesamt verwertbar und stabil genug für Coaching."]
 
     cleaned_actions = [_strip_priority_prefix(item) for item in review.get("improve", []) if item]
     cleaned_actions = _sort_texts_by_timeline(_unique_texts(cleaned_actions))
@@ -2007,7 +2005,7 @@ def _build_jump_brief_simple(
     blocked_reason = str(notes.get("analysis_block_reason") or "").strip()
 
     if blocked:
-        summary = blocked_reason or "Sprungdaten nicht korrekt. Der Sprung endet zu frueh."
+        summary = blocked_reason or "Sprungdaten nicht korrekt. Der Sprung endet zu früh."
         summary_ui = _render_simple_glossary(summary)
         return {
             "summary": summary,
@@ -2016,15 +2014,15 @@ def _build_jump_brief_simple(
             "basis_line_ui": "",
             "main_issues": [summary],
             "main_issues_ui": [summary_ui],
-            "strengths": ["Keine belastbare Bewertung moeglich."],
-            "strengths_ui": ["Keine belastbare Bewertung moeglich."],
+            "strengths": ["Keine belastbare Bewertung möglich."],
+            "strengths_ui": ["Keine belastbare Bewertung möglich."],
             "actions": [
                 "Sprungdatei neu einlesen und Absprungzeitpunkt pruefen.",
-                "Diesen Sprung nicht fuer den Technikvergleich nutzen.",
+                "Diesen Sprung nicht für den Technikvergleich nutzen.",
             ],
             "actions_ui": [
                 _render_simple_glossary("Sprungdatei neu einlesen und Absprungzeitpunkt pruefen."),
-                _render_simple_glossary("Diesen Sprung nicht fuer den Technikvergleich nutzen."),
+                _render_simple_glossary("Diesen Sprung nicht für den Technikvergleich nutzen."),
             ],
         }
 
@@ -2046,9 +2044,9 @@ def _build_jump_brief_simple(
     )
     if weak_labels:
         if len(weak_labels) == 1:
-            summary = f"Dein groesster Hebel liegt aktuell bei: {weak_labels[0]}."
+            summary = f"Dein größter Hebel liegt aktuell bei: {weak_labels[0]}."
         else:
-            summary = f"Deine groessten Hebel liegen aktuell bei: {weak_labels[0]} und {weak_labels[1]}."
+            summary = f"Deine größten Hebel liegen aktuell bei: {weak_labels[0]} und {weak_labels[1]}."
     else:
         summary = "Stabiler Sprung mit guter Linie. Jetzt vor allem ruhig wiederholen."
 
@@ -2100,7 +2098,7 @@ def _build_jump_brief_simple(
         ]
     )
     if not actions:
-        actions = ["Diesen Ablauf im naechsten Sprung ruhig und sauber wiederholen."]
+        actions = ["Diesen Ablauf im nächsten Sprung ruhig und sauber wiederholen."]
     actions = actions[:3]
 
     basis_line = ""
@@ -2139,7 +2137,7 @@ def _render_simple_glossary(text: str) -> str:
         if start > last:
             out.append(html_escape(raw[last:start]))
         token = match.group(0)
-        tip = _SIMPLE_GLOSSARY_LOOKUP.get(token.casefold())
+        tip = _SIMPLE_GLOSSARY_LOOKUP.get(normalize_german_text(token))
         if not tip:
             out.append(html_escape(token))
         else:
@@ -2155,54 +2153,54 @@ def _render_simple_glossary(text: str) -> str:
 
 
 def _simple_phase_label(phase_name: str) -> str:
-    lowered = phase_name.strip().lower()
+    lowered = normalize_german_text(phase_name.strip())
     if "exit" in lowered:
         return "Startphase"
     if "aufbau" in lowered:
         return "Aufbauphase"
     if "hot" in lowered:
         return "schnelle Phase"
-    if "stabilitaet" in lowered or "kipp" in lowered:
+    if "stabilität" in lowered or "kipp" in lowered:
         return "Flugruhe"
     return "Flugverlauf"
 
 
 def _simple_issue_for_phase(*, phase_name: str, score: int) -> str:
-    lowered = phase_name.strip().lower()
+    lowered = normalize_german_text(phase_name.strip())
     if "exit" in lowered:
         if score < 55:
             return "Der Start war zu unruhig. Du verlierst direkt nach dem Absprung zu viel Druck."
         return "Der Start war okay, aber der Druck wurde nicht stabil genug mitgenommen."
     if "aufbau" in lowered:
         if score < 55:
-            return "Im Mittelteil bricht der Aufbau zu frueh ab. Die Beschleunigung bleibt nicht konstant."
-        return "Im Mittelteil fehlt noch ein ruhiger, gleichmaessiger Aufbau."
+            return "Im Mittelteil bricht der Aufbau zu früh ab. Die Beschleunigung bleibt nicht konstant."
+        return "Im Mittelteil fehlt noch ein ruhiger, gleichmäßiger Aufbau."
     if "hot" in lowered:
         if score < 55:
-            return "In der schnellen Phase geht zu viel Stabilitaet verloren. Dadurch faellt Speed weg."
+            return "In der schnellen Phase geht zu viel Stabilität verloren. Dadurch fällt Speed weg."
         return "In der schnellen Phase gab es zu viele Korrekturen. Das kostet Tempo."
-    if "stabilitaet" in lowered or "kipp" in lowered:
+    if "stabilität" in lowered or "kipp" in lowered:
         if score < 55:
             return "Der Flug war im schnellen Teil deutlich unruhig."
-        return "Der Flug war stellenweise unruhig, vor allem im spaeten schnellen Abschnitt."
+        return "Der Flug war stellenweise unruhig, vor allem im späten schnellen Abschnitt."
     return "Der Flug war nicht durchgehend ruhig und stabil."
 
 
 def _simple_strength_for_phase(*, phase_name: str, score: int) -> str:
-    lowered = phase_name.strip().lower()
+    lowered = normalize_german_text(phase_name.strip())
     if "exit" in lowered:
         return "Der Start war kontrolliert."
     if "aufbau" in lowered:
         return "Der Aufbau in die Beschleunigung war sauber."
     if "hot" in lowered:
-        return "Die schnelle Phase war ueber weite Strecken stabil."
-    if "stabilitaet" in lowered or "kipp" in lowered:
-        return "Die Fluglinie blieb ueber weite Strecken ruhig."
+        return "Die schnelle Phase war über weite Strecken stabil."
+    if "stabilität" in lowered or "kipp" in lowered:
+        return "Die Fluglinie blieb über weite Strecken ruhig."
     return "Der Sprung war in diesem Bereich stabil."
 
 
 def _simple_action_for_phase(*, phase_name: str, score: int) -> str:
-    lowered = phase_name.strip().lower()
+    lowered = normalize_german_text(phase_name.strip())
     if "exit" in lowered:
         return (
             "Startphase: Nach dem Absprung 2-3 Sekunden ruhig Druck halten "
@@ -2210,21 +2208,21 @@ def _simple_action_for_phase(*, phase_name: str, score: int) -> str:
         )
     if "aufbau" in lowered:
         return (
-            "Aufbauphase: Zwischen +10s und +20s gleichmaessig weiter beschleunigen, "
+            "Aufbauphase: Zwischen +10s und +20s gleichmäßig weiter beschleunigen, "
             "ohne hektische Richtungswechsel."
         )
     if "hot" in lowered:
         return (
-            "Schnelle Phase: Kleine, fruehe Korrekturen setzen. "
-            "Spaete grosse Korrekturen vermeiden."
+            "Schnelle Phase: Kleine, frühe Korrekturen setzen. "
+            "Späte große Korrekturen vermeiden."
         )
-    if "stabilitaet" in lowered or "kipp" in lowered:
+    if "stabilität" in lowered or "kipp" in lowered:
         if score < 55:
             return (
                 "Wenn der Flug unruhig wird: kurz etwas flacher gehen, "
                 "Linie beruhigen, dann wieder sauber aufbauen."
             )
-        return "Linie ruhig halten und jede Korrektur so klein wie moeglich setzen."
+        return "Linie ruhig halten und jede Korrektur so klein wie möglich setzen."
     return "Ruhiger fliegen: kleine Korrekturen, klare Linie, keine hektischen Nachbewegungen."
 
 
@@ -2244,9 +2242,9 @@ def _simplify_coaching_line(text: str) -> str:
     replacements = [
         (r"\bhot-zone\b", "schnelle Phase"),
         (r"\bhot phase\b", "schnelle Phase"),
-        (r"im relevanten bereich vorwaertsgerichtet", "nach vorne ausgerichtet"),
-        (r"vorwaertsbewegung", "Vorwaertsrichtung"),
-        (r"\bvhor\b", "Vorwaertsrichtung"),
+        (r"im relevanten bereich vorwärtsgerichtet", "nach vorne ausgerichtet"),
+        (r"vorwärtsbewegung", "Vorwärtsrichtung"),
+        (r"\bvhor\b", "Vorwärtsrichtung"),
         (r"\bvvert\b", "Geschwindigkeit nach unten"),
     ]
     for pattern, repl in replacements:
@@ -2257,7 +2255,7 @@ def _simplify_coaching_line(text: str) -> str:
 
 def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> dict[str, Any]:
     if not jumps:
-        return {"available": False, "reason": "Keine Spruenge vorhanden."}
+        return {"available": False, "reason": "Keine Sprünge vorhanden."}
 
     rows = _sort_by_t0_desc(jumps)
     signature = _jumper_summary_signature(rows)
@@ -2273,7 +2271,7 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
             reports.append(report)
 
     if not reports:
-        result = {"available": False, "reason": "Keine auswertbaren Spruenge vorhanden."}
+        result = {"available": False, "reason": "Keine auswertbaren Sprünge vorhanden."}
         _JUMPER_SUMMARY_CACHE[cache_key] = (signature, result)
         return result
 
@@ -2282,7 +2280,7 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
     records = [_build_jumper_record(item, marco_profile=marco_profile) for item in reports]
     records = [item for item in records if item]
     if not records:
-        result = {"available": False, "reason": "Keine auswertbaren Spruenge vorhanden."}
+        result = {"available": False, "reason": "Keine auswertbaren Sprünge vorhanden."}
         _JUMPER_SUMMARY_CACHE[cache_key] = (signature, result)
         return result
 
@@ -2292,11 +2290,11 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
     worse_rows = [row for row in trend_rows if row.get("status") == "schlechter"]
 
     if not trend_rows:
-        trend_summary = "Zu wenig Spruenge fuer einen belastbaren Verlauf (mindestens 4 noetig)."
+        trend_summary = "Zu wenig Sprünge für einen belastbaren Verlauf (mindestens 4 nötig)."
     elif worse_rows and better_rows:
         trend_summary = "Gemischter Verlauf: einige Punkte wurden besser, andere zuletzt schlechter."
     elif worse_rows:
-        trend_summary = "Zuletzt eher ruecklaeufig: zentrale Punkte sind aktuell schlechter als frueher."
+        trend_summary = "Zuletzt eher rückläufig: zentrale Punkte sind aktuell schlechter als früher."
     elif better_rows:
         trend_summary = "Positiver Verlauf: zentrale Punkte sind zuletzt besser geworden."
     else:
@@ -2374,7 +2372,7 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
     if not records:
         return {
             "available": False,
-            "reason": "Keine Spruenge vorhanden.",
+            "reason": "Keine Sprünge vorhanden.",
             "stable_lines": [],
             "unstable_lines": [],
             "stable_short": "-",
@@ -2383,8 +2381,8 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
             "unstable_count": 0,
             "bands": {"stable": {}, "unstable": {}},
             "thresholds": {},
-            "capability_profile": {"mode": "basis", "label": "Basis", "text": "Zu wenige Daten fuer eine persoenliche Einstufung."},
-            "asymmetry_profile": {"available": False, "reason": "Zu wenige Spruenge fuer eine Seitlinien-Analyse."},
+            "capability_profile": {"mode": "basis", "label": "Basis", "text": "Zu wenige Daten für eine persönliche Einstufung."},
+            "asymmetry_profile": {"available": False, "reason": "Zu wenige Sprünge für eine Seitlinien-Analyse."},
         }
 
     raw_usable = [
@@ -2419,7 +2417,7 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
     if len(usable) < 2:
         return {
             "available": False,
-            "reason": "Zu wenige verwertbare Spruenge fuer eine persoenliche Stabilitaets-Referenz.",
+            "reason": "Zu wenige verwertbare Sprünge für eine persönliche Stabilitäts-Referenz.",
             "stable_lines": [],
             "unstable_lines": [],
             "stable_short": "-",
@@ -2428,8 +2426,8 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
             "unstable_count": 0,
             "bands": {"stable": {}, "unstable": {}},
             "thresholds": {},
-            "capability_profile": {"mode": "basis", "label": "Basis", "text": "Zu wenige Daten fuer eine persoenliche Einstufung."},
-            "asymmetry_profile": {"available": False, "reason": "Zu wenige Spruenge fuer eine Seitlinien-Analyse."},
+            "capability_profile": {"mode": "basis", "label": "Basis", "text": "Zu wenige Daten für eine persönliche Einstufung."},
+            "asymmetry_profile": {"available": False, "reason": "Zu wenige Sprünge für eine Seitlinien-Analyse."},
         }
 
     stable_rows = [
@@ -2525,7 +2523,7 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
         )
     if stable_lat_abs_stats is not None and stable_lat_heading_stats is not None:
         stable_lines.append(
-            "Seitliche Linie in stabilen Spruengen: "
+            "Seitliche Linie in stabilen Sprüngen: "
             f"|Seitbewegung| in der Hot-Zone meist {_fmt_band(stable_lat_abs_stats['low'], stable_lat_abs_stats['high'], 1)} km/h, "
             f"Richtungswechsel meist <= {int(round((stable_lat_turn_stats or {'high': 2.0})['high']))}."
         )
@@ -2538,7 +2536,7 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
         angle_limit = max(stable_angle20["high"], stable_angle20["median"] + 0.6)
         if unstable_angle20["median"] >= angle_limit - 0.4:
             unstable_lines.append(
-                f"Ab +20s wird es oft unruhig, wenn der Winkel ueber etwa {angle_limit:.1f} Grad geht."
+                f"Ab +20s wird es oft unruhig, wenn der Winkel über etwa {angle_limit:.1f} Grad geht."
             )
 
     unstable_vhor = unstable_vhor_stats
@@ -2546,11 +2544,11 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
         floor = stable_vhor["low"]
         if unstable_vhor["median"] <= floor + 1.0:
             unstable_lines.append(
-                f"Wird oft instabil, wenn vHor-Min im Segment 20-25s unter ca. {floor:.1f} km/h faellt."
+                f"Wird oft instabil, wenn vHor-Min im Segment 20-25s unter ca. {floor:.1f} km/h fällt."
             )
     if unstable_vhor is not None and unstable_vhor["median"] < 25.0:
         unstable_lines.append(
-            f"In unruhigen Spruengen liegt vHor-Min 20-25s oft nur bei {_fmt_band(unstable_vhor['low'], unstable_vhor['high'], 1)} km/h."
+            f"In unruhigen Sprüngen liegt vHor-Min 20-25s oft nur bei {_fmt_band(unstable_vhor['low'], unstable_vhor['high'], 1)} km/h."
         )
 
     unstable_turns = unstable_turns_stats
@@ -2563,7 +2561,7 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
             )
     if unstable_turns is not None and unstable_turns["median"] >= 3.0:
         unstable_lines.append(
-            f"In unruhigen Spruengen gibt es im Segment 20-25s meist {_fmt_band(unstable_turns['low'], unstable_turns['high'], 0)} Richtungswechsel."
+            f"In unruhigen Sprüngen gibt es im Segment 20-25s meist {_fmt_band(unstable_turns['low'], unstable_turns['high'], 0)} Richtungswechsel."
         )
     if (
         stable_lat_abs_stats is not None
@@ -2586,11 +2584,11 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
     unstable_gain = unstable_gain_stats
     if stable_gain is not None and unstable_gain is not None and unstable_gain["median"] + 8.0 < stable_gain["median"]:
         unstable_lines.append(
-            f"Wenn der Aufbau +10 bis +20s unter etwa {stable_gain['low']:.1f} km/h bleibt, wird die Linie haeufig spaeter unruhig."
+            f"Wenn der Aufbau +10 bis +20s unter etwa {stable_gain['low']:.1f} km/h bleibt, wird die Linie häufig später unruhig."
         )
     if unstable_angle20 is not None and unstable_angle20["median"] >= 85.0:
         unstable_lines.append(
-            f"Unruhige Spruenge laufen haeufig mit +20s-Winkeln um {_fmt_band(unstable_angle20['low'], unstable_angle20['high'], 1)} Grad."
+            f"Unruhige Sprünge laufen häufig mit +20s-Winkeln um {_fmt_band(unstable_angle20['low'], unstable_angle20['high'], 1)} Grad."
         )
 
     asymmetry_profile = _build_lateral_asymmetry_profile(usable)
@@ -2600,12 +2598,12 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
             unstable_lines.append(asym_text)
 
     if not stable_lines and stable_rows:
-        stable_lines.append("Stabile Spruenge vorhanden, aber noch zu wenig gemeinsame Fixpunkte fuer einen engen Korridor.")
+        stable_lines.append("Stabile Sprünge vorhanden, aber noch zu wenig gemeinsame Fixpunkte für einen engen Korridor.")
     if not unstable_lines and unstable_rows:
-        unstable_lines.append("Noch kein eindeutiger Instabilitaets-Trigger; weiter sammeln fuer schaerfere Grenzen.")
+        unstable_lines.append("Noch kein eindeutiger Instabilitäts-Trigger; weiter sammeln für schärfere Grenzen.")
 
     stable_short = stable_lines[0] if stable_lines else "Noch keine stabile Referenz."
-    unstable_short = unstable_lines[0] if unstable_lines else "Noch kein klarer Instabilitaets-Trigger."
+    unstable_short = unstable_lines[0] if unstable_lines else "Noch kein klarer Instabilitäts-Trigger."
     if len(stable_lines) > 1:
         stable_short = f"{stable_short} | {stable_lines[1]}"
 
@@ -2636,20 +2634,20 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
     }
     if capability_mode == "push":
         capability_text = (
-            f"Letzte {recent_window} Spruenge: {stable_recent_hits}/{recent_window} stabil "
+            f"Letzte {recent_window} Sprünge: {stable_recent_hits}/{recent_window} stabil "
             f"({stable_ratio_pct:.0f}%). Du kannst vorsichtig in den oberen Zielbereich gehen."
         )
     elif capability_mode == "safe":
         capability_text = (
-            f"Letzte {recent_window} Spruenge: {stable_recent_hits}/{recent_window} stabil "
-            f"({stable_ratio_pct:.0f}%). Erst Stabilitaet sichern, dann Tempo pushen."
+            f"Letzte {recent_window} Sprünge: {stable_recent_hits}/{recent_window} stabil "
+            f"({stable_ratio_pct:.0f}%). Erst Stabilität sichern, dann Tempo pushen."
         )
     elif capability_mode == "basis":
-        capability_text = "Zu wenige aktuelle Spruenge fuer eine sichere Einstufung."
+        capability_text = "Zu wenige aktuelle Sprünge für eine sichere Einstufung."
     else:
         capability_text = (
-            f"Letzte {recent_window} Spruenge: {stable_recent_hits}/{recent_window} stabil "
-            f"({stable_ratio_pct:.0f}%). Stabilitaet weiter aufbauen, dann schrittweise pushen."
+            f"Letzte {recent_window} Sprünge: {stable_recent_hits}/{recent_window} stabil "
+            f"({stable_ratio_pct:.0f}%). Stabilität weiter aufbauen, dann schrittweise pushen."
         )
     capability_profile = {
         "mode": capability_mode,
@@ -2753,7 +2751,7 @@ def _build_lateral_asymmetry_profile(rows: list[dict[str, Any]]) -> dict[str, An
     if len(votes) < 4:
         return {
             "available": False,
-            "reason": "Zu wenige Spruenge fuer eine belastbare Seitlinien-Asymmetrie.",
+            "reason": "Zu wenige Sprünge für eine belastbare Seitlinien-Asymmetrie.",
         }
 
     right_hits = sum(1 for item in votes if item == "rechts")
@@ -2769,7 +2767,7 @@ def _build_lateral_asymmetry_profile(rows: list[dict[str, Any]]) -> dict[str, An
     if hit_ratio < 0.65:
         return {
             "available": False,
-            "reason": "Keine klare Seitlinien-Richtung ueber mehrere Spruenge.",
+            "reason": "Keine klare Seitlinien-Richtung über mehrere Sprünge.",
             "sample_count": len(votes),
         }
 
@@ -2778,7 +2776,7 @@ def _build_lateral_asymmetry_profile(rows: list[dict[str, Any]]) -> dict[str, An
     direction_label = "Rechtsdrift" if direction == "rechts" else "Linksdrift"
     text = (
         f"Wiederkehrendes Muster: {direction_label} in der Hot-Zone "
-        f"({hits}/{len(votes)} Spruenge, {hit_ratio * 100.0:.0f}%)."
+        f"({hits}/{len(votes)} Sprünge, {hit_ratio * 100.0:.0f}%)."
     )
     return {
         "available": True,
@@ -2790,7 +2788,7 @@ def _build_lateral_asymmetry_profile(rows: list[dict[str, Any]]) -> dict[str, An
         "cost_event_direction_count": cost_hits,
         "cost_event_direction_ratio_pct": round(cost_ratio * 100.0, 1),
         "text": text,
-        "note": "Ohne Windkorrektur als Musterhinweis werten, nicht als sichere Koerperdiagnose.",
+        "note": "Ohne Windkorrektur als Musterhinweis werten, nicht als sichere Körperdiagnose.",
     }
 
 
@@ -2904,7 +2902,7 @@ def _build_jumper_record(
         score_map.get("Exit"),
         score_map.get("Aufbau 10-20s"),
         score_map.get("Hot-Zone"),
-        score_map.get("Stabilitaet / Kipp-Risiko"),
+        score_map.get("Stabilität / Kipp-Risiko"),
     ]
     core_score_values = [float(s) for s in core_scores if s is not None]
     overall_score = int(round(mean(core_score_values))) if core_score_values else None
@@ -2918,7 +2916,7 @@ def _build_jumper_record(
         "exit_score": score_map.get("Exit"),
         "build_score": score_map.get("Aufbau 10-20s"),
         "hot_score": score_map.get("Hot-Zone"),
-        "stability_score": score_map.get("Stabilitaet / Kipp-Risiko"),
+        "stability_score": score_map.get("Stabilität / Kipp-Risiko"),
         "vvert_10s": v10,
         "vvert_15s": v15,
         "vvert_20s": v20,
@@ -2968,7 +2966,7 @@ def _build_jumper_trend_rows(records: list[dict[str, Any]]) -> list[dict[str, An
         {"key": "hot_score", "name": "Hot-Zone", "unit": "Score", "higher_is_better": True, "threshold": 5.0},
         {
             "key": "stability_score",
-            "name": "Stabilitaet / Kipp-Risiko",
+            "name": "Stabilität / Kipp-Risiko",
             "unit": "Score",
             "higher_is_better": True,
             "threshold": 5.0,
@@ -3017,7 +3015,7 @@ def _build_jumper_trend_rows(records: list[dict[str, Any]]) -> list[dict[str, An
         )
         if status == "schlechter":
             earlier_better_text = (
-                f"{spec['name']} war frueher besser ({early_avg:.1f}) als zuletzt ({recent_avg:.1f})."
+                f"{spec['name']} war früher besser ({early_avg:.1f}) als zuletzt ({recent_avg:.1f})."
             )
         else:
             earlier_better_text = ""
@@ -3042,17 +3040,17 @@ def _build_jumper_trend_rows(records: list[dict[str, Any]]) -> list[dict[str, An
 
 def _build_jumper_focus_actions(*, worse_rows: list[dict[str, Any]]) -> list[str]:
     if not worse_rows:
-        return ["Kein klarer Rueckschritt sichtbar. Fokus auf stabile Wiederholung der zuletzt guten Linie."]
+        return ["Kein klarer Rückschritt sichtbar. Fokus auf stabile Wiederholung der zuletzt guten Linie."]
 
     action_map = {
-        "Top-Speed": "In der spaeten schnellen Phase laenger stabil bleiben und den Ausstieg spaeter setzen.",
+        "Top-Speed": "In der späten schnellen Phase länger stabil bleiben und den Ausstieg später setzen.",
         "Exit": "Die ersten Sekunden nach dem Exit ruhiger und konstanter aufbauen, ohne harte Gegenkorrektur.",
-        "Aufbau 10-20s": "Zwischen +10s und +20s den Druck gleichmaessiger steigern, damit der Speed sauberer zunimmt.",
-        "Hot-Zone": "Ab +20s kleinere, fruehe Korrekturen setzen, damit die schnelle Zone stabil gehalten wird.",
-        "Stabilitaet / Kipp-Risiko": "Koerperspannung in Schulter, Rumpf und Huefte frueher stabilisieren.",
-        "Korrekturen 20-25s": "Im Segment 20-25s weniger grosse Nachkorrekturen, stattdessen fruehe Mini-Korrekturen.",
+        "Aufbau 10-20s": "Zwischen +10s und +20s den Druck gleichmäßiger steigern, damit der Speed sauberer zunimmt.",
+        "Hot-Zone": "Ab +20s kleinere, frühe Korrekturen setzen, damit die schnelle Zone stabil gehalten wird.",
+        "Stabilität / Kipp-Risiko": "Körperspannung in Schulter, Rumpf und Hüfte früher stabilisieren.",
+        "Korrekturen 20-25s": "Im Segment 20-25s weniger große Nachkorrekturen, stattdessen frühe Mini-Korrekturen.",
         "Seitbewegung Hot-Zone": "In der Hot-Zone seitliche Lenkimpulse reduzieren und den Druck gleichmäßiger nach unten halten.",
-        "Winkelruhe bei hohem Speed": "Sobald der Speed hoch ist, nur noch kleine fruehe Korrekturen fliegen, damit der Winkel ruhig bleibt.",
+        "Winkelruhe bei hohem Speed": "Sobald der Speed hoch ist, nur noch kleine frühe Korrekturen fliegen, damit der Winkel ruhig bleibt.",
     }
 
     actions: list[str] = []
@@ -3087,7 +3085,7 @@ def _build_tip_effect_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
         {"key": "exit_score", "rank": 0, "label": "Exit"},
         {"key": "build_score", "rank": 1, "label": "Aufbau 10-20s"},
         {"key": "hot_score", "rank": 2, "label": "Hot-Zone"},
-        {"key": "stability_score", "rank": 3, "label": "Stabilitaet"},
+        {"key": "stability_score", "rank": 3, "label": "Stabilität"},
     ]
     low_thresholds = {
         "exit_score": 68.0,
@@ -3156,13 +3154,13 @@ def _build_tip_effect_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
     focus_metric = metrics.get(focus_key, {})
     delta = _to_float(focus_metric.get("delta"))
     if delta is not None and delta <= -4.0:
-        trend_hint = f"Trend zuletzt ruecklaeufig ({delta:.1f} Punkte)"
+        trend_hint = f"Trend zuletzt rückläufig ({delta:.1f} Punkte)"
     elif delta is not None and delta >= 4.0:
         trend_hint = f"Trend zuletzt besser (+{delta:.1f} Punkte)"
     else:
         trend_hint = "Trend zuletzt stabil"
 
-    summary_line = f"Verlauf letzter {recent_window} Spruenge: Fokus aktuell {focus_label} ({trend_hint})."
+    summary_line = f"Verlauf letzter {recent_window} Sprünge: Fokus aktuell {focus_label} ({trend_hint})."
 
     return {
         "available": True,
@@ -3191,7 +3189,7 @@ def _mean_metric(rows: list[dict[str, Any]], key: str) -> float | None:
 
 
 def _strip_priority_prefix(text: str) -> str:
-    return re.sub(r"^\s*Prioritaet\s+\d+\s*:\s*", "", text.strip(), flags=re.IGNORECASE)
+    return re.sub(r"^\s*Priorit(?:aet|ät)\s+\d+\s*:\s*", "", text.strip(), flags=re.IGNORECASE)
 
 
 def _find_previous_jump_row(*, jumps: list[dict[str, Any]], current_jump_id: str) -> dict[str, Any] | None:
@@ -3205,7 +3203,7 @@ def _find_previous_jump_row(*, jumps: list[dict[str, Any]], current_jump_id: str
 
 
 def _tip_focus_order() -> list[str]:
-    return ["Exit", "Aufbau 10-20s", "Hot-Zone", "Stabilitaet / Kipp-Risiko"]
+    return ["Exit", "Aufbau 10-20s", "Hot-Zone", "Stabilität / Kipp-Risiko"]
 
 
 def _tip_focus_from_previous(
@@ -3221,15 +3219,15 @@ def _tip_focus_from_previous(
             selected.add(phase_name)
 
     for raw_tip in previous_tips:
-        text = str(raw_tip or "").strip().lower()
+        text = normalize_german_text(str(raw_tip or "").strip())
         if not text:
             continue
         mark("Exit", any(token in text for token in ["exit", "start", "absprung", "druck-mitnahme", "druck mitnahme"]))
         mark("Aufbau 10-20s", any(token in text for token in ["aufbau", "+10s", "+15s", "+20s", "tauchwinkel", "winkel"]))
         mark("Hot-Zone", any(token in text for token in ["hot-zone", "hot zone", "hot-phase", "hot phase", "400", "vhor"]))
         mark(
-            "Stabilitaet / Kipp-Risiko",
-            any(token in text for token in ["stabil", "kipp", "koerperspannung", "körperspannung", "korrektur"]),
+            "Stabilität / Kipp-Risiko",
+            any(token in text for token in ["stabil", "kipp", "körperspannung", "korrektur"]),
         )
 
     if not selected and names:
@@ -3392,7 +3390,7 @@ def _build_tip_follow_up(
     if previous_report is None:
         return {
             "available": False,
-            "reason": "Kein vorheriger Sprung vorhanden. Tipp-Umsetzung wird ab dem naechsten Sprung sichtbar.",
+            "reason": "Kein vorheriger Sprung vorhanden. Tipp-Umsetzung wird ab dem nächsten Sprung sichtbar.",
         }
 
     current_rows = _build_scorecard_rows(current_report, marco_profile=marco_profile)
@@ -3400,7 +3398,7 @@ def _build_tip_follow_up(
     if not current_rows or not previous_rows:
         return {
             "available": False,
-            "reason": "Zu wenige Daten fuer Tipp-Umsetzung.",
+            "reason": "Zu wenige Daten für Tipp-Umsetzung.",
         }
 
     current_score_map = {str(row.get("name") or ""): int(row.get("score", 0)) for row in current_rows}
@@ -3461,7 +3459,7 @@ def _unique_texts(items: list[str]) -> list[str]:
 
 
 def _normalize_text_for_semantic_dedupe(text: str) -> str:
-    lowered = text.strip().lower()
+    lowered = normalize_german_text(text.strip())
     lowered = lowered.replace("-", " ")
     lowered = lowered.replace(":", " ")
     lowered = re.sub(r"[^a-z0-9\s]+", " ", lowered)
@@ -3494,7 +3492,7 @@ def _strength_semantic_bucket(text: str) -> str | None:
     )
     if has_start and has_control:
         return "exit_start_control"
-    has_carry = "druck" in tokens and bool(tokens & {"mitnahme", "mitgenommen", "uebergang", "dynamik"})
+    has_carry = "druck" in tokens and bool(tokens & {"mitnahme", "mitgenommen", "übergang", "dynamik"})
     if has_carry:
         return "exit_pressure_carry"
     return None
@@ -3574,7 +3572,7 @@ def _primary_issue_line_from_row(row: dict[str, Any]) -> str:
 
 
 def _is_issue_like_text(text: str) -> bool:
-    lowered = text.strip().lower()
+    lowered = normalize_german_text(text.strip())
     if not lowered:
         return False
     if lowered.startswith("messwerte"):
@@ -3587,21 +3585,21 @@ def _is_issue_like_text(text: str) -> bool:
         "zu kurz",
         "zu wenig",
         "fällt",
-        "faellt",
+        "fällt",
         "einbruch",
         "bricht",
         "instabil",
         "kipp",
         "risiko",
         "unruhig",
-        "ruecklaeufig",
+        "rückläufig",
         "nachkorrektur",
         "fehlt",
         "unter ",
         "nicht",
         "problem",
     ]
-    if any(marker in lowered for marker in negative_markers):
+    if any(normalize_german_text(marker) in lowered for marker in negative_markers):
         return True
 
     positive_markers = [
@@ -3616,7 +3614,7 @@ def _is_issue_like_text(text: str) -> bool:
         "genug",
         "dynamisch",
     ]
-    if any(marker in lowered for marker in positive_markers):
+    if any(normalize_german_text(marker) in lowered for marker in positive_markers):
         return False
 
     # Unknown wording: keep it as issue to avoid hiding potential signals.
@@ -3651,28 +3649,28 @@ def _compact_main_issues(items: list[str], *, max_items: int) -> list[str]:
 
 
 def _scorecard_phase_rank(name: str) -> int:
-    lowered = name.strip().lower()
+    lowered = normalize_german_text(name.strip())
     if "exit" in lowered:
         return 0
     if "aufbau" in lowered:
         return 1
     if "hot-zone" in lowered or "hot" in lowered:
         return 2
-    if "stabilitaet" in lowered or "kipp" in lowered:
+    if "stabilität" in lowered or "kipp" in lowered:
         return 3
     return 4
 
 
 def _topic_from_text(text: str) -> str:
-    lowered = text.strip().lower()
-    if any(token in lowered for token in ["hot-zone", "hot-phase", "+20 bis +25", "peak-phase", "schlussteil"]):
+    lowered = normalize_german_text(text.strip())
+    if any(normalize_german_text(token) in lowered for token in ["hot-zone", "hot-phase", "+20 bis +25", "peak-phase", "schlussteil"]):
         return "hot"
-    if any(token in lowered for token in ["stabilitaet", "kipp", "koerperspannung", "kurvenverlauf"]):
+    if any(normalize_german_text(token) in lowered for token in ["stabilität", "kipp", "körperspannung", "kurvenverlauf"]):
         return "stability"
-    if any(token in lowered for token in ["exit", "absprung", "startphase", "ersten 2 sekunden"]):
+    if any(normalize_german_text(token) in lowered for token in ["exit", "absprung", "startphase", "ersten 2 sekunden"]):
         return "exit"
     if any(
-        token in lowered
+        normalize_german_text(token) in lowered
         for token in ["aufbau", "+10s", "+15s", "+20s", "winkel", "zuwachs", "druckaufbau", "druck aufbauen"]
     ):
         return "build"
@@ -3680,7 +3678,7 @@ def _topic_from_text(text: str) -> str:
 
 
 def _timeline_rank_from_text(text: str) -> int:
-    lowered = text.strip().lower()
+    lowered = normalize_german_text(text.strip())
     marks = [float(m.group(1)) for m in re.finditer(r"\+([0-9]+(?:\.[0-9]+)?)s", lowered)]
     if marks:
         first_t = min(marks)
@@ -3709,45 +3707,45 @@ def _timeline_rank_from_text(text: str) -> int:
 
 
 def _tip_specificity_score(text: str) -> int:
-    lowered = text.strip().lower()
+    lowered = normalize_german_text(text.strip())
     score = 0
     if re.search(r"\+([0-9]+(?:\.[0-9]+)?)s", lowered):
         score += 2
     if re.search(r"\d", lowered):
         score += 1
-    if any(token in lowered for token in ["km/h", "m/s", "deg", "grad", "korridor", "ziel"]):
+    if any(normalize_german_text(token) in lowered for token in ["km/h", "m/s", "deg", "grad", "korridor", "ziel"]):
         score += 1
-    if any(token in lowered for token in ["vhor", "vvert", "winkel", "zuwachs"]):
+    if any(normalize_german_text(token) in lowered for token in ["vhor", "vvert", "winkel", "zuwachs"]):
         score += 1
 
     generic_markers = [
         "linie ruhiger halten",
-        "kleine, fruehe korrekturen",
+        "kleine, frühe korrekturen",
         "druck konstanter halten",
         "ablauf stabil wiederholen",
-        "koerperspannung frueher stabilisieren",
+        "körperspannung früher stabilisieren",
         "ab +20s sauberer und ruhiger arbeiten",
         "seitlinie in der hot-zone beruhigen",
         "in der peak-phase druck ruhiger halten",
     ]
-    if any(token in lowered for token in generic_markers):
+    if any(normalize_german_text(token) in lowered for token in generic_markers):
         score -= 1
     return score
 
 
 def _generic_tip_penalty(text: str) -> int:
-    lowered = text.strip().lower()
+    lowered = normalize_german_text(text.strip())
     strongly_generic_markers = [
         "ab +20s sauberer und ruhiger arbeiten",
         "seitlinie in der hot-zone beruhigen",
         "in der peak-phase druck ruhiger halten",
     ]
-    if any(token in lowered for token in strongly_generic_markers):
+    if any(normalize_german_text(token) in lowered for token in strongly_generic_markers):
         return 2
 
     has_numeric_context = bool(re.search(r"\d", lowered)) or "+10s" in lowered or "+15s" in lowered or "+20s" in lowered
     has_metric_or_phase_context = any(
-        token in lowered
+        normalize_german_text(token) in lowered
         for token in [
             "vhor",
             "vvert",
@@ -3762,11 +3760,11 @@ def _generic_tip_penalty(text: str) -> int:
     )
     generic_markers = [
         "linie ruhiger halten",
-        "kleine, fruehe korrekturen",
+        "kleine, frühe korrekturen",
         "druck konstanter halten",
         "ablauf stabil wiederholen",
     ]
-    if any(token in lowered for token in generic_markers) and not (has_numeric_context or has_metric_or_phase_context):
+    if any(normalize_german_text(token) in lowered for token in generic_markers) and not (has_numeric_context or has_metric_or_phase_context):
         return 1
     return 0
 
@@ -3924,7 +3922,7 @@ def _build_exit_reason_lines(*, v10: float | None, carry_ratio: float | None, ex
 
     if carry_ratio is not None:
         if carry_ratio < 0.65:
-            lines.append("Nach dem Exit faellt der Druck frueh ab.")
+            lines.append("Nach dem Exit fällt der Druck früh ab.")
         elif carry_ratio < 0.78:
             lines.append("Der Druck wird teilweise mitgenommen, aber nicht durchgehend.")
         else:
@@ -3948,7 +3946,7 @@ def _build_build_reason_lines(
     if gain_10_20 is None:
         lines.append(f"Der Speed-Aufbau {phase_text} konnte nicht sicher bewertet werden.")
     elif gain_10_20 < 80.0:
-        lines.append(f"Du baust {phase_text} zu wenig zusaetzlichen Speed auf.")
+        lines.append(f"Du baust {phase_text} zu wenig zusätzlichen Speed auf.")
     elif gain_10_20 < 95.0:
         lines.append(f"Der Aufbau ist {phase_text} da, aber noch etwas zu schwach.")
     elif gain_10_20 <= 170.0:
@@ -4030,13 +4028,13 @@ def _build_forward_track_reason_lines(*, chart: dict[str, Any], end_s: float | N
             f"{start_text}. Das passt zu instabilen Korrekturen/Kippmomenten."
         )
     elif max_backtrack >= 14.0 and backtrack_ratio_pct >= 7.0:
-        lines.append("Vor Abbremsbeginn geht die Fluglinie teilweise wieder zurueck.")
+        lines.append("Vor Abbremsbeginn geht die Fluglinie teilweise wieder zurück.")
     else:
-        lines.append("Bis zum Abbremsbeginn bleibt die Fluglinie vorwaertsgerichtet.")
+        lines.append("Bis zum Abbremsbeginn bleibt die Fluglinie vorwärtsgerichtet.")
 
     lines.append(
-        "Fluglinie-Messwerte bis Abbremsbeginn: Vorwaerts-Max "
-        f"{_fmt1(max_forward)} m, Rueckdrift {_fmt1(max_backtrack)} m ({_fmt1(backtrack_ratio_pct)}%)."
+        "Fluglinie-Messwerte bis Abbremsbeginn: Vorwärts-Max "
+        f"{_fmt1(max_forward)} m, Rückdrift {_fmt1(max_backtrack)} m ({_fmt1(backtrack_ratio_pct)}%)."
     )
     return lines
 
@@ -4079,12 +4077,12 @@ def _build_quality_issue_lines(raw_flags: Any) -> list[str]:
         "SPEED_SPIKE",
     ]
     mapping = {
-        "EARLY_JUMP_END": "Sprung endet fuer die Auswertung zu frueh.",
+        "EARLY_JUMP_END": "Sprung endet für die Auswertung zu früh.",
         "NO_CLEAR_EXIT": "Absprungzeit war nicht eindeutig; Detailwerte koennen verschoben sein.",
-        "INVALID_EXIT_ALTITUDE": "Exit-Hoehe wirkt unplausibel.",
-        "TIME_GAPS": "Im relevanten Bereich gibt es Datenluecken.",
+        "INVALID_EXIT_ALTITUDE": "Exit-Höhe wirkt unplausibel.",
+        "TIME_GAPS": "Im relevanten Bereich gibt es Datenlücken.",
         "LOW_GPS_FIX": "GPS-Fix war zeitweise schwach.",
-        "HIGH_SPEED_ACCURACY_ERROR": "Geschwindigkeitsgenauigkeit war zeitweise eingeschraenkt.",
+        "HIGH_SPEED_ACCURACY_ERROR": "Geschwindigkeitsgenauigkeit war zeitweise eingeschränkt.",
         "SPEED_SPIKE": "Unplausible Speed-Spitze erkannt.",
     }
     lines: list[str] = []
@@ -4120,11 +4118,11 @@ def _build_fs2_quality_issue_lines(notes: dict[str, Any]) -> list[str]:
     level = "kritisch" if label == "kritisch" else "grenzwertig"
     if None not in {sacc, hacc, sv}:
         return [
-            "Messqualitaet (FS2): "
+            "Messqualität (FS2): "
             f"{level} in der schnellen Phase ({window_txt}) "
-            f"(seitliche Schwankung {_fmt2(sacc)} m/s, Hoehen-Unschaerfe {_fmt1(hacc)} m, Satellitenreserve {_fmt1(sv)})."
+            f"(seitliche Schwankung {_fmt2(sacc)} m/s, Höhen-Unschärfe {_fmt1(hacc)} m, Satellitenreserve {_fmt1(sv)})."
         ]
-    return [f"Messqualitaet (FS2): {level} in der schnellen Phase ({window_txt})."]
+    return [f"Messqualität (FS2): {level} in der schnellen Phase ({window_txt})."]
 
 
 def _build_hot_zone_assessment(
@@ -4233,25 +4231,25 @@ def _build_hot_zone_assessment(
     # Build simple-language explanation.
     reason_lines: list[str] = []
     if hot_coverage < 0.75:
-        reason_lines.append("Die Hot-Zone ist in diesem Sprung nicht vollstaendig abgedeckt.")
+        reason_lines.append("Die Hot-Zone ist in diesem Sprung nicht vollständig abgedeckt.")
 
     if dur_400 is not None:
         if dur_400 < 0.3:
             reason_lines.append("Du erreichst die sehr schnelle Phase, kannst sie aber kaum halten.")
         elif dur_400 < 1.0:
-            reason_lines.append("Du kommst in die sehr schnelle Phase, haeltst sie aber nur kurz.")
+            reason_lines.append("Du kommst in die sehr schnelle Phase, hältst sie aber nur kurz.")
         else:
             reason_lines.append("Du kannst die sehr schnelle Phase spuerbar halten.")
 
     if vhor_min_20_25 is not None:
         if vhor_min_20_25 < 20.0:
-            reason_lines.append("In der Endphase geht die Vorwaertsbewegung fast komplett verloren.")
+            reason_lines.append("In der Endphase geht die Vorwärtsbewegung fast komplett verloren.")
         elif vhor_min_20_25 < 25.0:
-            reason_lines.append("In der Endphase verlierst du deutlich Vorwaertsbewegung.")
+            reason_lines.append("In der Endphase verlierst du deutlich Vorwärtsbewegung.")
         elif vhor_min_20_25 < 30.0:
-            reason_lines.append("In der Endphase wird die Vorwaertsreserve knapp.")
+            reason_lines.append("In der Endphase wird die Vorwärtsreserve knapp.")
         else:
-            reason_lines.append("Die Vorwaertsreserve bleibt in der Endphase stabil.")
+            reason_lines.append("Die Vorwärtsreserve bleibt in der Endphase stabil.")
 
     if angle_turns_20_25 is not None:
         if angle_turns_20_25 >= 5:
@@ -4264,9 +4262,9 @@ def _build_hot_zone_assessment(
 
     hot_label = f"Hot-Zone +{hot_start_s:.1f}s bis +{hot_end_s:.1f}s"
     reason_lines.append(
-        f"In deiner {hot_label} konntest du >400 km/h fuer {_fmt1(dur_400)}s halten. "
-        f"Die kleinste Vorwaertsreserve lag bei {_fmt1(vhor_min_20_25)} km/h, "
-        f"der zusaetzliche Speed in dieser Phase bei {_fmt1(vvert_gain_20_25)} km/h."
+        f"In deiner {hot_label} konntest du >400 km/h für {_fmt1(dur_400)}s halten. "
+        f"Die kleinste Vorwärtsreserve lag bei {_fmt1(vhor_min_20_25)} km/h, "
+        f"der zusätzliche Speed in dieser Phase bei {_fmt1(vvert_gain_20_25)} km/h."
     )
     impact_parts: list[str] = []
     if dur_400 is not None:
@@ -4276,11 +4274,11 @@ def _build_hot_zone_assessment(
             impact_parts.append("die sehr schnelle Zone ist noch zu kurz")
     if vhor_min_20_25 is not None:
         if vhor_min_20_25 < 20.0:
-            impact_parts.append("die Vorwaertsreserve faellt fast komplett weg und grosse Gegenkorrekturen werden wahrscheinlicher")
+            impact_parts.append("die Vorwärtsreserve fällt fast komplett weg und große Gegenkorrekturen werden wahrscheinlicher")
         elif vhor_min_20_25 < 25.0:
-            impact_parts.append("die Vorwaertsreserve ist zu knapp und die Linie wird leichter unruhig")
+            impact_parts.append("die Vorwärtsreserve ist zu knapp und die Linie wird leichter unruhig")
     if vvert_gain_20_25 is not None and vvert_gain_20_25 < 8.0:
-        impact_parts.append("im letzten schnellen Abschnitt entsteht kaum noch zusaetzlicher Speed")
+        impact_parts.append("im letzten schnellen Abschnitt entsteht kaum noch zusätzlicher Speed")
     if impact_parts:
         reason_lines.append(f"Das bedeutet: {'; '.join(impact_parts)}.")
     reason = _join_reason_lines(reason_lines)
@@ -4516,11 +4514,11 @@ def _describe_stability_reason_lines(*, raw_negative_details: str, risk_label: s
 
     lines: list[str] = []
     if (dip is not None and dip >= 30.0) or (vmin is not None and vmin < 24.0):
-        lines.append("In der schnellen Phase verlierst du zu stark Vorwaertsbewegung.")
+        lines.append("In der schnellen Phase verlierst du zu stark Vorwärtsbewegung.")
     elif (dip is not None and dip >= 20.0) or (vmin is not None and vmin < 28.0):
-        lines.append("In der schnellen Phase verlierst du merklich Vorwaertsbewegung.")
+        lines.append("In der schnellen Phase verlierst du merklich Vorwärtsbewegung.")
     else:
-        lines.append("Die Vorwaertsbewegung bleibt ueber weite Strecken stabil.")
+        lines.append("Die Vorwärtsbewegung bleibt über weite Strecken stabil.")
 
     if rebound is not None:
         if rebound >= 120.0:
@@ -4531,7 +4529,7 @@ def _describe_stability_reason_lines(*, raw_negative_details: str, risk_label: s
     if angle is not None and angle >= 86.5:
         lines.append("Der Tauchwinkel wird zeitweise zu steil, dadurch steigt das Kipp-Risiko.")
     elif angle is not None:
-        lines.append("Der Winkel ist nicht das Hauptproblem, entscheidend ist die Stabilitaet der Linie.")
+        lines.append("Der Winkel ist nicht das Hauptproblem, entscheidend ist die Stabilität der Linie.")
 
     lines.append(
         "Messwerte: vHor-Dip "
@@ -4747,14 +4745,14 @@ def _coach_status(report: dict[str, Any]) -> dict[str, str]:
     quality_issues = _build_quality_issue_lines(report.get("quality_flags", []))
 
     if bool(notes.get("analysis_blocked")):
-        return {"level": "red", "label": "Rot", "reason": "Sprung endet zu frueh / Daten unplausibel"}
+        return {"level": "red", "label": "Rot", "reason": "Sprung endet zu früh / Daten unplausibel"}
     if bool(notes.get("t0_review_required")):
         return {"level": "red", "label": "Rot", "reason": "Absprungzeit unsicher"}
     if scorecard.get("kipp_risiko") == "hoch" or scorecard.get("hot_zone") == "kritisch":
         return {"level": "red", "label": "Rot", "reason": "Instabile schnelle Phase"}
 
     if scorecard.get("kipp_risiko") == "mittel":
-        return {"level": "yellow", "label": "Gelb", "reason": "Mittleres Stabilitaetsrisiko"}
+        return {"level": "yellow", "label": "Gelb", "reason": "Mittleres Stabilitätsrisiko"}
     if scorecard.get("phase_10_20") in {"zu flach", "zu steil"}:
         return {"level": "yellow", "label": "Gelb", "reason": "Winkel im Aufbau noch unruhig"}
     if quality_issues:

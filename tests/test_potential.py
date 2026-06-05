@@ -70,4 +70,4 @@ def test_speed_potential_unavailable_for_blocked_jump():
     out = build_speed_potential_preview(current_report=current, historical_reports=history)
 
     assert out["available"] is False
-    assert "endet zu frueh" in out["reason"]
+    assert "endet zu früh" in out["reason"]

@@ -12,7 +12,7 @@
                     <a class="settings-option {% if (view_mode or 'expert') == 'simple' %}active{% endif %}" href="/jumpers/{{ jumper_name | urlencode }}?view=simple">Einfache Ansicht</a>
                 </div>
             </details>
-            <a class="btn secondary" href="/?view={{ view_mode or 'expert' }}">Zurueck</a>
+            <a class="btn secondary" href="/?view={{ view_mode or 'expert' }}">Zurück</a>
         </div>
     </div>
 
@@ -22,7 +22,7 @@
         <div class="score-box">
             <span class="k">Gesamtbild</span>
             <p>
-                {{ jumper_summary.jump_count }} Spruenge ausgewertet.<br>
+                {{ jumper_summary.jump_count }} Sprünge ausgewertet.<br>
                 Bester Sprung:
                 {% if jumper_summary.best_speed_kmh is not none %}
                     {{ "%.2f"|format(jumper_summary.best_speed_kmh) }} km/h
@@ -63,7 +63,7 @@
         <div class="score-box">
             <span class="k">Gesamtbild</span>
             <p>
-                Datenbasis: {{ jumper_summary.jump_count }} Spruenge.<br>
+                Datenbasis: {{ jumper_summary.jump_count }} Sprünge.<br>
                 Schnellster Sprung:
                 {% if jumper_summary.best_speed_kmh is not none %}
                     {{ "%.2f"|format(jumper_summary.best_speed_kmh) }} km/h
@@ -99,7 +99,7 @@
             </ul>
         </div>
         <div class="score-box">
-            <span class="k">Frueher besser / jetzt Fokus</span>
+            <span class="k">Früher besser / jetzt Fokus</span>
             <ul class="tips compact">
                 {% if jumper_summary.earlier_better_points %}
                     {% for item in jumper_summary.earlier_better_points %}
@@ -113,8 +113,8 @@
         </div>
         {% if jumper_summary.stability_reference and jumper_summary.stability_reference.available %}
         <div class="score-box">
-            <span class="k">Persoenliche Stabilitaets-Referenz</span>
-            <p class="muted">Aus {{ jumper_summary.stability_reference.stable_count }} stabilen und {{ jumper_summary.stability_reference.unstable_count }} unruhigen Spruengen.</p>
+            <span class="k">Persönliche Stabilitäts-Referenz</span>
+            <p class="muted">Aus {{ jumper_summary.stability_reference.stable_count }} stabilen und {{ jumper_summary.stability_reference.unstable_count }} unruhigen Sprüngen.</p>
             <ul class="tips compact">
                 {% for item in jumper_summary.stability_reference.stable_lines %}
                 <li>{{ item }}</li>
@@ -138,7 +138,7 @@
             <thead>
             <tr>
                 <th>Kriterium</th>
-                <th>Frueher (Durchschnitt)</th>
+                <th>Früher (Durchschnitt)</th>
                 <th>Zuletzt (Durchschnitt)</th>
                 <th>Delta</th>
                 <th>Verlauf</th>
@@ -217,13 +217,13 @@
 </section>
 
 <section class="panel">
-    <h2>Spruenge vergleichen</h2>
+    <h2>Sprünge vergleichen</h2>
     <form class="compare-form" method="get" action="/jumpers/{{ jumper_name | urlencode }}/compare">
         <input type="hidden" name="view" value="{{ view_mode or 'expert' }}">
         <label>
             <span>Sprung A (Referenz)</span>
             <select name="left_jump_id" required>
-                <option value="">Bitte waehlen</option>
+                <option value="">Bitte wählen</option>
                 {% for jump in jumps %}
                 <option value="{{ jump.jump_id }}" {% if left_jump_id == jump.jump_id %}selected{% endif %}>
                     {{ jump.file_name }} | {{ jump.t0_utc }} | 3s {{ "%.2f"|format(jump.best_3s_vVert_kmh) }}{% if jump.is_best %} | BEST{% endif %}
@@ -234,7 +234,7 @@
         <label>
             <span>Sprung B (Vergleich)</span>
             <select name="right_jump_id" required>
-                <option value="">Bitte waehlen</option>
+                <option value="">Bitte wählen</option>
                 {% for jump in jumps %}
                 <option value="{{ jump.jump_id }}" {% if right_jump_id == jump.jump_id %}selected{% endif %}>
                     {{ jump.file_name }} | {{ jump.t0_utc }} | 3s {{ "%.2f"|format(jump.best_3s_vVert_kmh) }}{% if jump.is_best %} | BEST{% endif %}
@@ -390,7 +390,7 @@
     <h2>Was war bei welchem Sprung besser?</h2>
     <div class="score-grid">
         <div class="score-box">
-            <span class="k">Staerken der Referenz</span>
+            <span class="k">Stärken der Referenz</span>
             <ul class="tips">
                 {% for insight in compare_result.reference_strengths %}
                 <li>{{ insight }}</li>
@@ -398,7 +398,7 @@
             </ul>
         </div>
         <div class="score-box">
-            <span class="k">Staerken des Vergleichssprungs</span>
+            <span class="k">Stärken des Vergleichssprungs</span>
             <ul class="tips">
                 {% for insight in compare_result.comparison_strengths %}
                 <li>{{ insight }}</li>
@@ -462,7 +462,7 @@ Plotly.newPlot("chart-trend", [
             size: 8,
             color: sorted.map(j => j.jump_id === bestId ? "#ffd166" : "#4aa3ff")
         },
-        name: "Spruenge"
+        name: "Sprünge"
     }
 ], {
     margin: {l: 48, r: 20, t: 20, b: 60},

@@ -18,11 +18,10 @@
                 <button type="submit" class="btn secondary">Absprung neu erkennen</button>
             </form>
             {% if quality_issue_lines or report.notes.analysis_blocked %}
-            <form method="post" action="/jumps/{{ jump_id }}/delete?view={{ vm }}" class="inline-form" onsubmit="return confirm('Datensatz wirklich loeschen? Diese Aktion kann nicht rueckgaengig gemacht werden.');">
-                <button type="submit" class="btn danger">Datensatz loeschen</button>
+            <form method="post" action="/jumps/{{ jump_id }}/delete?view={{ vm }}" class="inline-form" onsubmit="return confirm('Datensatz wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.');">
+                <button type="submit" class="btn danger">Datensatz löschen</button>
             </form>
             {% endif %}
-            <a class="btn secondary" href="/jumps/{{ jump_id }}/report.pdf?view={{ vm }}">PDF Export</a>
             <a class="btn secondary" href="/?view={{ vm }}">Neuer Upload</a>
         </div>
     </div>
@@ -51,13 +50,13 @@
         <div><span class="label">Samplingrate</span><span>{{ report.jump.sample_rate_hz }} Hz</span></div>
         <div><span class="label">Exit MSL</span><span>{{ report.jump.exit_altitude_msl_m }} m</span></div>
         <div><span class="label">Exit AGL</span><span>{{ report.jump.exit_altitude_agl_m }} m</span></div>
-        <div><span class="label">Gueltige Exit-Hoehe</span><span>{{ "Ja" if report.jump.is_valid_altitude else "Nein" }}</span></div>
+        <div><span class="label">Gültige Exit-Höhe</span><span>{{ "Ja" if report.jump.is_valid_altitude else "Nein" }}</span></div>
         {% endif %}
     </div>
 </section>
 
 <section class="panel">
-    <h2>{% if vm == "simple" %}Speed Uebersicht{% else %}Speed Score{% endif %}</h2>
+    <h2>{% if vm == "simple" %}Speed Übersicht{% else %}Speed Score{% endif %}</h2>
     <div class="score-grid vertical-grid">
         <div class="score-box">
             <span class="k">Training 3s Max</span>
@@ -205,7 +204,7 @@
     {% if speed_potential.available %}
     <div class="score-grid vertical-grid">
         <div class="score-box">
-            <span class="k">Aktuell / moeglich</span>
+            <span class="k">Aktuell / möglich</span>
             <span class="v">{{ "%.2f"|format(speed_potential.baseline_kmh) }} -> {{ "%.2f"|format(speed_potential.potential_kmh) }} km/h</span>
             <span class="m">Bandbreite: {{ "%.2f"|format(speed_potential.potential_low_kmh) }} bis {{ "%.2f"|format(speed_potential.potential_high_kmh) }} km/h</span>
         </div>
@@ -215,7 +214,7 @@
             <span class="m">Confidence: {{ speed_potential.confidence }}, RMSE {{ "%.2f"|format(speed_potential.rmse_kmh) }} km/h, n={{ speed_potential.sample_size }}</span>
         </div>
         <div class="score-box">
-            <span class="k">Groesste Hebel</span>
+            <span class="k">Größte Hebel</span>
             <ul class="tips">
                 {% for item in speed_potential.lever_contributions %}
                 <li>{{ item.label }}: +{{ "%.2f"|format(item.delta_kmh) }} km/h</li>
@@ -327,7 +326,7 @@
     <h2>Kurvenanalyse</h2>
     <div class="charts-grid">
         <div class="chart-card">
-            <h3 class="chart-title">Fluglinie Vorwaerts</h3>
+            <h3 class="chart-title">Fluglinie Vorwärts</h3>
             <div id="chart-forward-track" class="chart"></div>
         </div>
         <div class="chart-card">
@@ -344,7 +343,7 @@
         </div>
         {% if vm == "expert" %}
         <div class="chart-card">
-            <h3 class="chart-title">Hoehe AGL</h3>
+            <h3 class="chart-title">Höhe AGL</h3>
             <div id="chart-height" class="chart"></div>
         </div>
         <div class="chart-card">
@@ -371,7 +370,7 @@
     <p><strong>Performance-Window Start:</strong> {{ report.notes.pw_start_utc }} (t_rel {{ report.notes.pw_start_s_from_t0 }}s)</p>
     <p><strong>t0-Erkennung:</strong> {{ report.notes.t0_reason }}</p>
     <p><strong>t0 Confidence:</strong> {{ report.notes.t0_confidence }} (Unsicherheit ±{{ report.notes.t0_uncertainty_s }}s)</p>
-    <p><strong>t0 Review noetig:</strong> {{ "Ja" if report.notes.t0_review_required else "Nein" }}</p>
+    <p><strong>t0 Review nötig:</strong> {{ "Ja" if report.notes.t0_review_required else "Nein" }}</p>
     <p><strong>Hot-Zone:</strong> {{ report.notes.hot_zone_reason }}</p>
     <p><strong>Negativ/Kippen:</strong> {{ report.notes.negative_details }}</p>
     <p><strong>AGL:</strong> {{ report.notes.agl_note }}</p>
@@ -508,7 +507,7 @@ if (hasForwardTrack) {
     Plotly.newPlot("chart-forward-track", [
         {
             x: displayDataForward.time_s, y: displayDataForward.forward_m, type: "scatter", mode: "lines",
-            name: "Vorwaerts-Strecke", line: {color: "#56cfe1", width: 2}
+            name: "Vorwärts-Strecke", line: {color: "#56cfe1", width: 2}
         },
         {
             x: displayDataForward.time_s, y: runningMax, type: "scatter", mode: "lines",
@@ -525,7 +524,7 @@ if (hasForwardTrack) {
     ], {
         ...baseLayout,
         xaxis: {title: "t_rel [s]", gridcolor: "#1f2933", range: [xAxisStart, forwardEnd]},
-        yaxis: {title: "Vorwaerts-Strecke [m]", gridcolor: "#1f2933"},
+        yaxis: {title: "Vorwärts-Strecke [m]", gridcolor: "#1f2933"},
         shapes: markerShapes().concat([
             {
                 type: "line", xref: "x", yref: "y",
@@ -539,7 +538,7 @@ if (hasForwardTrack) {
         ...baseLayout,
         xaxis: {title: "t_rel [s]", gridcolor: "#1f2933", range: [xAxisStart, forwardEnd]},
         annotations: [{
-            text: "Keine Vorwaerts-Linie verfuegbar",
+            text: "Keine Vorwärts-Linie verfügbar",
             xref: "paper", yref: "paper", x: 0.5, y: 0.5,
             showarrow: false, font: {color: "#a9bbcd", size: 13}
         }]

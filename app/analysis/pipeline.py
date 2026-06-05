@@ -48,7 +48,7 @@ def _read_csv(content: bytes) -> pd.DataFrame:
             raise AnalysisError(f"CSV konnte nicht gelesen werden: {exc}") from exc
 
     if df.empty:
-        raise AnalysisError("CSV enthaelt keine Datenzeilen.")
+        raise AnalysisError("CSV enthält keine Datenzeilen.")
 
     df.columns = [str(col).strip() for col in df.columns]
     missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
@@ -76,7 +76,7 @@ def _read_csv(content: bytes) -> pd.DataFrame:
 
     df["time"] = pd.to_datetime(df["time"], utc=True, errors="coerce", format="ISO8601")
     if df["time"].isna().all():
-        raise AnalysisError("Keine gueltigen Zeitstempel in Spalte 'time' gefunden.")
+        raise AnalysisError("Keine gültigen Zeitstempel in Spalte 'time' gefunden.")
 
     numeric_cols = [
         "lat",
@@ -97,7 +97,7 @@ def _read_csv(content: bytes) -> pd.DataFrame:
     df = df.dropna(subset=["time", "hMSL", "velN", "velE", "velD"])
     df = df.sort_values("time").drop_duplicates(subset=["time"], keep="first").reset_index(drop=True)
     if len(df) < 20:
-        raise AnalysisError("Zu wenige gueltige Samples fuer eine robuste Analyse.")
+        raise AnalysisError("Zu wenige gültige Samples für eine robuste Analyse.")
 
     return df
 
@@ -139,7 +139,7 @@ def _read_flysight2_track(raw: str) -> pd.DataFrame:
             "FlySight-2 Datei erkannt, aber keine GNSS-Spaltendefinition gefunden. Bitte TRACK.CSV verwenden."
         )
     if not rows:
-        raise AnalysisError("FlySight-2 TRACK.CSV enthaelt keine GNSS-Daten.")
+        raise AnalysisError("FlySight-2 TRACK.CSV enthält keine GNSS-Daten.")
 
     df = pd.DataFrame(rows, columns=gnss_columns)
     # Keep later logic unchanged by exposing classic FlySight columns.
@@ -174,7 +174,7 @@ def _validate_plausible_jump_profile(df: pd.DataFrame) -> None:
     vel_d = df["velD"].to_numpy(dtype=float)
     valid = vel_d[~np.isnan(vel_d)]
     if len(valid) == 0:
-        raise AnalysisError("Keine gueltigen vertikalen Geschwindigkeitswerte gefunden.")
+        raise AnalysisError("Keine gültigen vertikalen Geschwindigkeitswerte gefunden.")
 
     if float(np.max(valid)) < 10.0:
         raise AnalysisError(
@@ -956,10 +956,10 @@ def _detect_early_end_issue(
     if not ends_too_early and not too_slow_at_20:
         return None
 
-    parts = [f"Sprung endet zu frueh (Kurvenfenster bis +{curve_end:.1f}s)"]
+    parts = [f"Sprung endet zu früh (Kurvenfenster bis +{curve_end:.1f}s)"]
     if vvert_20 is not None:
         parts.append(f"vVert bei +20s nur {vvert_20:.1f} km/h")
-    parts.append("Daten fuer Speed-Analyse nicht belastbar.")
+    parts.append("Daten für Speed-Analyse nicht belastbar.")
     if track_end < 18.0:
         parts.append("Track selbst endet vor +18s.")
     return " ".join(parts)
@@ -1010,8 +1010,8 @@ def _phase_comment(name: str, avg_vvert: float, avg_vhor: float, avg_angle: floa
         if avg_vvert < 95:
             return "Aufbau in den ersten Sekunden eher langsam."
         if avg_vvert > 230:
-            return "Sehr dynamischer frueher Aufbau."
-        return "Sauberer frueher Speedaufbau."
+            return "Sehr dynamischer früher Aufbau."
+        return "Sauberer früher Speedaufbau."
     if name == "Beschleunigungsphase":
         if avg_angle < 72:
             return "Winkel in der Aufbauphase etwas zu flach."
@@ -1023,7 +1023,7 @@ def _phase_comment(name: str, avg_vvert: float, avg_vhor: float, avg_angle: floa
             return "Peak mit sehr niedriger horizontaler Reserve."
         return "Peak-Phase erreicht."
     if avg_vvert > 380:
-        return "Speed am Ende noch hoch - fruehes Management fuer Breakoff planen."
+        return "Speed am Ende noch hoch - frühes Management für Breakoff planen."
     return "Endphase kontrolliert."
 
 
@@ -1081,7 +1081,7 @@ def _detect_hot_zone(df: pd.DataFrame, best_window: WindowResult | None) -> tupl
 def _negative_risk(df: pd.DataFrame) -> tuple[float, dict[str, Any]]:
     post = df[df["t_rel_s"] >= 0]
     if len(post) < 10:
-        return 0.0, {"label": "niedrig", "details": "Zu wenige Daten fuer Heuristik."}
+        return 0.0, {"label": "niedrig", "details": "Zu wenige Daten für Heuristik."}
 
     vhor = post["vHor_kmh"].to_numpy()
     angle = post["angle_deg"].to_numpy()
@@ -1285,20 +1285,20 @@ def _generate_tips(
     fp24 = next((p for p in fixpoints if p["t_rel_s"] == 24.0), None)
 
     if fp10 and fp10["vVert_kmh"] is not None and fp10["vVert_kmh"] < 230:
-        tips.append("Bis +10s frueher in die stabile Position gehen. Der Speed-Aufbau startet zu spaet.")
+        tips.append("Bis +10s früher in die stabile Position gehen. Der Speed-Aufbau startet zu spät.")
     if fp20 and fp20["angle_deg"] is not None and fp20["angle_deg"] < 80:
         tips.append("Zwischen +10s und +20s etwas steiler fliegen. Zielbereich: 80 bis 85 Grad.")
     if fp20 and fp20["angle_deg"] is not None and fp20["angle_deg"] > 87:
-        tips.append("Zwischen +10s und +20s etwas flacher bleiben. Zu steil kostet oft Stabilitaet.")
+        tips.append("Zwischen +10s und +20s etwas flacher bleiben. Zu steil kostet oft Stabilität.")
     if hot_zone_label == "kritisch":
         tips.append("In der schnellen Phase ruhiger Druck halten, damit vHor nicht so stark einbricht.")
     if neg_details["label"] in {"mittel", "hoch"}:
-        tips.append("Wenn vHor einbricht, Koerperspannung in Schulter und Huefte frueher stabilisieren.")
+        tips.append("Wenn vHor einbricht, Körperspannung in Schulter und Hüfte früher stabilisieren.")
     if fp24 and fp24["vHor_kmh"] is not None and fp24["vHor_kmh"] < 25:
-        tips.append("Ab +22s leicht gegensteuern, damit vHor ueber 25 km/h bleibt.")
+        tips.append("Ab +22s leicht gegensteuern, damit vHor über 25 km/h bleibt.")
     if not tips:
         tips = [
-            "Das Profil ist stabil. Ziel: diesen Ablauf so wiederholbar wie moeglich machen.",
+            "Das Profil ist stabil. Ziel: diesen Ablauf so wiederholbar wie möglich machen.",
             "Den Aufbau zwischen +10s und +20s weiter ruhig und konstant halten.",
         ]
 
@@ -1551,8 +1551,9 @@ def analyze_flysight_csv(
         "curve_window_reason": curve_window["curve_window_reason"],
         "unit_normalization": unit_normalization,
         "leading_gap_repair": leading_gap_repair,
-        "fs2_track_summary": fs2_track_summary,
     }
+    if fs2_track_summary is not None:
+        notes["fs2_track_summary"] = fs2_track_summary
 
     metrics_record = {
         "jump_id": jump_id,

@@ -26,7 +26,7 @@ def build_speed_potential_preview(
     if "EARLY_JUMP_END" in current_flags:
         return {
             "available": False,
-            "reason": "Keine Prognose: Sprungdaten nicht belastbar (endet zu frueh).",
+            "reason": "Keine Prognose: Sprungdaten nicht belastbar (endet zu früh).",
         }
 
     rows: list[_FeatureRow] = []
@@ -38,7 +38,7 @@ def build_speed_potential_preview(
     if len(rows) < 5:
         return {
             "available": False,
-            "reason": "Keine Prognose: zu wenige saubere Vergleichsspruenge fuer diesen Springer.",
+            "reason": "Keine Prognose: zu wenige saubere Vergleichssprünge für diesen Springer.",
             "sample_size": len(rows),
         }
 
@@ -167,7 +167,7 @@ def _feature_contributions(
     base_features: np.ndarray,
     improved_features: np.ndarray,
 ) -> list[dict[str, Any]]:
-    labels = ["Exit-Speed (+10s)", "Speed-Aufbau (+10s bis +20s)", "Winkelpraezision (+20s)", "Stabilitaet (Risiko)"]
+    labels = ["Exit-Speed (+10s)", "Speed-Aufbau (+10s bis +20s)", "Winkelpräzision (+20s)", "Stabilität (Risiko)"]
     out: list[dict[str, Any]] = []
     for idx, label in enumerate(labels, start=1):
         delta_feature = float(improved_features[idx - 1] - base_features[idx - 1])

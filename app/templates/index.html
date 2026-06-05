@@ -36,7 +36,7 @@
 </section>
 
 <section class="panel">
-    <h2>Letzte Spruenge</h2>
+    <h2>Letzte Sprünge</h2>
     {% if recent_jumps %}
     <div class="table-wrap">
         <table>
@@ -71,7 +71,7 @@
         </table>
     </div>
     {% else %}
-    <p class="muted">Noch keine gespeicherten Spruenge.</p>
+    <p class="muted">Noch keine gespeicherten Sprünge.</p>
     {% endif %}
 </section>
 
@@ -124,7 +124,7 @@
                 <td><a href="/jumpers/{{ row.jumper_name | urlencode }}?view={{ vm }}">{{ row.jumper_name }}</a></td>
                 <td>
                     {{ row.simple_status }}<br>
-                    <span class="muted">{{ row.jump_count }} Spruenge</span>
+                    <span class="muted">{{ row.jump_count }} Sprünge</span>
                 </td>
                 <td>{{ row.focus_short }}</td>
                 <td>{{ row.latest_t0_utc or "-" }}</td>
@@ -148,7 +148,7 @@
             <tr>
                 <td><a href="/jumpers/{{ row.jumper_name | urlencode }}?view={{ vm }}">{{ row.jumper_name }}</a></td>
                 <td>
-                    {{ row.jump_count }} Spruenge<br>
+                    {{ row.jump_count }} Sprünge<br>
                     <span class="muted">stabil {{ row.stable_count }}, unruhig {{ row.unstable_count }}</span>
                 </td>
                 <td>{{ row.stable_short }}</td>

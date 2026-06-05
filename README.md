@@ -1,6 +1,6 @@
 # Speed-Skydive Analyzer
 
-Webanwendung zur automatischen FlySight-Auswertung fuer Speed-Skydiving mit Fokus auf Techniktraining und regelnahe 3s-Wertung.
+Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Fokus auf Techniktraining und regelnahe 3s-Wertung.
 
 ## Enthaltene Funktionen
 
@@ -13,10 +13,10 @@ Webanwendung zur automatischen FlySight-Auswertung fuer Speed-Skydiving mit Foku
   - relative Zeitachse
 - Fixpunkte `+10/+15/+20/+24/+28s` per linearer Interpolation
 - Bestes zusammenhaengendes 3s-Fenster (zeitkontinuierlich) aus `t0`-Bezug
-- Regelnaher 3s-Score im Performance Window (`velD >= 10m/s`, Hoehenverlust/Breakoff)
+- Regelnaher 3s-Score im Performance Window (`velD >= 10m/s`, Höhenverlust/Breakoff)
 - Phasenmodell (Start, Beschleunigung, Max-Speed, Ende)
 - Hot-Zone-Erkennung und Negativ/Kippen-Heuristik
-- Qualitaetsflags + Qualitaetsscore
+- Qualitätsflags + Qualitätsscore
 - Automatische Scorecard + konkrete Technik-Tipps
 - Speicherung pro Springer in SQLite (jumps/samples/metrics)
 - HTML-Report mit Kurven + PDF-Export
@@ -50,7 +50,7 @@ pytest
 
 ## Datenmodell
 
-- `jumps`: Metadaten pro Sprung, t0, Exit-Hoehe, Gueltigkeit, Qualitaet
+- `jumps`: Metadaten pro Sprung, t0, Exit-Höhe, Gültigkeit, Qualität
 - `samples`: abgeleitete Samplewerte (t_rel, vVert, vHor, Winkel, Flags ...)
 - `metrics`: 3s-Score, Window, Hot-Zone, Risiko, Fixpunkte, Phasen, Tipps
 

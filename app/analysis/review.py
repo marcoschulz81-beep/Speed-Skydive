@@ -6,6 +6,8 @@ from typing import Any
 
 import numpy as np
 
+from app.text_utils import normalize_german_text
+
 from app.analysis.lateral import analyze_lateral_dynamics
 
 
@@ -35,22 +37,22 @@ def build_jump_review(
     capability_text = str(personal_profile.get("capability_text") or "").strip()
 
     if analysis_blocked:
-        reason = analysis_block_reason or "Sprungdaten nicht korrekt. Sprung endet zu frueh."
+        reason = analysis_block_reason or "Sprungdaten nicht korrekt. Sprung endet zu früh."
         improve = [
-            "Dieser Datensatz wird fuer die Technikbewertung nicht genutzt.",
+            "Dieser Datensatz wird für die Technikbewertung nicht genutzt.",
             "Bitte Absprung neu erkennen lassen oder die Originaldatei neu einlesen.",
-            "Wenn der Track wirklich so kurz ist, den Sprung nicht fuer Speed-Vergleiche verwenden.",
+            "Wenn der Track wirklich so kurz ist, den Sprung nicht für Speed-Vergleiche verwenden.",
         ]
         if "TIME_GAPS" in quality_flags:
-            improve.append("Im Track gibt es Zeitluecken; moeglichst lueckenfreie Aufzeichnung verwenden.")
+            improve.append("Im Track gibt es Zeitlücken; möglichst lückenfreie Aufzeichnung verwenden.")
         if "SPEED_SPIKE" in quality_flags:
-            improve.append("SPEED_SPIKE erkannt; Datensatz fuer Ranking/Bestwert ausschliessen.")
+            improve.append("SPEED_SPIKE erkannt; Datensatz für Ranking/Bestwert ausschließen.")
         return {
             "happened": [
                 f"Bestes 3-Sekunden-Fenster: +{metrics['best_3s_start_s']}s bis +{metrics['best_3s_end_s']}s mit {metrics['best_3s_vVert_kmh']} km/h.",
                 f"Ausgewerteter Hauptbereich: +{notes.get('curve_window_start_s')}s bis +{notes.get('curve_window_end_s')}s.",
             ],
-            "good": ["Keine verlaessliche Technikbewertung moeglich."],
+            "good": ["Keine verlässliche Technikbewertung möglich."],
             "not_good": [reason],
             "improve": improve[:5],
         }
@@ -134,7 +136,7 @@ def build_jump_review(
         happened.append(effect_line)
     if not window_supports_20 and fp20 is not None:
         happened.append(
-            "Hinweis: +20s liegt ausserhalb des ausgewerteten Hauptbereichs; Aussagen bis +20s sind hier nur eingeschraenkt belastbar."
+            "Hinweis: +20s liegt außerhalb des ausgewerteten Hauptbereichs; Aussagen bis +20s sind hier nur eingeschränkt belastbar."
         )
     if start_vvert is not None and vvert_20 is not None and gain_10_20 is not None:
         happened.append(
@@ -199,11 +201,11 @@ def build_jump_review(
     if forward_track.get("available"):
         drift_text = ""
         if forward_track.get("drift_start_s") is not None:
-            drift_text = f", Rueckdrift ab +{forward_track['drift_start_s']:.1f}s"
+            drift_text = f", Rückdrift ab +{forward_track['drift_start_s']:.1f}s"
         happened.append(
-            "Fluglinie bis Abbremsbeginn (Vorwaerts-Strecke): "
+            "Fluglinie bis Abbremsbeginn (Vorwärts-Strecke): "
             f"Maximum {forward_track['max_forward_m']:.1f} m, "
-            f"Rueckdrift {forward_track['max_backtrack_m']:.1f} m "
+            f"Rückdrift {forward_track['max_backtrack_m']:.1f} m "
             f"({forward_track['backtrack_ratio_pct']:.0f}%){drift_text}."
         )
     if lateral_behavior.get("available"):
@@ -304,7 +306,7 @@ def build_jump_review(
                 score=8,
                 text=(
                     "Die letzte schnelle Phase mit weniger Lenkimpulsen fliegen: "
-                    "kleine fruehe Korrekturen statt spaeter grosser Gegenkorrektur."
+                    "kleine frühe Korrekturen statt später großer Gegenkorrektur."
                 ),
             )
         if personal_profile.get("asymmetry_available"):
@@ -320,9 +322,9 @@ def build_jump_review(
     early_min_mps = _num(phase_flags.get("early_vvert_min_mps"))
     if early_loss_mps is not None and early_start_mps is not None and early_min_mps is not None and early_loss_mps >= 2.0:
         not_good.append(
-            f"In den ersten 2 Sekunden faellt vVert frueh von {early_start_mps:.1f} auf {early_min_mps:.1f} m/s."
+            f"In den ersten 2 Sekunden fällt vVert früh von {early_start_mps:.1f} auf {early_min_mps:.1f} m/s."
         )
-        early_drop_text = "Den Absprung in den ersten 2 Sekunden stabiler halten und grosse Anfangskorrekturen vermeiden."
+        early_drop_text = "Den Absprung in den ersten 2 Sekunden stabiler halten und große Anfangskorrekturen vermeiden."
         if capability_mode == "safe":
             early_drop_text = (
                 f"{early_drop_text} Erst in kleinen Schritten arbeiten und +10s Richtung "
@@ -386,7 +388,7 @@ def build_jump_review(
             mode_hint = ""
             if capability_mode == "safe":
                 mode_hint = (
-                    " Erst Stabilitaet sichern: nicht sofort steiler werden, "
+                    " Erst Stabilität sichern: nicht sofort steiler werden, "
                     "sondern die aktuelle Linie ruhig halten."
                 )
             elif capability_mode == "push":
@@ -396,7 +398,7 @@ def build_jump_review(
                 key="phase_10_15_below_corridor",
                 score=8,
                 text=(
-                    "Im Segment +10 bis +15s frueher Druck aufbauen und die Linie ruhiger halten, "
+                    "Im Segment +10 bis +15s früher Druck aufbauen und die Linie ruhiger halten, "
                     f"damit der Zuwachs in Richtung +{phase_10_15_low:.0f} km/h geht.{mode_hint}"
                 ),
             )
@@ -421,7 +423,7 @@ def build_jump_review(
                 key="phase_15_20_below_corridor",
                 score=8,
                 text=(
-                    "Im Segment +15 bis +20s Druck gleichmaessig weiterziehen und kleine, fruehe Korrekturen setzen, "
+                    "Im Segment +15 bis +20s Druck gleichmäßig weiterziehen und kleine, frühe Korrekturen setzen, "
                     f"damit der Zuwachs wieder Richtung +{phase_15_20_low:.0f} km/h geht.{mode_hint}"
                 ),
             )
@@ -457,8 +459,8 @@ def build_jump_review(
                 not_good.append(
                     "Du gehst im Aufbau zu schnell steil "
                     f"(+10s {angle_10:.1f} -> +15s {angle_15:.1f} -> +20s {angle_20:.1f} Grad), "
-                    f"kannst den Winkel aber nicht halten: ab +{peak_t:.1f}s faellt er wieder auf {angle_end:.1f} Grad "
-                    f"(Ruecklauf {rollback_deg:.1f} Grad)."
+                    f"kannst den Winkel aber nicht halten: ab +{peak_t:.1f}s fällt er wieder auf {angle_end:.1f} Grad "
+                    f"(Rücklauf {rollback_deg:.1f} Grad)."
                 )
             else:
                 not_good.append(
@@ -466,7 +468,7 @@ def build_jump_review(
                 )
             if turns_after_peak is not None and vvert_drop_after_peak is not None:
                 not_good.append(
-                    f"Im Ruecklauf folgen {int(round(turns_after_peak))} Nachkorrekturen und vVert faellt dabei um {vvert_drop_after_peak:.1f} km/h."
+                    f"Im Rücklauf folgen {int(round(turns_after_peak))} Nachkorrekturen und vVert fällt dabei um {vvert_drop_after_peak:.1f} km/h."
                 )
             _add_action(
                 actions_by_key,
@@ -475,28 +477,28 @@ def build_jump_review(
                 text=(
                     "Im Aufbau nicht zu schnell maximal steil werden: "
                     f"erst stabil im Bereich {angle_band_text} bleiben und dann schrittweise steigern. "
-                    "Wenn der Winkel wieder ruecklaeufig wird, 1 bis 2 Grad rausnehmen und die Linie beruhigen."
+                    "Wenn der Winkel wieder rückläufig wird, 1 bis 2 Grad rausnehmen und die Linie beruhigen."
                 ),
             )
         elif angle_chain.get("rollback_with_instability"):
             if None not in {angle_peak, angle_end, rollback_deg, peak_t}:
                 not_good.append(
-                    f"Der Tauchwinkel wird in der schnellen Phase ruecklaeufig "
-                    f"(max {angle_peak:.1f} Grad bei +{peak_t:.1f}s -> {angle_end:.1f} Grad, Ruecklauf {rollback_deg:.1f})."
+                    f"Der Tauchwinkel wird in der schnellen Phase rückläufig "
+                    f"(max {angle_peak:.1f} Grad bei +{peak_t:.1f}s -> {angle_end:.1f} Grad, Rücklauf {rollback_deg:.1f})."
                 )
             else:
-                not_good.append("Der Tauchwinkel wird in der schnellen Phase wieder ruecklaeufig.")
+                not_good.append("Der Tauchwinkel wird in der schnellen Phase wieder rückläufig.")
             if turns_after_peak is not None and turns_after_peak >= 1.5:
                 not_good.append(
-                    f"Das passiert zusammen mit {int(round(turns_after_peak))} Nachkorrekturen und kostet Stabilitaet."
+                    f"Das passiert zusammen mit {int(round(turns_after_peak))} Nachkorrekturen und kostet Stabilität."
                 )
             _add_action(
                 actions_by_key,
                 key="segment_20_25_angle_rollback",
                 score=8,
                 text=(
-                    "Ab dem Winkel-Peak die Linie ruhiger halten: kleine, fruehe Korrekturen statt spaeter Gegenbewegung, "
-                    "damit der Winkel nicht ruecklaeufig wird."
+                    "Ab dem Winkel-Peak die Linie ruhiger halten: kleine, frühe Korrekturen statt später Gegenbewegung, "
+                    "damit der Winkel nicht rückläufig wird."
                 ),
             )
     if exit_carry.get("available"):
@@ -513,9 +515,9 @@ def build_jump_review(
             and gain_0_10 < 62.0
         ):
             not_good.append(
-                "Exit-Druck wird zu wenig mitgenommen (frueher Beschleunigungsabfall bei schwachem 0-10s Aufbau)."
+                "Exit-Druck wird zu wenig mitgenommen (früher Beschleunigungsabfall bei schwachem 0-10s Aufbau)."
             )
-            carry_text = "Nach dem Exit den Druck laenger tragen: ab +2s stabil weiter beschleunigen, statt frueh nachzulassen."
+            carry_text = "Nach dem Exit den Druck länger tragen: ab +2s stabil weiter beschleunigen, statt früh nachzulassen."
             if capability_mode == "safe":
                 carry_text = (
                     f"{carry_text} Zuerst konstante Linie aufbauen und +10s mindestens "
@@ -540,7 +542,7 @@ def build_jump_review(
             and carry_ratio >= 0.78
             and gain_0_10 >= 65.0
         ):
-            good.append("Exit-Dynamik wird gut mitgenommen (stabiler Uebergang von 0-2s auf 2-6s).")
+            good.append("Exit-Dynamik wird gut mitgenommen (stabiler Übergang von 0-2s auf 2-6s).")
     if corridor_tail.get("available"):
         if corridor_tail.get("early_release_before_corridor_end"):
             not_good.append(
@@ -550,7 +552,7 @@ def build_jump_review(
                 actions_by_key,
                 key="corridor_not_used",
                 score=9,
-                text="Bis Korridorende laenger in der schnellen Linie bleiben und den Ausstieg erst danach setzen.",
+                text="Bis Korridorende länger in der schnellen Linie bleiben und den Ausstieg erst danach setzen.",
             )
         tail_gain = _num(corridor_tail.get("tail_vvert_gain_kmh"))
         tail_turns = _num(corridor_tail.get("tail_angle_turns"))
@@ -562,7 +564,7 @@ def build_jump_review(
                 actions_by_key,
                 key="tail_no_gain_with_corrections",
                 score=8,
-                text="Im Schlussteil kleinere, fruehere Korrekturen fliegen, damit der Speed bis Korridorende weiter steigt.",
+                text="Im Schlussteil kleinere, frühere Korrekturen fliegen, damit der Speed bis Korridorende weiter steigt.",
             )
     if segment_eff.get("available"):
         hot_eff = _num(segment_eff.get("hot_eff_kmh_per_100m"))
@@ -603,46 +605,46 @@ def build_jump_review(
             )
     if peak_hold.get("available"):
         if peak_hold.get("short_hold_above_400"):
-            not_good.append("Die sehr hohe Speed-Zone ueber 400 km/h wird zu kurz gehalten.")
+            not_good.append("Die sehr hohe Speed-Zone über 400 km/h wird zu kurz gehalten.")
             _add_action(
                 actions_by_key,
                 key="hold_400_short",
                 score=7,
-                text="Ueber 400 km/h laenger stabil bleiben, statt frueh mit groesseren Korrekturen auszusteigen.",
+                text="Über 400 km/h länger stabil bleiben, statt früh mit größeren Korrekturen auszusteigen.",
             )
         if peak_hold.get("short_hold_above_390"):
             _add_action(
                 actions_by_key,
                 key="hold_390_short",
                 score=6,
-                text="Die Phase ueber 390 km/h verlaengern, indem du im Peak-Bereich kleinere und fruehere Korrekturen setzt.",
+                text="Die Phase über 390 km/h verlängern, indem du im Peak-Bereich kleinere und frühere Korrekturen setzt.",
             )
     if forward_track.get("available"):
         if forward_track.get("label") == "negativ":
             drift_at = forward_track.get("drift_start_s")
             start_text = "" if drift_at is None else f" ab +{drift_at:.1f}s"
             not_good.append(
-                "Die Fluglinie driftet im spaeten Verlauf klar nach hinten"
-                f"{start_text}. Das spricht fuer Kippen/zu harte Nachkorrekturen."
+                "Die Fluglinie driftet im späten Verlauf klar nach hinten"
+                f"{start_text}. Das spricht für Kippen/zu harte Nachkorrekturen."
             )
             _add_action(
                 actions_by_key,
                 key="forward_track_drift_hard",
                 score=9,
-                text="Ab etwa +20s Linie ruhiger halten und kleinere, fruehere Korrekturen setzen, damit die Fluglinie vorwaerts bleibt.",
+                text="Ab etwa +20s Linie ruhiger halten und kleinere, frühere Korrekturen setzen, damit die Fluglinie vorwärts bleibt.",
             )
         elif forward_track.get("label") == "leicht_negativ":
             not_good.append(
-                "Im Schlussteil geht die Fluglinie teilweise wieder zurueck. Die Linie bleibt nicht durchgehend vorwaerts."
+                "Im Schlussteil geht die Fluglinie teilweise wieder zurück. Die Linie bleibt nicht durchgehend vorwärts."
             )
             _add_action(
                 actions_by_key,
                 key="forward_track_drift_soft",
                 score=7,
-                text="Im Schlussteil Druck gleichmaessiger halten, damit keine Rueckdrift in der Fluglinie entsteht.",
+                text="Im Schlussteil Druck gleichmäßiger halten, damit keine Rückdrift in der Fluglinie entsteht.",
             )
         else:
-            good.append("Die Fluglinie bleibt im relevanten Bereich vorwaertsgerichtet (kein relevanter Rueckdrift).")
+            good.append("Die Fluglinie bleibt im relevanten Bereich vorwärtsgerichtet (kein relevanter Rückdrift).")
 
     smooth_start = max(6.0, 0.0 if curve_start_num is None else curve_start_num)
     smooth_end_candidates: list[float] = []
@@ -671,14 +673,14 @@ def build_jump_review(
         )
     elif curve_smoothness["label"] == "leicht_unruhig":
         happened.append(
-            "Kurvenruhe: leicht unruhig (einige zusaetzliche Korrekturen im Verlauf)."
+            "Kurvenruhe: leicht unruhig (einige zusätzliche Korrekturen im Verlauf)."
         )
     elif curve_smoothness["label"] == "unruhig":
         happened.append(
             "Kurvenruhe: unruhig (viele Richtungswechsel, Hinweis auf wiederholte Nachkorrekturen)."
         )
     if curve_smoothness["label"] == "sauber" and scorecard.get("hot_zone") == "kritisch":
-        happened.append("Der Grundverlauf ist ruhig, aber in der Peak-Phase gibt es einen klaren Stabilitaetseinbruch.")
+        happened.append("Der Grundverlauf ist ruhig, aber in der Peak-Phase gibt es einen klaren Stabilitätseinbruch.")
 
     # Personal +10s guardrail: for "safe" mode, avoid entering too steep too early.
     angle10_now = _num(fp10.get("angle_deg")) if fp10 else None
@@ -714,9 +716,9 @@ def build_jump_review(
     ):
         detail = ""
         if early_vvert_drop is not None:
-            detail = f" In den ersten 2s faellt vVert dabei um {early_vvert_drop:.1f} m/s."
+            detail = f" In den ersten 2s fällt vVert dabei um {early_vvert_drop:.1f} m/s."
         not_good.append(
-            "Bei +10s ist der Tauchwinkel fuer dein aktuelles stabiles Niveau zu steil "
+            "Bei +10s ist der Tauchwinkel für dein aktuelles stabiles Niveau zu steil "
             f"(Ist: {angle10_now:.1f} Grad, Zielbereich: {a10_text}). "
             "Danach wird die Linie unruhig und es folgen Nachkorrekturen."
             f"{detail}"
@@ -739,7 +741,7 @@ def build_jump_review(
             actions_by_key,
             key="exit_too_hard",
             score=7,
-            text="Die ersten Sekunden etwas weicher aufbauen und den Druck gleichmaessiger verteilen.",
+            text="Die ersten Sekunden etwas weicher aufbauen und den Druck gleichmäßiger verteilen.",
         )
     if scorecard.get("exit_dynamik") == "dynamisch_stabil":
         good.append("Der Start ist dynamisch, aber dabei stabil und kontrolliert.")
@@ -760,7 +762,7 @@ def build_jump_review(
         ):
             if angle_20_raw < (target_angle_low - 0.6):
                 not_good.append(
-                    "Im persoenlichen Vergleich ist der Winkel bei +20s noch zu flach "
+                    "Im persönlichen Vergleich ist der Winkel bei +20s noch zu flach "
                     f"(Ist: {angle_20_raw:.1f} deg, Korridor: {target_angle_low:.1f} bis {target_angle_high:.1f})."
                 )
                 _add_action(
@@ -768,13 +770,13 @@ def build_jump_review(
                     key="angle_20_personal_flat",
                     score=7,
                     text=(
-                        "Im Aufbau bis +20s den Winkel etwas frueher anheben und in deinen stabilen Korridor bringen: "
+                        "Im Aufbau bis +20s den Winkel etwas früher anheben und in deinen stabilen Korridor bringen: "
                         f"{target_angle_low:.1f} bis {target_angle_high:.1f} Grad."
                     ),
                 )
             elif angle_20_raw > (target_angle_high + 0.6):
                 not_good.append(
-                    "Im persoenlichen Vergleich ist der Winkel bei +20s schon zu steil "
+                    "Im persönlichen Vergleich ist der Winkel bei +20s schon zu steil "
                     f"(Ist: {angle_20_raw:.1f} deg, Korridor: {target_angle_low:.1f} bis {target_angle_high:.1f})."
                 )
                 _add_action(
@@ -787,11 +789,11 @@ def build_jump_review(
                     ),
                 )
     if scorecard.get("hot_zone") in {"stabil", "sehr gut"}:
-        good.append("In der schnellen Phase bleibt der Verlauf ueber weite Strecken ruhig.")
+        good.append("In der schnellen Phase bleibt der Verlauf über weite Strecken ruhig.")
     if metrics.get("best_3s_vHor_kmh") is not None and float(metrics["best_3s_vHor_kmh"]) >= 30:
         good.append("Im besten Fenster ist noch genug waagerechte Geschwindigkeit vorhanden.")
     if curve_smoothness["label"] == "sauber":
-        good.append("Der Kurvenverlauf ist ruhig und gleichmaessig.")
+        good.append("Der Kurvenverlauf ist ruhig und gleichmäßig.")
 
     if window_supports_20 and scorecard.get("phase_10_20") == "zu flach":
         target_angle_low = _num(personal_profile.get("angle_20_target_low"))
@@ -804,11 +806,11 @@ def build_jump_review(
                 and angle_20_raw < (target_angle_low - 0.6)
             ):
                 not_good.append(
-                    "Zwischen +10s und +20s ist der Winkel fuer dein stabiles Niveau oft zu flach "
+                    "Zwischen +10s und +20s ist der Winkel für dein stabiles Niveau oft zu flach "
                     f"(Ist +20s: {angle_20_raw:.1f} deg, Korridor: {target_angle_low:.1f} bis {target_angle_high:.1f})."
                 )
             elif target_angle_low is None or target_angle_high is None or angle_20_raw is None:
-                not_good.append("Zwischen +10s und +20s ist der Winkel fuer dein stabiles Niveau oft zu flach.")
+                not_good.append("Zwischen +10s und +20s ist der Winkel für dein stabiles Niveau oft zu flach.")
         else:
             not_good.append("Zwischen +10s und +20s ist der Winkel oft zu flach.")
         should_add_angle_steeper = True
@@ -834,11 +836,11 @@ def build_jump_review(
         if personal_profile.get("is_personalized"):
             if target_angle_low is not None and target_angle_high is not None and angle_20_raw is not None:
                 not_good.append(
-                    "Zwischen +10s und +20s ist der Winkel fuer dein stabiles Niveau oft zu steil "
+                    "Zwischen +10s und +20s ist der Winkel für dein stabiles Niveau oft zu steil "
                     f"(Ist +20s: {angle_20_raw:.1f} deg, Korridor: {target_angle_low:.1f} bis {target_angle_high:.1f})."
                 )
             else:
-                not_good.append("Zwischen +10s und +20s ist der Winkel fuer dein stabiles Niveau oft zu steil.")
+                not_good.append("Zwischen +10s und +20s ist der Winkel für dein stabiles Niveau oft zu steil.")
         else:
             not_good.append("Zwischen +10s und +20s ist der Winkel oft zu steil.")
         target_text = _angle_target_for_steep(angle_20_raw, profile=personal_profile)
@@ -851,7 +853,7 @@ def build_jump_review(
 
     if scorecard.get("hot_zone") == "kritisch":
         not_good.append("In der schnellen Phase bricht die waagerechte Geschwindigkeit zu stark ein.")
-        peak_text = "In der Peak-Phase Druck ruhiger halten und kleine, fruehe Korrekturen machen."
+        peak_text = "In der Peak-Phase Druck ruhiger halten und kleine, frühe Korrekturen machen."
         if personal_profile.get("is_personalized"):
             peak_text = (
                 f"{peak_text} Ziel für dich: vHor in der Hot-Zone möglichst über "
@@ -875,7 +877,7 @@ def build_jump_review(
 
     if scorecard.get("kipp_risiko") == "hoch":
         not_good.append("Die Bewegung zeigt Abschnitte mit erhoehtem Kipp-Risiko.")
-        kipp_text = "Bei Instabilitaet Koerperspannung frueher stabilisieren (Schulter und Huefte)."
+        kipp_text = "Bei Instabilität Körperspannung früher stabilisieren (Schulter und Hüfte)."
         risk_angle = _num(personal_profile.get("angle_20_risk_above"))
         max_turns = _num(personal_profile.get("angle_turns_20_25_max"))
         if personal_profile.get("is_personalized"):
@@ -893,8 +895,8 @@ def build_jump_review(
             text=kipp_text,
         )
     elif scorecard.get("kipp_risiko") == "mittel":
-        not_good.append("Es gibt kurze Abschnitte mit mittlerem Stabilitaetsrisiko.")
-        medium_text = "In schnellen Abschnitten frueher kleine Korrekturen setzen, statt spaet grob zu korrigieren."
+        not_good.append("Es gibt kurze Abschnitte mit mittlerem Stabilitätsrisiko.")
+        medium_text = "In schnellen Abschnitten früher kleine Korrekturen setzen, statt spät grob zu korrigieren."
         risk_angle = _num(personal_profile.get("angle_20_risk_above"))
         if personal_profile.get("is_personalized") and risk_angle is not None:
             medium_text = (
@@ -920,15 +922,15 @@ def build_jump_review(
             actions_by_key,
             key="vhor_tail",
             score=7,
-            text="Ab +22s leicht gegensteuern, Ziel: vHor moeglichst ueber 25 km/h halten.",
+            text="Ab +22s leicht gegensteuern, Ziel: vHor möglichst über 25 km/h halten.",
         )
     elif vhor_24 is not None and vhor_24 < 28:
-        not_good.append("Schon um +24s faellt die waagerechte Geschwindigkeit frueh ab.")
+        not_good.append("Schon um +24s fällt die waagerechte Geschwindigkeit früh ab.")
         _add_action(
             actions_by_key,
             key="vhor_mid",
             score=6,
-            text="Bereits ab +20s ruhiger und gleichmaessiger Druck halten, damit vHor spaeter abfaellt.",
+            text="Bereits ab +20s ruhiger und gleichmäßiger Druck halten, damit vHor später abfällt.",
         )
 
     if start_vvert is not None and start_vvert < 230:
@@ -963,7 +965,7 @@ def build_jump_review(
             actions_by_key,
             key="start_speed_low",
             score=10 if start_vvert < 210 else 8,
-            text=f"Startphase frueher in eine stabile, entschlossene Linie bringen. {target_text_10}",
+            text=f"Startphase früher in eine stabile, entschlossene Linie bringen. {target_text_10}",
         )
     if window_supports_20 and gain_10_20 is not None and gain_10_20 < 90:
         target_gain_low = _num(personal_profile.get("gain_10_20_target_low"))
@@ -1011,12 +1013,12 @@ def build_jump_review(
             actions_by_key,
             key="build_too_hard",
             score=6,
-            text="Den Speed-Aufbau etwas gleichmaessiger verteilen, damit der Peak stabiler bleibt.",
+            text="Den Speed-Aufbau etwas gleichmäßiger verteilen, damit der Peak stabiler bleibt.",
         )
 
     if early_acc_mean is not None and early_acc_mean < 1.8:
         not_good.append(f"Die Anfangsbeschleunigung ist eher niedrig ({early_acc_mean:.2f} m/s2 im Mittel).")
-        early_low_text = "In den ersten 4 bis 6 Sekunden frueher Druck aufbauen, damit der vertikale Speed schneller steigt."
+        early_low_text = "In den ersten 4 bis 6 Sekunden früher Druck aufbauen, damit der vertikale Speed schneller steigt."
         if capability_mode == "safe":
             early_low_text = (
                 f"{early_low_text} Erst sauber in den unteren Zielbereich von "
@@ -1040,15 +1042,15 @@ def build_jump_review(
             or (early_acc_p95 > 14.0 and scorecard.get("kipp_risiko") in {"mittel", "hoch"})
         )
     ):
-        not_good.append("Der fruehe Druckanstieg ist eher hart und kann spaeter Stabilitaet kosten.")
+        not_good.append("Der frühe Druckanstieg ist eher hart und kann später Stabilität kosten.")
         _add_action(
             actions_by_key,
             key="early_acc_spike",
             score=6,
-            text="Fruehen Druckanstieg etwas weicher fahren, damit die Linie stabiler bleibt.",
+            text="Frühen Druckanstieg etwas weicher fahren, damit die Linie stabiler bleibt.",
         )
     if early_acc_peak is not None and early_acc_peak > 20.0 and {"SPEED_SPIKE", "TIME_GAPS"} & quality_flags:
-        not_good.append("Die Anfangsbeschleunigung wirkt unplausibel hoch; wegen Datenluecken/Spikes vorsichtig interpretieren.")
+        not_good.append("Die Anfangsbeschleunigung wirkt unplausibel hoch; wegen Datenlücken/Spikes vorsichtig interpretieren.")
 
     if curve_smoothness["label"] == "unruhig":
         not_good.append("Der Kurvenverlauf springt mehrfach hin und her (viele Nachkorrekturen).")
@@ -1073,7 +1075,7 @@ def build_jump_review(
 
     # TIME_GAPS is represented in data-quality scoring; do not duplicate it in coaching text.
     if "LOW_GPS_FIX" in quality_flags or "HIGH_SPEED_ACCURACY_ERROR" in quality_flags:
-        not_good.append("Die GPS-Qualitaet war nicht durchgehend stabil.")
+        not_good.append("Die GPS-Qualität war nicht durchgehend stabil.")
 
     if best_compare is not None:
         reference = best_compare.get("reference", {})
@@ -1086,7 +1088,7 @@ def build_jump_review(
         if max_row and max_row.get("delta") is not None:
             delta = float(max_row["delta"])
             if current_is_reference and delta < -0.2:
-                good.append(f"Dieser Sprung liegt {abs(delta):.2f} km/h ueber dem naechstbesten Sprung.")
+                good.append(f"Dieser Sprung liegt {abs(delta):.2f} km/h über dem nächstbesten Sprung.")
 
         fp20_cmp = next(
             (row for row in best_compare.get("fixpoint_rows", []) if abs(float(row.get("t_rel_s", -1)) - 20.0) < 1e-6),
@@ -1100,7 +1102,7 @@ def build_jump_review(
                     key="vhor_gap_to_reference",
                     score=7,
                     text=(
-                        f"Bei +20s fehlen etwa {abs(d_vhor):.1f} km/h vHor gegenueber dem schnelleren Referenzsprung."
+                        f"Bei +20s fehlen etwa {abs(d_vhor):.1f} km/h vHor gegenüber dem schnelleren Referenzsprung."
                     ),
                 )
             if current_is_comparison and d_vhor > 4:
@@ -1118,7 +1120,7 @@ def build_jump_review(
                     score=8,
                     text=(
                         f"Bei +20s fehlen gegen die Referenz {abs(d_vvert):.1f} km/h vVert. "
-                        "Der groesste Hebel liegt im Aufbau bis +20s."
+                        "Der größte Hebel liegt im Aufbau bis +20s."
                     ),
                 )
             if current_is_comparison and d_vvert > 10:
@@ -1145,13 +1147,13 @@ def build_jump_review(
             )
             if ref_d400 is not None and cur_d400 is not None and ref_d400 - cur_d400 >= 1.5:
                 not_good.append(
-                    f"Die Referenz haelt >400 km/h im Coaching-Fenster rund {ref_d400 - cur_d400:.1f}s laenger."
+                    f"Die Referenz hält >400 km/h im Coaching-Fenster rund {ref_d400 - cur_d400:.1f}s länger."
                 )
                 _add_action(
                     actions_by_key,
                     key="hold_400_gap_to_reference",
                     score=7,
-                    text="Die Peak-Phase laenger stabilisieren, um die >400 km/h Zone naeher an die Referenz heranzubringen.",
+                    text="Die Peak-Phase länger stabilisieren, um die >400 km/h Zone näher an die Referenz heranzubringen.",
                 )
 
     reference_compares: list[dict[str, Any]] = []
@@ -1274,13 +1276,13 @@ def build_jump_review(
             mean_hold_gap = float(np.mean(hold_gap_values))
             if mean_hold_gap >= 2.0:
                 not_good.append(
-                    f"Top-5 Referenzen halten >390 km/h im Schnitt rund {mean_hold_gap:.1f}s laenger."
+                    f"Top-5 Referenzen halten >390 km/h im Schnitt rund {mean_hold_gap:.1f}s länger."
                 )
                 _add_action(
                     actions_by_key,
                     key="top5_hold_390_gap",
                     score=7,
-                    text="Hohe Speed-Bereiche laenger stabil halten (ueber 390 km/h), statt sie frueh durch Korrekturen zu verlassen.",
+                    text="Hohe Speed-Bereiche länger stabil halten (über 390 km/h), statt sie früh durch Korrekturen zu verlassen.",
                 )
 
     if not good:
@@ -1290,7 +1292,7 @@ def build_jump_review(
 
     improve = _build_priority_actions(actions_by_key, max_items=5, phase_boosts=phase_boosts)
     if not improve:
-        improve = ["Prioritaet 1 (stabil halten): den aktuellen Ablauf moeglichst reproduzierbar wiederholen."]
+        improve = ["Priorität 1 (stabil halten): den aktuellen Ablauf möglichst reproduzierbar wiederholen."]
 
     happened_clean = _compact_lines(happened, max_items=14)
     good_clean = _compact_lines(good, max_items=4)
@@ -1317,12 +1319,12 @@ def _unique_keep_order(items: list[str]) -> list[str]:
 
 
 def _line_topic(text: str) -> str:
-    lowered = text.lower()
+    lowered = normalize_german_text(text)
     if "top-5" in lowered:
         return "top5"
     if "referenz" in lowered:
         return "reference"
-    if "zeitluecken" in lowered or "gps" in lowered or "daten" in lowered:
+    if "zeitlücken" in lowered or "gps" in lowered or "daten" in lowered:
         return "data_quality"
     if "kipp" in lowered or "instabil" in lowered or "kurvenverlauf" in lowered:
         return "stability"
@@ -1899,8 +1901,8 @@ def _add_action(
 
 
 def _action_phase_rank(*, key: str, text: str) -> int:
-    key_l = key.lower()
-    text_l = text.lower()
+    key_l = normalize_german_text(key)
+    text_l = normalize_german_text(text)
 
     # 0: Exit / Start (0-10s)
     if any(
@@ -1908,7 +1910,7 @@ def _action_phase_rank(*, key: str, text: str) -> int:
         for token in ["exit", "start_speed_low", "early_acc", "early_vvert", "carryover"]
     ):
         return 0
-    if any(token in text_l for token in ["absprung", "nach dem exit", "ersten 2 sekunden", "startphase"]):
+    if any(normalize_german_text(token) in text_l for token in ["absprung", "nach dem exit", "ersten 2 sekunden", "startphase"]):
         return 0
 
     # 1: Aufbau (10-20s)
@@ -1917,7 +1919,7 @@ def _action_phase_rank(*, key: str, text: str) -> int:
     if "aufbau" in text_l or ("+10s" in text_l and "+20s" in text_l):
         return 1
 
-    # 2: Hot-Zone / spaete Phase (20-25s bis Korridorende)
+    # 2: Hot-Zone / späte Phase (20-25s bis Korridorende)
     if any(
         token in key_l
         for token in [
@@ -1938,15 +1940,15 @@ def _action_phase_rank(*, key: str, text: str) -> int:
     ):
         return 2
     if any(
-        token in text_l
+        normalize_german_text(token) in text_l
         for token in [
             "+20 bis +25",
             "hot-phase",
             "hot-zone",
             "peak-phase",
             "peak-bereich",
-            "ueber 390",
-            "ueber 400",
+            "über 390",
+            "über 400",
             "schlussteil",
             "seitbewegung",
             "seitlinie",
@@ -1954,10 +1956,10 @@ def _action_phase_rank(*, key: str, text: str) -> int:
     ):
         return 2
 
-    # 3: Stabilitaet / global
+    # 3: Stabilität / global
     if any(token in key_l for token in ["kipp", "curve", "stability"]):
         return 3
-    if any(token in text_l for token in ["stabilitaet", "kipp", "kurvenverlauf", "koerperspannung"]):
+    if any(normalize_german_text(token) in text_l for token in ["stabilität", "kipp", "kurvenverlauf", "körperspannung"]):
         return 3
 
     # 4: Referenz-/Benchmark- oder sonstige Hinweise
@@ -2068,15 +2070,15 @@ def _build_priority_actions(
             continue
         seen_texts.add(text)
         idx = len(out) + 1
-        out.append(f"Prioritaet {idx}: {text}")
+        out.append(f"Priorität {idx}: {text}")
         if len(out) >= max_items:
             break
     return out
 
 
 def _action_timeline_rank(*, key: str, text: str) -> int:
-    key_l = key.lower()
-    text_l = text.lower()
+    key_l = normalize_german_text(key)
+    text_l = normalize_german_text(text)
 
     if any(token in key_l for token in ["exit", "start_speed_low", "early_acc", "early_vvert", "carryover"]):
         return 0
@@ -2119,9 +2121,9 @@ def _action_timeline_rank(*, key: str, text: str) -> int:
             return 4
         return 5
 
-    if any(token in text_l for token in ["hot-phase", "hot-zone", "schlussteil", "peak-phase"]):
+    if any(normalize_german_text(token) in text_l for token in ["hot-phase", "hot-zone", "schlussteil", "peak-phase"]):
         return 4
-    if any(token in text_l for token in ["stabilitaet", "kipp", "koerperspannung", "kurvenverlauf"]):
+    if any(normalize_german_text(token) in text_l for token in ["stabilität", "kipp", "körperspannung", "kurvenverlauf"]):
         return 6
     return 7
 
@@ -2144,15 +2146,16 @@ def _extract_phase_boosts(tip_effect_profile: dict[str, Any] | None) -> dict[int
         "peak": 2,
         "3": 3,
         "stability": 3,
-        "stabilitaet": 3,
+        "stabilität": 3,
         "kipp_risiko": 3,
     }
+    phase_aliases = {normalize_german_text(key): value for key, value in phase_aliases.items()}
 
     out: dict[int, int] = {}
     raw = tip_effect_profile.get("phase_boosts")
     if isinstance(raw, dict):
         for raw_key, raw_value in raw.items():
-            key_text = str(raw_key).strip().lower()
+            key_text = normalize_german_text(str(raw_key).strip())
             phase = phase_aliases.get(key_text)
             if phase is None:
                 parsed_idx = _num(raw_key)
@@ -2167,7 +2170,7 @@ def _extract_phase_boosts(tip_effect_profile: dict[str, Any] | None) -> dict[int
     focus_phase = tip_effect_profile.get("focus_phase")
     focus_boost = _num(tip_effect_profile.get("focus_boost"))
     if focus_phase is not None and focus_boost is not None:
-        key_text = str(focus_phase).strip().lower()
+        key_text = normalize_german_text(str(focus_phase).strip())
         phase = phase_aliases.get(key_text)
         if phase is None:
             parsed_idx = _num(focus_phase)
@@ -2188,9 +2191,9 @@ def _extract_effect_line(tip_effect_profile: dict[str, Any] | None) -> str | Non
     focus_label = str(tip_effect_profile.get("focus_label") or "").strip()
     trend_hint = str(tip_effect_profile.get("trend_hint") or "").strip()
     if focus_label and trend_hint:
-        return f"Verlauf letzter Spruenge: {focus_label} ({trend_hint})."
+        return f"Verlauf letzter Sprünge: {focus_label} ({trend_hint})."
     if focus_label:
-        return f"Verlauf letzter Spruenge: Fokus aktuell {focus_label}."
+        return f"Verlauf letzter Sprünge: Fokus aktuell {focus_label}."
     return None
 
 
@@ -2268,7 +2271,7 @@ def _build_personal_hot_zone_chain(
         )
     if vhor_issue:
         parts.append(
-            f"Dadurch faellt vHor schnell Richtung {min_vhor_20_25:.1f} km/h (unter deinem stabilen Bereich von ca. {vhor_floor:.1f})."
+            f"Dadurch fällt vHor schnell Richtung {min_vhor_20_25:.1f} km/h (unter deinem stabilen Bereich von ca. {vhor_floor:.1f})."
         )
     if turn_issue:
         parts.append(
@@ -2276,9 +2279,9 @@ def _build_personal_hot_zone_chain(
         )
 
     if capability_mode == "safe":
-        parts.append("Besser frueher klein korrigieren und den Winkel langsamer aufbauen.")
+        parts.append("Besser früher klein korrigieren und den Winkel langsamer aufbauen.")
     elif capability_mode == "push":
-        parts.append("Push erst dann, wenn die Linie ruhig bleibt und vHor nicht abreisst.")
+        parts.append("Push erst dann, wenn die Linie ruhig bleibt und vHor nicht abreißt.")
 
     return " ".join(parts)
 
@@ -2434,7 +2437,7 @@ def _angle_target_for_flat(angle_20: float | None, *, profile: dict[str, Any] | 
         return "zuerst auf 78 bis 81 Grad stabilisieren, danach Richtung 82 bis 84 Grad aufbauen."
     if angle_20 < 82:
         return "stabil im Bereich 82 bis 84 Grad halten."
-    return "nur leicht um 1 bis 2 Grad steiler machen und Stabilitaet priorisieren."
+    return "nur leicht um 1 bis 2 Grad steiler machen und Stabilität priorisieren."
 
 
 def _angle_target_for_steep(angle_20: float | None, *, profile: dict[str, Any] | None = None) -> str:
@@ -2449,20 +2452,20 @@ def _angle_target_for_steep(angle_20: float | None, *, profile: dict[str, Any] |
             cap = min(cap, target_low + max(0.8, (target_high - target_low) * 0.6))
         if angle_20 is not None and risk_above is not None and angle_20 >= risk_above:
             return (
-                f"im naechsten Sprung klar flacher planen: bei +20s zuerst den Zielkorridor "
+                f"im nächsten Sprung klar flacher planen: bei +20s zuerst den Zielkorridor "
                 f"{target_low:.1f} bis {cap:.1f} Grad anpeilen."
             )
         return (
-            "im naechsten Sprung etwas flacher bleiben und den Winkel stabil im Zielkorridor "
+            "im nächsten Sprung etwas flacher bleiben und den Winkel stabil im Zielkorridor "
             f"{target_low:.1f} bis {cap:.1f} Grad halten."
         )
     if angle_20 is None:
-        return "Im naechsten Sprung zwischen +10s und +20s etwas flacher bleiben und stabil bei 82 bis 84 Grad halten."
+        return "Im nächsten Sprung zwischen +10s und +20s etwas flacher bleiben und stabil bei 82 bis 84 Grad halten."
     if angle_20 >= 88:
-        return "Im naechsten Sprung zwischen +10s und +20s klar flacher gehen und den Zielkorridor 82 bis 84 Grad anpeilen."
+        return "Im nächsten Sprung zwischen +10s und +20s klar flacher gehen und den Zielkorridor 82 bis 84 Grad anpeilen."
     if angle_20 >= 86:
-        return "Im naechsten Sprung zwischen +10s und +20s leicht flacher werden und 83 bis 85 Grad stabil halten."
-    return "Im naechsten Sprung etwas flacher bleiben, aber nur in kleinen Schritten (1 bis 2 Grad)."
+        return "Im nächsten Sprung zwischen +10s und +20s leicht flacher werden und 83 bis 85 Grad stabil halten."
+    return "Im nächsten Sprung etwas flacher bleiben, aber nur in kleinen Schritten (1 bis 2 Grad)."
 
 
 def _angle_progression_stability_analysis(
@@ -2632,21 +2635,21 @@ def _curve_smoothness_analysis(
 
     if label in {"leicht_unruhig", "unruhig"}:
         if early_too_steep and turns_angle_10s > 4.2:
-            causes.append("Wahrscheinlicher Grund: zu frueh sehr steil geworden, danach mehrmals nachkorrigiert.")
+            causes.append("Wahrscheinlicher Grund: zu früh sehr steil geworden, danach mehrmals nachkorrigiert.")
             actions.append(
                 {
                     "key": "curve_early_steep",
                     "score": 8 if label == "unruhig" else 6,
-                    "text": "Bis etwa +12s etwas ruhiger aufbauen und nicht zu frueh maximal steil werden.",
+                    "text": "Bis etwa +12s etwas ruhiger aufbauen und nicht zu früh maximal steil werden.",
                 }
             )
         if late_hard_build and turns_angle_10s > 4.2:
-            causes.append("Wahrscheinlicher Grund: zuerst zu flach, dann zu harter Uebergang in den Steilflug.")
+            causes.append("Wahrscheinlicher Grund: zuerst zu flach, dann zu harter Übergang in den Steilflug.")
             actions.append(
                 {
                     "key": "curve_late_hard_build",
                     "score": 8 if label == "unruhig" else 6,
-                    "text": "Uebergang in den Steilflug gleichmaessiger fahren (frueher und mit kleineren Schritten).",
+                    "text": "Übergang in den Steilflug gleichmäßiger fahren (früher und mit kleineren Schritten).",
                 }
             )
         if dip_pct > 0.25 and rebound_pct > 0.16 and correction_pattern:
@@ -2658,7 +2661,7 @@ def _curve_smoothness_analysis(
                     "key": "curve_vhor_dip_rebound",
                     "score": 7,
                     "text": (
-                        "In der Peak-Phase Druck konstanter halten, damit vHor nicht stark einbricht und zurueckfedert."
+                        "In der Peak-Phase Druck konstanter halten, damit vHor nicht stark einbricht und zurückfedert."
                     ),
                 }
             )
@@ -2670,16 +2673,16 @@ def _curve_smoothness_analysis(
                 {
                     "key": "curve_negative_segments",
                     "score": 7,
-                    "text": "Extrem steile Abschnitte kuerzer halten und frueher kleine Korrekturen setzen.",
+                    "text": "Extrem steile Abschnitte kürzer halten und früher kleine Korrekturen setzen.",
                 }
             )
         if not causes:
-            causes.append("Die Kurven zeigen mehrere Richtungswechsel, der Ablauf wirkt nicht gleichmaessig.")
+            causes.append("Die Kurven zeigen mehrere Richtungswechsel, der Ablauf wirkt nicht gleichmäßig.")
             actions.append(
                 {
                     "key": "curve_general_smooth",
                     "score": 6,
-                    "text": "Korrekturen kleiner und frueher setzen, damit der Kurvenverlauf ruhiger wird.",
+                    "text": "Korrekturen kleiner und früher setzen, damit der Kurvenverlauf ruhiger wird.",
                 }
             )
 

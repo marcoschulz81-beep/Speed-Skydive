@@ -30,14 +30,14 @@ def test_jump_brief_summary_uses_compact_sections_and_strips_priority_prefix():
     review = {
         "happened": [],
         "good": ["Startphase war ruhig."],
-        "not_good": ["In der schnellen Phase gab es spaete Gegenkorrekturen."],
-        "improve": ["Prioritaet 1: In der Hot-Zone kleinere, fruehere Korrekturen setzen."],
+        "not_good": ["In der schnellen Phase gab es späte Gegenkorrekturen."],
+        "improve": ["Priorität 1: In der Hot-Zone kleinere, frühere Korrekturen setzen."],
     }
     scorecard_rows = [
         {"name": "Exit", "score": 82, "reason": "vVert@10s und Carry sind stabil."},
-        {"name": "Aufbau 10-20s", "score": 86, "reason": "Der Aufbau ist gleichmaessig."},
+        {"name": "Aufbau 10-20s", "score": 86, "reason": "Der Aufbau ist gleichmäßig."},
         {"name": "Hot-Zone", "score": 42, "reason": "Die >400 km/h Zone wird zu kurz gehalten."},
-        {"name": "Stabilitaet / Kipp-Risiko", "score": 45, "reason": "Mehrere Korrekturen im Schlussteil."},
+        {"name": "Stabilität / Kipp-Risiko", "score": 45, "reason": "Mehrere Korrekturen im Schlussteil."},
     ]
 
     summary = _build_jump_brief_summary(
@@ -50,7 +50,7 @@ def test_jump_brief_summary_uses_compact_sections_and_strips_priority_prefix():
 
     assert "Hot-Zone" in summary["summary"]
     assert summary["main_issues"][0].startswith("Hot-Zone:")
-    assert summary["actions"][0] == "In der Hot-Zone kleinere, fruehere Korrekturen setzen."
+    assert summary["actions"][0] == "In der Hot-Zone kleinere, frühere Korrekturen setzen."
     assert summary["key_facts"][0].startswith("Bestes 3s-Fenster:")
 
 
@@ -75,16 +75,16 @@ def test_jump_brief_summary_actions_follow_timeline_and_focus_main_issues():
             "Im Aufbau bis +15s fehlt vertikaler Speed.",
         ],
         "improve": [
-            "Prioritaet 1: In der Hot-Zone kleine, fruehe Korrekturen setzen und vHor stabil halten.",
-            "Prioritaet 2: Bis +15s frueher Druck aufbauen, damit der Zuwachs im Aufbau wieder passt.",
-            "Prioritaet 3: Ablauf stabil wiederholen und nur kleine Korrekturen setzen.",
+            "Priorität 1: In der Hot-Zone kleine, frühe Korrekturen setzen und vHor stabil halten.",
+            "Priorität 2: Bis +15s früher Druck aufbauen, damit der Zuwachs im Aufbau wieder passt.",
+            "Priorität 3: Ablauf stabil wiederholen und nur kleine Korrekturen setzen.",
         ],
     }
     scorecard_rows = [
         {"name": "Exit", "score": 80, "reason": "Exit ist stabil."},
-        {"name": "Aufbau 10-20s", "score": 58, "reason": "Im Aufbau fehlt im fruehen Segment Druck."},
+        {"name": "Aufbau 10-20s", "score": 58, "reason": "Im Aufbau fehlt im frühen Segment Druck."},
         {"name": "Hot-Zone", "score": 49, "reason": "In der Hot-Zone geht zu viel vHor verloren."},
-        {"name": "Stabilitaet / Kipp-Risiko", "score": 73, "reason": "Stabilitaet ist okay."},
+        {"name": "Stabilität / Kipp-Risiko", "score": 73, "reason": "Stabilität ist okay."},
     ]
 
     summary = _build_jump_brief_summary(
@@ -97,7 +97,7 @@ def test_jump_brief_summary_actions_follow_timeline_and_focus_main_issues():
 
     assert any("Aufbau" in item for item in summary["main_issues"])
     assert any("Hot" in item for item in summary["main_issues"])
-    assert any("Bis +15s frueher Druck aufbauen" in item for item in summary["actions"])
+    assert any("Bis +15s früher Druck aufbauen" in item for item in summary["actions"])
     assert any("Hot-Zone" in item for item in summary["actions"])
     assert not any("Ablauf stabil wiederholen" in item for item in summary["actions"])
 
@@ -105,7 +105,7 @@ def test_jump_brief_summary_actions_follow_timeline_and_focus_main_issues():
     main_hot_idx = next(i for i, item in enumerate(summary["main_issues"]) if "Hot" in item)
     assert main_build_idx < main_hot_idx
 
-    build_idx = next(i for i, item in enumerate(summary["actions"]) if "Bis +15s frueher Druck aufbauen" in item)
+    build_idx = next(i for i, item in enumerate(summary["actions"]) if "Bis +15s früher Druck aufbauen" in item)
     hot_idx = next(i for i, item in enumerate(summary["actions"]) if "Hot-Zone" in item)
     assert build_idx < hot_idx
 
@@ -127,7 +127,7 @@ def test_jump_brief_summary_strengths_remove_semantic_duplicates():
         "happened": [],
         "good": [
             "Der Start in den Sprung wirkt sauber und kontrolliert.",
-            "Exit-Dynamik wird gut mitgenommen (stabiler Uebergang von 0-2s auf 2-6s).",
+            "Exit-Dynamik wird gut mitgenommen (stabiler Übergang von 0-2s auf 2-6s).",
         ],
         "not_good": [],
         "improve": [],
@@ -140,7 +140,7 @@ def test_jump_brief_summary_strengths_remove_semantic_duplicates():
         },
         {"name": "Aufbau 10-20s", "score": 81, "reason": "Der Aufbau ist stabil."},
         {"name": "Hot-Zone", "score": 58, "reason": "In der Hot-Zone geht zu viel vHor verloren."},
-        {"name": "Stabilitaet / Kipp-Risiko", "score": 52, "reason": "Mehrere Korrekturen im Schlussteil."},
+        {"name": "Stabilität / Kipp-Risiko", "score": 52, "reason": "Mehrere Korrekturen im Schlussteil."},
     ]
 
     summary = _build_jump_brief_summary(
@@ -187,7 +187,7 @@ def test_fs2_quality_issue_lines_only_for_non_stable_labels():
     assert _build_fs2_quality_issue_lines(stable_notes) == []
     crit_lines = _build_fs2_quality_issue_lines(crit_notes)
     assert len(crit_lines) == 1
-    assert "Messqualitaet (FS2)" in crit_lines[0]
+    assert "Messqualität (FS2)" in crit_lines[0]
     assert "kritisch" in crit_lines[0]
 
 
@@ -233,7 +233,7 @@ def test_jumper_trend_rows_detect_better_and_worse_developments():
     assert by_name["Top-Speed"]["status"] == "schlechter"
     assert by_name["Hot-Zone"]["status"] == "besser"
     assert by_name["Korrekturen 20-25s"]["status"] == "besser"
-    assert by_name["Top-Speed"]["earlier_better_text"].startswith("Top-Speed war frueher besser")
+    assert by_name["Top-Speed"]["earlier_better_text"].startswith("Top-Speed war früher besser")
 
 
 def test_jumper_stability_reference_builds_stable_and_unstable_lines():
@@ -314,7 +314,7 @@ def test_jumper_stability_reference_builds_stable_and_unstable_lines():
     assert ref["stable_count"] == 2
     assert ref["unstable_count"] == 2
     assert any(line.startswith("+10s:") for line in ref["stable_lines"])
-    assert any("Winkel ueber etwa" in line for line in ref["unstable_lines"])
+    assert any("Winkel über etwa" in line for line in ref["unstable_lines"])
     assert ref["thresholds"]["angle_20_target_low"] is not None
     assert ref["bands"]["stable"]["angle_20s"] is not None
     assert ref["thresholds"]["phase_10_15_gain_low"] is not None
@@ -327,14 +327,14 @@ def test_tip_focus_from_previous_uses_weak_scores_and_tip_keywords():
         {"name": "Exit", "score": 82},
         {"name": "Aufbau 10-20s", "score": 64},
         {"name": "Hot-Zone", "score": 58},
-        {"name": "Stabilitaet / Kipp-Risiko", "score": 75},
+        {"name": "Stabilität / Kipp-Risiko", "score": 75},
     ]
     previous_tips = [
         "In der Hot-Zone kleinere Korrekturen setzen.",
         "Beim Exit Druck besser mitnehmen.",
     ]
     phases = _tip_focus_from_previous(previous_score_rows=previous_rows, previous_tips=previous_tips)
-    assert phases == ["Exit", "Aufbau 10-20s", "Hot-Zone", "Stabilitaet / Kipp-Risiko"]
+    assert phases == ["Exit", "Aufbau 10-20s", "Hot-Zone", "Stabilität / Kipp-Risiko"]
 
 
 def test_tip_follow_status_classifies_implemented_partial_open():
@@ -361,12 +361,12 @@ def test_jump_brief_simple_uses_plain_language_and_limits_numeric_jargon():
         "notes": {"analysis_blocked": False},
     }
     jump_brief = {
-        "basis_lines": ["Zusatz-Benchmark: Top-5 schnellste plausible Spruenge aller Springer."],
+        "basis_lines": ["Zusatz-Benchmark: Top-5 schnellste plausible Sprünge aller Springer."],
         "main_issues": [
             "Bis +15s fehlen im Top-5 Vergleich im Schnitt 95.0 km/h bei +10s.",
         ],
         "strengths": [
-            "Die Fluglinie bleibt im relevanten Bereich vorwaertsgerichtet (kein relevanter Rueckdrift).",
+            "Die Fluglinie bleibt im relevanten Bereich vorwärtsgerichtet (kein relevanter Rückdrift).",
         ],
         "actions": [
             "Zwischen +10s und +20s mehr Druck aufbauen.",
@@ -376,7 +376,7 @@ def test_jump_brief_simple_uses_plain_language_and_limits_numeric_jargon():
         {"name": "Exit", "score": 62},
         {"name": "Aufbau 10-20s", "score": 49},
         {"name": "Hot-Zone", "score": 54},
-        {"name": "Stabilitaet / Kipp-Risiko", "score": 73},
+        {"name": "Stabilität / Kipp-Risiko", "score": 73},
     ]
 
     simple = _build_jump_brief_simple(

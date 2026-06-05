@@ -79,7 +79,7 @@ def test_build_jump_review_prioritizes_start_and_build_when_low():
 
     review = build_jump_review(report, best_compare=None)
 
-    assert any("Prioritaet" in item for item in review["improve"])
+    assert any("Priorität" in item for item in review["improve"])
     assert any("Startphase" in item or "Zwischen +10s und +20s mehr Druck aufbauen" in item for item in review["improve"])
 
 
@@ -134,7 +134,7 @@ def test_priority_actions_follow_flight_sequence():
     actions = {
         "peak_stability": {
             "score": 10,
-            "text": "In der Peak-Phase Druck ruhiger halten und kleine, fruehe Korrekturen machen.",
+            "text": "In der Peak-Phase Druck ruhiger halten und kleine, frühe Korrekturen machen.",
         },
         "build_speed_low": {
             "score": 9,
@@ -142,11 +142,11 @@ def test_priority_actions_follow_flight_sequence():
         },
         "exit_carryover_low": {
             "score": 7,
-            "text": "Nach dem Exit den Druck laenger tragen: ab +2s stabil weiter beschleunigen, statt frueh nachzulassen.",
+            "text": "Nach dem Exit den Druck länger tragen: ab +2s stabil weiter beschleunigen, statt früh nachzulassen.",
         },
         "kipp_risk_high": {
             "score": 8,
-            "text": "Bei Instabilitaet Koerperspannung frueher stabilisieren (Schulter und Huefte).",
+            "text": "Bei Instabilität Körperspannung früher stabilisieren (Schulter und Hüfte).",
         },
     }
 
@@ -167,7 +167,7 @@ def test_build_jump_review_detects_negative_forward_drift():
     vhor = [95.0 - i * 2.0 for i in range(0, 31)]
     angle = [70.0 + i * 0.6 for i in range(0, 31)]
     acc = [2.5 for _ in time_s]
-    # Vorwaerts-Strecke: erst vorwaerts, dann klare Rueckdrift.
+    # Vorwärts-Strecke: erst vorwärts, dann klare Rückdrift.
     forward_m = [i * 5.0 if i <= 20 else 100.0 - (i - 20) * 3.0 for i in range(0, 31)]
     running_max = []
     cur = float("-inf")
@@ -215,7 +215,7 @@ def test_build_jump_review_detects_negative_forward_drift():
     }
 
     review = build_jump_review(report, best_compare=None)
-    assert any("Rueckdrift" in item for item in review["happened"])
+    assert any("Rückdrift" in item for item in review["happened"])
 
 
 def test_forward_eval_end_prefers_decel_start_over_generic_window():
@@ -308,7 +308,7 @@ def test_build_jump_review_adds_phase_corridor_hint_when_10_15_is_below_personal
         },
         "capability_profile": {
             "mode": "safe",
-            "text": "Letzte 8 Spruenge: 3/8 stabil (38%). Erst Stabilitaet sichern, dann Tempo pushen.",
+            "text": "Letzte 8 Sprünge: 3/8 stabil (38%). Erst Stabilität sichern, dann Tempo pushen.",
             "stable_ratio_pct": 38.0,
         },
     }
@@ -452,4 +452,4 @@ def test_build_jump_review_does_not_mix_fs2_quality_into_flight_feedback():
 
     combined = review["happened"] + review["not_good"] + review["improve"]
     assert not any("FS2-Werte" in line for line in combined)
-    assert not any("Messqualitaet (FS2)" in line for line in combined)
+    assert not any("Messqualität (FS2)" in line for line in combined)
