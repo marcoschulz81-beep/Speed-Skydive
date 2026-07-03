@@ -60,7 +60,7 @@
                 </td>
                 <td>
                     {{ jump.file_name }}<br>
-                    <span class="muted">{{ jump.t0_utc }}</span>
+                    <span class="muted">{{ jump_context_label(jump.jump_context) }} | {{ jump.t0_utc }}</span>
                     {% if jump.is_best %}
                     <div><span class="best-badge">Bester Sprung</span></div>
                     {% endif %}

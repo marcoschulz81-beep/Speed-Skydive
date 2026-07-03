@@ -34,6 +34,19 @@
             <p>{{ jumper_summary.trend_summary }}</p>
         </div>
         <div class="score-box">
+            <span class="k">Leistungsprofil</span>
+            {% if jumper_summary.performance_profile and jumper_summary.performance_profile.available %}
+            <p>
+                {{ jumper_summary.performance_profile.performance_band_label }}<br>
+                Top-{{ jumper_summary.performance_profile.top_available_count }} {{ jumper_summary.performance_profile.score_source_label }}:
+                {{ "%.2f"|format(jumper_summary.performance_profile.top_available_avg_kmh) }} km/h<br>
+                Vertrauen: {{ jumper_summary.performance_profile.confidence_label }}
+            </p>
+            {% else %}
+            <p>Noch nicht genug gueltige Spruenge fuer ein Profil.</p>
+            {% endif %}
+        </div>
+        <div class="score-box">
             <span class="k">Was wurde besser?</span>
             <ul class="tips compact">
                 {% if jumper_summary.improved_points %}
@@ -73,6 +86,28 @@
                 ({{ jumper_summary.best_file_name or "-" }}, {{ jumper_summary.best_t0_utc or "-" }}).
             </p>
             <p>{{ jumper_summary.trend_summary }}</p>
+        </div>
+        <div class="score-box">
+            <span class="k">Leistungsprofil</span>
+            {% if jumper_summary.performance_profile and jumper_summary.performance_profile.available %}
+            <p>{{ jumper_summary.performance_profile.summary }}</p>
+            <ul class="tips compact">
+                <li>Gueltige Profilspruenge: {{ jumper_summary.performance_profile.valid_jump_count }}, ausgeschlossen: {{ jumper_summary.performance_profile.excluded_count }}.</li>
+                <li>Kontext: {{ jumper_summary.performance_profile.training_count }} Training, {{ jumper_summary.performance_profile.competition_count }} Wettkampf, {{ jumper_summary.performance_profile.unknown_count }} unbekannt.</li>
+                {% if jumper_summary.performance_profile.top10_rule_avg_kmh is not none %}
+                <li>Top-10 regelnah: {{ "%.2f"|format(jumper_summary.performance_profile.top10_rule_avg_kmh) }} km/h.</li>
+                {% elif jumper_summary.performance_profile.top_available_rule_avg_kmh is not none %}
+                <li>Top-{{ jumper_summary.performance_profile.top_available_count }} regelnah: {{ "%.2f"|format(jumper_summary.performance_profile.top_available_rule_avg_kmh) }} km/h.</li>
+                {% endif %}
+                {% if jumper_summary.performance_profile.top10_training_avg_kmh is not none %}
+                <li>Top-10 Training 3s: {{ "%.2f"|format(jumper_summary.performance_profile.top10_training_avg_kmh) }} km/h.</li>
+                {% elif jumper_summary.performance_profile.top_available_training_avg_kmh is not none %}
+                <li>Top Training 3s: {{ "%.2f"|format(jumper_summary.performance_profile.top_available_training_avg_kmh) }} km/h.</li>
+                {% endif %}
+            </ul>
+            {% else %}
+            <p>{{ jumper_summary.performance_profile.reason if jumper_summary.performance_profile else "Noch nicht genug gueltige Spruenge fuer ein Profil." }}</p>
+            {% endif %}
         </div>
         <div class="score-box">
             <span class="k">Was wurde besser?</span>
@@ -170,6 +205,7 @@
             <tr>
                 <th>Markierung</th>
                 <th>Datei</th>
+                <th>Kontext</th>
                 <th>Datum</th>
                 <th>Speed</th>
                 <th>Detail</th>
@@ -178,6 +214,7 @@
             <tr>
                 <th>Markierung</th>
                 <th>Datei</th>
+                <th>Kontext</th>
                 <th>t0 UTC</th>
                 <th>3s Max (km/h)</th>
                 <th>Rule Score (km/h)</th>
@@ -198,6 +235,7 @@
                     {% endif %}
                 </td>
                 <td>{{ jump.file_name }}</td>
+                <td>{{ jump_context_label(jump.jump_context) }}</td>
                 <td>{{ jump.t0_utc }}</td>
                 {% if (view_mode or 'expert') == 'simple' %}
                 <td>{{ "%.2f"|format(jump.best_3s_vVert_kmh) }} km/h</td>
@@ -226,7 +264,7 @@
                 <option value="">Bitte wählen</option>
                 {% for jump in jumps %}
                 <option value="{{ jump.jump_id }}" {% if left_jump_id == jump.jump_id %}selected{% endif %}>
-                    {{ jump.file_name }} | {{ jump.t0_utc }} | 3s {{ "%.2f"|format(jump.best_3s_vVert_kmh) }}{% if jump.is_best %} | BEST{% endif %}
+                    {{ jump.file_name }} | {{ jump_context_label(jump.jump_context) }} | {{ jump.t0_utc }} | 3s {{ "%.2f"|format(jump.best_3s_vVert_kmh) }}{% if jump.is_best %} | BEST{% endif %}
                 </option>
                 {% endfor %}
             </select>
@@ -237,7 +275,7 @@
                 <option value="">Bitte wählen</option>
                 {% for jump in jumps %}
                 <option value="{{ jump.jump_id }}" {% if right_jump_id == jump.jump_id %}selected{% endif %}>
-                    {{ jump.file_name }} | {{ jump.t0_utc }} | 3s {{ "%.2f"|format(jump.best_3s_vVert_kmh) }}{% if jump.is_best %} | BEST{% endif %}
+                    {{ jump.file_name }} | {{ jump_context_label(jump.jump_context) }} | {{ jump.t0_utc }} | 3s {{ "%.2f"|format(jump.best_3s_vVert_kmh) }}{% if jump.is_best %} | BEST{% endif %}
                 </option>
                 {% endfor %}
             </select>

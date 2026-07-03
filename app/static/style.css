@@ -313,6 +313,29 @@ th {
     padding: 0.55rem 0.65rem;
 }
 
+.context-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.4rem;
+    align-items: center;
+}
+
+.context-form select {
+    min-width: 0;
+}
+
+.context-form .btn {
+    min-height: 2.3rem;
+    padding: 0.45rem 0.7rem;
+}
+
+.meta-note {
+    display: block;
+    color: var(--muted);
+    font-size: 0.76rem;
+    margin-top: 0.35rem;
+}
+
 .label {
     display: block;
     color: var(--muted);

@@ -20,6 +20,14 @@
             <input type="text" name="jumper_name" placeholder="z. B. Marlene" required>
         </label>
         <label>
+            <span>Sprung-Kontext</span>
+            <select name="jump_context" required>
+                {% for option in jump_context_options %}
+                <option value="{{ option.value }}" {% if option.value == "training" %}selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
             <span>Ground Elevation (MSL, m)</span>
             <input type="text" name="ground_elevation_m" placeholder="optional">
         </label>
@@ -44,6 +52,7 @@
             <tr>
                 <th>Springer</th>
                 <th>Datei</th>
+                <th>Kontext</th>
                 <th>t0 UTC</th>
                 <th>3s Max (km/h)</th>
                 <th>Rule Score (km/h)</th>
@@ -55,6 +64,7 @@
             <tr>
                 <td><a href="/jumpers/{{ jump.jumper_name | urlencode }}?view={{ vm }}">{{ jump.jumper_name }}</a></td>
                 <td>{{ jump.file_name }}</td>
+                <td>{{ jump_context_label(jump.jump_context) }}</td>
                 <td>{{ jump.t0_utc }}</td>
                 <td>{{ "%.2f"|format(jump.best_3s_vVert_kmh) }}</td>
                 <td>
@@ -113,6 +123,7 @@
             <thead>
             <tr>
                 <th>Springer</th>
+                <th>Profil</th>
                 <th>Form</th>
                 <th>Hauptfokus</th>
                 <th>Letzter Sprung</th>
@@ -122,6 +133,14 @@
             {% for row in jumper_overview %}
             <tr>
                 <td><a href="/jumpers/{{ row.jumper_name | urlencode }}?view={{ vm }}">{{ row.jumper_name }}</a></td>
+                <td>
+                    {{ row.performance_label }}<br>
+                    {% if row.performance_profile and row.performance_profile.available %}
+                    <span class="muted">Top-{{ row.performance_profile.top_available_count }} {{ "%.0f"|format(row.performance_profile.top_available_avg_kmh) }} km/h</span>
+                    {% else %}
+                    <span class="muted">noch offen</span>
+                    {% endif %}
+                </td>
                 <td>
                     {{ row.simple_status }}<br>
                     <span class="muted">{{ row.jump_count }} Sprünge</span>
@@ -138,6 +157,7 @@
             <tr>
                 <th>Springer</th>
                 <th>Datenbasis</th>
+                <th>Leistungsprofil</th>
                 <th>Stabil gut bei</th>
                 <th>Wird oft unruhig bei</th>
                 <th>Letzter Sprung</th>
@@ -151,6 +171,7 @@
                     {{ row.jump_count }} Sprünge<br>
                     <span class="muted">stabil {{ row.stable_count }}, unruhig {{ row.unstable_count }}</span>
                 </td>
+                <td>{{ row.performance_summary }}</td>
                 <td>{{ row.stable_short }}</td>
                 <td>{{ row.unstable_short }}</td>
                 <td>{{ row.latest_t0_utc or "-" }}</td>

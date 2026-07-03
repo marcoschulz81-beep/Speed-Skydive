@@ -34,6 +34,7 @@ def init_db() -> None:
                 file_name TEXT NOT NULL,
                 device_type TEXT NOT NULL,
                 is_reference_only INTEGER NOT NULL DEFAULT 0,
+                jump_context TEXT NOT NULL DEFAULT 'unknown',
                 source_file_sha256 TEXT,
                 source_file_path TEXT,
                 raw_start_time_utc TEXT NOT NULL,
@@ -122,6 +123,10 @@ def init_db() -> None:
         if "is_reference_only" not in columns:
             conn.execute(
                 "ALTER TABLE jumps ADD COLUMN is_reference_only INTEGER NOT NULL DEFAULT 0"
+            )
+        if "jump_context" not in columns:
+            conn.execute(
+                "ALTER TABLE jumps ADD COLUMN jump_context TEXT NOT NULL DEFAULT 'unknown'"
             )
         conn.execute("DROP INDEX IF EXISTS idx_jumps_source_file_sha256_unique")
         conn.execute(

@@ -10,10 +10,20 @@ import pandas as pd
 from app.analysis.curve_window import detect_curve_window
 from app.database import get_connection
 
+VALID_JUMP_CONTEXTS = {"unknown", "training", "competition"}
+
+
+def normalize_jump_context(raw: Any, *, default: str = "unknown") -> str:
+    value = str(raw or "").strip().lower()
+    if value in VALID_JUMP_CONTEXTS:
+        return value
+    return default
+
 
 def save_analysis_result(
     result: dict[str, Any],
     *,
+    jump_context: str = "unknown",
     is_reference_only: bool = False,
     source_file_sha256: str | None = None,
     source_file_path: str | None = None,
@@ -48,6 +58,7 @@ def save_analysis_result(
         _insert_analysis_result(
             conn=conn,
             result=result,
+            jump_context=normalize_jump_context(jump_context),
             is_reference_only=is_reference_only,
             source_file_sha256=source_file_sha256,
             source_file_path=source_file_path,
@@ -75,6 +86,7 @@ def replace_analysis_result(
     *,
     jump_id: str,
     result: dict[str, Any],
+    jump_context: str | None = None,
     is_reference_only: bool = False,
     source_file_sha256: str | None = None,
     source_file_path: str | None = None,
@@ -84,16 +96,44 @@ def replace_analysis_result(
     """
     _override_result_jump_id(result=result, jump_id=jump_id)
     with get_connection() as conn:
+        existing = conn.execute(
+            "SELECT jump_context FROM jumps WHERE jump_id = ? LIMIT 1",
+            (jump_id,),
+        ).fetchone()
+        resolved_context = normalize_jump_context(
+            jump_context if jump_context is not None else (None if existing is None else existing["jump_context"])
+        )
         conn.execute("DELETE FROM jumps WHERE jump_id = ?", (jump_id,))
         _insert_analysis_result(
             conn=conn,
             result=result,
+            jump_context=resolved_context,
             is_reference_only=is_reference_only,
             source_file_sha256=source_file_sha256,
             source_file_path=source_file_path,
         )
         conn.commit()
     return jump_id
+
+
+def update_jump_context(jump_id: str, jump_context: str) -> bool:
+    resolved_context = normalize_jump_context(jump_context, default="")
+    if resolved_context not in VALID_JUMP_CONTEXTS:
+        return False
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT jump_id FROM jumps WHERE jump_id = ? LIMIT 1",
+            (jump_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        conn.execute(
+            "UPDATE jumps SET jump_context = ? WHERE jump_id = ?",
+            (resolved_context, jump_id),
+        )
+        conn.commit()
+    return True
 
 
 def delete_jump(jump_id: str) -> bool:
@@ -144,6 +184,7 @@ def _insert_analysis_result(
     *,
     conn,
     result: dict[str, Any],
+    jump_context: str,
     is_reference_only: bool,
     source_file_sha256: str | None,
     source_file_path: str | None,
@@ -155,10 +196,10 @@ def _insert_analysis_result(
     conn.execute(
         """
         INSERT INTO jumps (
-            jump_id, jumper_name, file_name, device_type, is_reference_only, source_file_sha256, source_file_path, raw_start_time_utc, t0_utc,
+            jump_id, jumper_name, file_name, device_type, is_reference_only, jump_context, source_file_sha256, source_file_path, raw_start_time_utc, t0_utc,
             exit_altitude_msl_m, exit_altitude_agl_m, ground_elevation_m, is_valid_altitude,
             sample_rate_hz, quality_score, quality_flags
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             jump["jump_id"],
@@ -166,6 +207,7 @@ def _insert_analysis_result(
             jump["file_name"],
             jump["device_type"],
             1 if is_reference_only else 0,
+            normalize_jump_context(jump_context),
             source_file_sha256,
             source_file_path,
             jump["raw_start_time_utc"],
@@ -268,6 +310,7 @@ def list_recent_jumps(limit: int = 30) -> list[dict[str, Any]]:
                 j.jump_id,
                 j.jumper_name,
                 j.file_name,
+                j.jump_context,
                 j.t0_utc,
                 j.sample_rate_hz,
                 j.quality_score,
@@ -306,6 +349,7 @@ def list_jumps_for_jumper(jumper_name: str) -> list[dict[str, Any]]:
             SELECT
                 j.jump_id,
                 j.file_name,
+                j.jump_context,
                 j.t0_utc,
                 j.quality_score,
                 j.quality_flags,
@@ -332,6 +376,7 @@ def get_jump_summary(jump_id: str) -> dict[str, Any] | None:
                 j.jump_id,
                 j.jumper_name,
                 j.file_name,
+                j.jump_context,
                 j.t0_utc,
                 j.quality_score,
                 j.sample_rate_hz,
@@ -381,6 +426,7 @@ def get_best_jump_for_jumper(
                     j.jump_id,
                     j.jumper_name,
                     j.file_name,
+                    j.jump_context,
                     j.t0_utc,
                     m.best_3s_vVert_kmh,
                     m.rule_based_3s_score
@@ -402,6 +448,7 @@ def get_best_jump_for_jumper(
                     j.jump_id,
                     j.jumper_name,
                     j.file_name,
+                    j.jump_context,
                     j.t0_utc,
                     m.best_3s_vVert_kmh,
                     m.rule_based_3s_score
@@ -430,6 +477,7 @@ def get_best_external_reference(
                 j.jump_id,
                 j.jumper_name,
                 j.file_name,
+                j.jump_context,
                 j.t0_utc,
                 m.best_3s_vVert_kmh,
                 m.rule_based_3s_score
@@ -482,6 +530,7 @@ def list_top_global_references(
             j.jump_id,
             j.jumper_name,
             j.file_name,
+            j.jump_context,
             j.t0_utc,
             j.quality_score,
             j.quality_flags,
@@ -508,6 +557,7 @@ def list_compare_candidates(current_jump_id: str) -> list[dict[str, Any]]:
                 j.jump_id,
                 j.jumper_name,
                 j.file_name,
+                j.jump_context,
                 j.t0_utc,
                 j.quality_score,
                 m.best_3s_vVert_kmh,

@@ -48,6 +48,20 @@ Danach: `http://127.0.0.1:8000`
 pytest
 ```
 
+## Neue Version: Kontext und Leistungsprofil
+
+- Beim Upload kann jeder Sprung als `Training` oder `Wettkampf` markiert werden.
+- Falls die Markierung beim Upload vergessen wurde, kann sie spaeter im Sprungreport geaendert werden.
+- Die Markierung aendert keine Speed-Berechnung. Sie dient fuer Verlauf, Filter, Profil und spaetere Auswertungen.
+- Pro Springer wird automatisch ein Leistungsprofil berechnet:
+  - primaer aus dem regelnahen 3s-Score, falls vorhanden
+  - zusaetzlich aus dem Training-3s-Max als Vergleichswert
+  - mit Top-1/Top-3/Top-5/Top-10-Durchschnitten
+  - mit Profil-Vertrauen je nach Anzahl gueltiger Spruenge
+- Die Coaching-Tipps nutzen das Profil:
+  - Basis/Aufbau fokussiert staerker Exit und Aufbau
+  - Schnell/Elite fokussiert staerker Hot-Zone, Stabilitaet und Korrekturen
+
 ## Datenmodell
 
 - `jumps`: Metadaten pro Sprung, t0, Exit-Höhe, Gültigkeit, Qualität
@@ -67,4 +81,3 @@ Optional mit GitHub CLI:
 ```powershell
 gh repo create speed-skydive-analyzer --public --source . --remote origin --push
 ```
-

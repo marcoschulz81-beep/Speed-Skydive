@@ -45,6 +45,20 @@
     <div class="meta-grid">
         <div><span class="label">Springer</span><span>{{ report.jump.jumper_name }}</span></div>
         <div><span class="label">Datei</span><span>{{ report.jump.file_name }}</span></div>
+        <div>
+            <span class="label">Kontext</span>
+            <form method="post" action="/jumps/{{ jump_id }}/context?view={{ vm }}" class="context-form">
+                <select name="jump_context" aria-label="Sprung-Kontext">
+                    {% for option in jump_context_options %}
+                    <option value="{{ option.value }}" {% if option.value == (report.jump.jump_context or "unknown") %}selected{% endif %}>{{ option.label }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" class="btn secondary">Aendern</button>
+            </form>
+            {% if vm == "expert" %}
+            <span class="meta-note">Aendert Profil/Filter, nicht die Speed-Berechnung.</span>
+            {% endif %}
+        </div>
         <div><span class="label">t0 UTC</span><span>{{ report.jump.t0_utc }}</span></div>
         {% if vm == "expert" %}
         <div><span class="label">Samplingrate</span><span>{{ report.jump.sample_rate_hz }} Hz</span></div>

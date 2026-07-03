@@ -35,6 +35,7 @@ def build_jump_review(
     personal_profile = _extract_personal_tip_profile(jumper_stability_reference)
     capability_mode = str(personal_profile.get("capability_mode") or "")
     capability_text = str(personal_profile.get("capability_text") or "").strip()
+    performance_text = str(personal_profile.get("performance_text") or "").strip()
 
     if analysis_blocked:
         reason = analysis_block_reason or "Sprungdaten nicht korrekt. Sprung endet zu früh."
@@ -130,6 +131,8 @@ def build_jump_review(
         )
     if personal_profile.get("is_personalized") and capability_text:
         happened.append(f"Personalisierter Modus: {capability_text}")
+    if personal_profile.get("is_personalized") and performance_text:
+        happened.append(f"Leistungsprofil: {performance_text}")
     phase_boosts = _extract_phase_boosts(tip_effect_profile)
     effect_line = _extract_effect_line(tip_effect_profile)
     if effect_line:
@@ -2337,6 +2340,21 @@ def _extract_personal_tip_profile(stability_reference: dict[str, Any] | None) ->
         ratio = _num(capability.get("stable_ratio_pct"))
         if ratio is not None:
             out["capability_ratio_pct"] = ratio
+
+    performance = stability_reference.get("performance_profile", {})
+    if isinstance(performance, dict) and performance.get("available"):
+        summary = str(performance.get("summary") or "").strip()
+        if summary:
+            out["performance_text"] = summary
+        band = str(performance.get("performance_band") or "").strip().lower()
+        if band:
+            out["performance_band"] = band
+        confidence = str(performance.get("confidence") or "").strip().lower()
+        if confidence:
+            out["performance_confidence"] = confidence
+        top_avg = _num(performance.get("top_available_avg_kmh"))
+        if top_avg is not None:
+            out["performance_top_avg_kmh"] = top_avg
 
     bands = stability_reference.get("bands", {})
     stable = bands.get("stable", {}) if isinstance(bands, dict) else {}

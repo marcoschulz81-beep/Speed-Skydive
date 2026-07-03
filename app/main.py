@@ -24,6 +24,7 @@ from app.analysis.review import build_jump_review
 from app.config import BASE_DIR, COACH_VIEW_ENABLED, RAW_UPLOAD_DIR
 from app.database import init_db
 from app.services.storage import (
+    VALID_JUMP_CONTEXTS,
     delete_jump,
     find_duplicate_jump_by_source_hash,
     get_best_jump_for_jumper,
@@ -37,6 +38,8 @@ from app.services.storage import (
     list_recent_jumps,
     replace_analysis_result,
     save_analysis_result,
+    normalize_jump_context,
+    update_jump_context,
 )
 from app.text_utils import normalize_german_text
 
@@ -98,6 +101,29 @@ _VIEW_MODE_SIMPLE = "simple"
 _VIEW_MODE_EXPERT = "expert"
 _INDEX_RECENT_JUMPS_LIMIT = 10
 _TRUTHY_QUERY_VALUES = {"1", "true", "yes", "open"}
+_JUMP_CONTEXT_DEFAULT = "training"
+_JUMP_CONTEXT_LABELS = {
+    "unknown": "Unbekannt",
+    "training": "Training",
+    "competition": "Wettkampf",
+}
+_JUMP_CONTEXT_OPTIONS = [
+    {"value": "training", "label": "Training"},
+    {"value": "competition", "label": "Wettkampf"},
+    {"value": "unknown", "label": "Unbekannt"},
+]
+_PERFORMANCE_BAND_LABELS = {
+    "basis": "Basis",
+    "aufbau": "Aufbau",
+    "schnell": "Schnell",
+    "elite": "Elite",
+}
+_PROFILE_CONFIDENCE_LABELS = {
+    "low": "niedrig",
+    "medium": "mittel",
+    "good": "gut",
+    "stable": "stabil",
+}
 
 _SIMPLE_GLOSSARY_ITEMS: list[tuple[str, str]] = [
     ("Druck halten", "Körper ruhig und fest im Luftstrom lassen, ohne hektische Bewegungen."),
@@ -130,6 +156,18 @@ def _normalize_view_mode(raw: str | None) -> str:
     if mode == _VIEW_MODE_SIMPLE:
         return _VIEW_MODE_SIMPLE
     return _VIEW_MODE_EXPERT
+
+
+def _normalize_jump_context(raw: str | None, *, default: str = "unknown") -> str:
+    return normalize_jump_context(raw, default=default)
+
+
+def _jump_context_label(raw: str | None) -> str:
+    return _JUMP_CONTEXT_LABELS.get(_normalize_jump_context(raw), _JUMP_CONTEXT_LABELS["unknown"])
+
+
+templates.env.globals["jump_context_label"] = _jump_context_label
+templates.env.globals["jump_context_options"] = _JUMP_CONTEXT_OPTIONS
 
 
 def _is_enabled_query(raw: str | None) -> bool:
@@ -304,6 +342,7 @@ async def analyze_upload(
     request: Request,
     jumper_name: str = Form(...),
     csv_file: UploadFile = File(...),
+    jump_context: str = Form(_JUMP_CONTEXT_DEFAULT),
     ground_elevation_m: str = Form(""),
     breakoff_altitude_agl_m: str = Form(""),
     view_mode: str = Form(_VIEW_MODE_EXPERT),
@@ -315,6 +354,10 @@ async def analyze_upload(
 
     if not csv_file.filename.lower().endswith(".csv"):
         return _render_index_with_error(request, "Bitte eine CSV-Datei hochladen.", view_mode=resolved_view_mode)
+
+    resolved_jump_context = _normalize_jump_context(jump_context, default="")
+    if resolved_jump_context not in VALID_JUMP_CONTEXTS:
+        return _render_index_with_error(request, "Ungültiger Sprung-Kontext.", view_mode=resolved_view_mode)
 
     content = await csv_file.read()
     if not content:
@@ -350,6 +393,7 @@ async def analyze_upload(
     source_path = _cache_uploaded_file(source_hash=source_hash, original_name=csv_file.filename, content=content)
     jump_id, is_duplicate = save_analysis_result(
         result,
+        jump_context=resolved_jump_context,
         source_file_sha256=source_hash,
         source_file_path=str(source_path),
     )
@@ -547,6 +591,27 @@ def reprocess_t0(jump_id: str, view: str | None = None):
         return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(msg)}", status_code=303)
 
     ok_msg = "Absprung wurde neu erkannt und der Datensatz aktualisiert."
+    return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&message={quote_plus(ok_msg)}", status_code=303)
+
+
+@app.post("/jumps/{jump_id}/context")
+def update_jump_context_route(
+    jump_id: str,
+    jump_context: str = Form(...),
+    view: str | None = None,
+):
+    view_mode = _normalize_view_mode(view)
+    resolved_context = _normalize_jump_context(jump_context, default="")
+    if resolved_context not in VALID_JUMP_CONTEXTS:
+        msg = "Ungültiger Sprung-Kontext."
+        return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(msg)}", status_code=303)
+
+    changed = update_jump_context(jump_id, resolved_context)
+    if not changed:
+        raise HTTPException(status_code=404, detail="Sprung nicht gefunden.")
+
+    _clear_derived_caches()
+    ok_msg = f"Sprung-Kontext aktualisiert: {_jump_context_label(resolved_context)}."
     return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&message={quote_plus(ok_msg)}", status_code=303)
 
 
@@ -799,6 +864,7 @@ def coach_view(request: Request, jumper_name: str | None = None, view: str | Non
                 {
                     "jump_id": item["jump_id"],
                     "file_name": item["file_name"],
+                    "jump_context": item.get("jump_context", "unknown"),
                     "t0_utc": item["t0_utc"],
                     "best_3s_vVert_kmh": item["best_3s_vVert_kmh"],
                     "delta_to_best": delta_to_best,
@@ -1593,6 +1659,7 @@ def _jumper_summary_signature(rows: list[dict[str, Any]]) -> str:
                 [
                     str(row.get("jump_id") or ""),
                     str(row.get("file_name") or ""),
+                    str(row.get("jump_context") or ""),
                     str(row.get("t0_utc") or ""),
                     str(row.get("quality_score") or ""),
                     str(row.get("quality_flags") or ""),
@@ -2253,6 +2320,143 @@ def _simplify_coaching_line(text: str) -> str:
     return line
 
 
+def _build_performance_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
+    context_counts = {"training": 0, "competition": 0, "unknown": 0}
+    for row in records:
+        context = _normalize_jump_context(str(row.get("jump_context") or "unknown"))
+        context_counts[context] = context_counts.get(context, 0) + 1
+
+    hard_flags = {
+        "EARLY_JUMP_END",
+        "SPEED_SPIKE",
+        "TIME_GAPS",
+        "NO_CLEAR_EXIT",
+        "INVALID_EXIT_ALTITUDE",
+        "LOW_GPS_FIX",
+        "HIGH_SPEED_ACCURACY_ERROR",
+    }
+    usable: list[dict[str, Any]] = []
+    excluded = 0
+    ground_estimated_count = 0
+    for row in records:
+        flags = _parse_quality_flags(row.get("quality_flags"))
+        if "NO_GROUND_LEVEL" in flags:
+            ground_estimated_count += 1
+        if bool(row.get("analysis_blocked")) or bool(row.get("t0_review_required")) or (flags & hard_flags):
+            excluded += 1
+            continue
+        if _to_float(row.get("rule_score_kmh")) is None and _to_float(row.get("best_3s_kmh")) is None:
+            excluded += 1
+            continue
+        usable.append(row)
+
+    rule_values = [
+        float(value)
+        for row in usable
+        for value in [_to_float(row.get("rule_score_kmh"))]
+        if value is not None
+    ]
+    training_values = [
+        float(value)
+        for row in usable
+        for value in [_to_float(row.get("best_3s_kmh"))]
+        if value is not None
+    ]
+    basis_values = rule_values if rule_values else training_values
+    if not basis_values:
+        return {
+            "available": False,
+            "reason": "Noch keine gueltigen Spruenge fuer ein Leistungsprofil.",
+            "valid_jump_count": 0,
+            "excluded_count": excluded,
+            "training_count": context_counts.get("training", 0),
+            "competition_count": context_counts.get("competition", 0),
+            "unknown_count": context_counts.get("unknown", 0),
+        }
+
+    basis_count = len(basis_values)
+    top_label_count = min(10, basis_count)
+    top_available = _top_avg(basis_values, top_label_count)
+    confidence = _performance_profile_confidence(basis_count)
+    if (
+        ground_estimated_count
+        and confidence == "stable"
+        and ground_estimated_count >= max(2, basis_count // 2)
+    ):
+        confidence = "good"
+
+    source = "rule" if rule_values else "training"
+    source_label = "regelnah" if source == "rule" else "Training 3s"
+    band = _performance_band_for_speed(top_available)
+    summary = (
+        f"{_PERFORMANCE_BAND_LABELS.get(band, band)}: Top-{top_label_count} {source_label} "
+        f"{float(top_available):.1f} km/h, Profil {_PROFILE_CONFIDENCE_LABELS.get(confidence, confidence)}."
+    )
+
+    return {
+        "available": True,
+        "score_source": source,
+        "score_source_label": source_label,
+        "valid_jump_count": basis_count,
+        "usable_record_count": len(usable),
+        "excluded_count": excluded,
+        "ground_estimated_count": ground_estimated_count,
+        "top1_rule_kmh": _top_avg(rule_values, 1),
+        "top3_rule_avg_kmh": _top_avg(rule_values, 3),
+        "top5_rule_avg_kmh": _top_avg(rule_values, 5),
+        "top10_rule_avg_kmh": _top_avg(rule_values, 10),
+        "top_available_rule_avg_kmh": _top_avg(rule_values, min(10, len(rule_values))),
+        "top1_training_kmh": _top_avg(training_values, 1),
+        "top3_training_avg_kmh": _top_avg(training_values, 3),
+        "top5_training_avg_kmh": _top_avg(training_values, 5),
+        "top10_training_avg_kmh": _top_avg(training_values, 10),
+        "top_available_training_avg_kmh": _top_avg(training_values, min(10, len(training_values))),
+        "top_available_avg_kmh": round(float(top_available), 2),
+        "top_available_count": top_label_count,
+        "confidence": confidence,
+        "confidence_label": _PROFILE_CONFIDENCE_LABELS.get(confidence, confidence),
+        "performance_band": band,
+        "performance_band_label": _PERFORMANCE_BAND_LABELS.get(band, band),
+        "training_count": context_counts.get("training", 0),
+        "competition_count": context_counts.get("competition", 0),
+        "unknown_count": context_counts.get("unknown", 0),
+        "summary": summary,
+    }
+
+
+def _top_avg(values: list[float], limit: int) -> float | None:
+    if not values or limit <= 0:
+        return None
+    selected = sorted([float(value) for value in values], reverse=True)[: int(limit)]
+    if not selected:
+        return None
+    return round(float(sum(selected) / len(selected)), 2)
+
+
+def _performance_profile_confidence(valid_count: int) -> str:
+    count = max(0, int(valid_count))
+    if count >= 10:
+        return "stable"
+    if count >= 6:
+        return "good"
+    if count >= 3:
+        return "medium"
+    return "low"
+
+
+def _performance_band_for_speed(speed_kmh: float | None) -> str:
+    if speed_kmh is None:
+        return "basis"
+    speed = float(speed_kmh)
+    if speed >= 500.0:
+        return "elite"
+    if speed >= 430.0:
+        return "schnell"
+    if speed >= 350.0:
+        return "aufbau"
+    return "basis"
+
+
 def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> dict[str, Any]:
     if not jumps:
         return {"available": False, "reason": "Keine Sprünge vorhanden."}
@@ -2304,8 +2508,10 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
     worse_points = [row["trend_text"] for row in worse_rows[:4]]
     earlier_better_points = [row["earlier_better_text"] for row in worse_rows[:4]]
     focus_actions = _build_jumper_focus_actions(worse_rows=worse_rows)
+    performance_profile = _build_performance_profile(records)
     stability_reference = _build_jumper_stability_reference(records)
-    tip_effect_profile = _build_tip_effect_profile(records)
+    stability_reference["performance_profile"] = performance_profile
+    tip_effect_profile = _build_tip_effect_profile(records, performance_profile=performance_profile)
 
     result = {
         "available": True,
@@ -2320,6 +2526,7 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
         "worse_points": worse_points,
         "earlier_better_points": earlier_better_points,
         "focus_actions": focus_actions,
+        "performance_profile": performance_profile,
         "stability_reference": stability_reference,
         "tip_effect_profile": tip_effect_profile,
     }
@@ -2335,6 +2542,7 @@ def _build_jumpers_overview(jumpers: list[str]) -> list[dict[str, Any]]:
             continue
         summary = _build_jumper_summary(jumper_name=jumper_name, jumps=jump_rows)
         stability_ref = summary.get("stability_reference", {}) if summary else {}
+        performance_profile = summary.get("performance_profile", {}) if isinstance(summary, dict) else {}
         latest_t0 = jump_rows[0].get("t0_utc")
         stable_count = int(stability_ref.get("stable_count") or 0)
         unstable_count = int(stability_ref.get("unstable_count") or 0)
@@ -2359,6 +2567,17 @@ def _build_jumpers_overview(jumpers: list[str]) -> list[dict[str, Any]]:
                 "unstable_count": unstable_count,
                 "trend_summary": str(summary.get("trend_summary") or "-"),
                 "focus_short": focus_short,
+                "performance_profile": performance_profile,
+                "performance_label": (
+                    str(performance_profile.get("performance_band_label") or "-")
+                    if isinstance(performance_profile, dict) and performance_profile.get("available")
+                    else "-"
+                ),
+                "performance_summary": (
+                    str(performance_profile.get("summary") or "-")
+                    if isinstance(performance_profile, dict) and performance_profile.get("available")
+                    else "-"
+                ),
                 "simple_status": _jumper_overview_simple_status(
                     stable_count=stable_count,
                     unstable_count=unstable_count,
@@ -2910,8 +3129,10 @@ def _build_jumper_record(
     return {
         "jump_id": jump.get("jump_id"),
         "file_name": jump.get("file_name"),
+        "jump_context": _normalize_jump_context(str(jump.get("jump_context") or "unknown")),
         "t0_utc": jump.get("t0_utc"),
         "best_3s_kmh": _to_float(metrics.get("best_3s_vVert_kmh")),
+        "rule_score_kmh": _to_float(metrics.get("rule_based_3s_score")),
         "overall_score": overall_score,
         "exit_score": score_map.get("Exit"),
         "build_score": score_map.get("Aufbau 10-20s"),
@@ -2945,7 +3166,9 @@ def _build_jumper_record(
         "high_speed_heading_rate_rms_dps": _to_float(lateral_high_speed.get("heading_rate_rms_dps")) if isinstance(lateral_high_speed, dict) else None,
         "build_coverage": build_coverage,
         "hot_coverage": hot_coverage,
+        "quality_flags": report.get("quality_flags", []),
         "analysis_blocked": bool(notes.get("analysis_blocked")),
+        "t0_review_required": bool(notes.get("t0_review_required")),
     }
 
 
@@ -3065,7 +3288,11 @@ def _build_jumper_focus_actions(*, worse_rows: list[dict[str, Any]]) -> list[str
     return actions
 
 
-def _build_tip_effect_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_tip_effect_profile(
+    records: list[dict[str, Any]],
+    *,
+    performance_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     usable = [row for row in records if not bool(row.get("analysis_blocked"))]
     if len(usable) < 3:
         return {"available": False}
@@ -3141,6 +3368,29 @@ def _build_tip_effect_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
     if not metrics:
         return {"available": False}
 
+    if performance_profile and performance_profile.get("available"):
+        band = str(performance_profile.get("performance_band") or "")
+        confidence = str(performance_profile.get("confidence") or "")
+        if confidence in {"medium", "good", "stable"}:
+            if band in {"schnell", "elite"}:
+                hot_metric = metrics.get("hot_score", {})
+                stability_metric = metrics.get("stability_score", {})
+                hot_avg = _to_float(hot_metric.get("recent_avg"))
+                stability_avg = _to_float(stability_metric.get("recent_avg"))
+                if hot_avg is not None and hot_avg < 78.0:
+                    phase_boosts[2] = min(6, int(phase_boosts.get(2, 0)) + 1)
+                if stability_avg is not None and stability_avg < 76.0:
+                    phase_boosts[3] = min(6, int(phase_boosts.get(3, 0)) + 1)
+            elif band in {"basis", "aufbau"}:
+                exit_metric = metrics.get("exit_score", {})
+                build_metric = metrics.get("build_score", {})
+                exit_avg = _to_float(exit_metric.get("recent_avg"))
+                build_avg = _to_float(build_metric.get("recent_avg"))
+                if exit_avg is not None and exit_avg < 76.0:
+                    phase_boosts[0] = min(6, int(phase_boosts.get(0, 0)) + 1)
+                if build_avg is not None and build_avg < 78.0:
+                    phase_boosts[1] = min(6, int(phase_boosts.get(1, 0)) + 1)
+
     focus = max(
         phases,
         key=lambda phase: (
@@ -3161,6 +3411,8 @@ def _build_tip_effect_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
         trend_hint = "Trend zuletzt stabil"
 
     summary_line = f"Verlauf letzter {recent_window} Sprünge: Fokus aktuell {focus_label} ({trend_hint})."
+    if performance_profile and performance_profile.get("available"):
+        summary_line = f"{summary_line} Leistungsprofil: {performance_profile.get('summary')}"
 
     return {
         "available": True,
@@ -3173,6 +3425,7 @@ def _build_tip_effect_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
         "trend_hint": trend_hint,
         "summary_line": summary_line,
         "metrics": metrics,
+        "performance_profile": performance_profile or {"available": False},
     }
 
 
