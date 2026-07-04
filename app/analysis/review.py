@@ -447,6 +447,9 @@ def build_jump_review(
         rollback_deg = _num(angle_chain.get("rollback_deg"))
         turns_after_peak = _num(angle_chain.get("turns_after_peak"))
         vvert_drop_after_peak = _num(angle_chain.get("vvert_drop_after_peak_kmh"))
+        vhor_drop_after_20_pct = _num(angle_chain.get("vhor_drop_after_20_pct"))
+        vhor_min_after_20 = _num(angle_chain.get("vhor_min_after_20_kmh"))
+        angle_gain_20_peak = _num(angle_chain.get("angle_gain_20_peak"))
         band_low = _num(personal_profile.get("phase_10_15_angle_low"))
         band_high = _num(personal_profile.get("phase_10_15_angle_high"))
         if band_low is None:
@@ -457,6 +460,13 @@ def build_jump_review(
             angle_band_text = f"{band_low:.1f} bis {band_high:.1f} Grad"
         else:
             angle_band_text = "deinem stabilen Winkelkorridor"
+        focus_low = _num(personal_profile.get("angle_20_target_low"))
+        focus_high = _num(personal_profile.get("angle_20_target_high"))
+        if focus_low is not None and focus_high is not None and focus_high > focus_low:
+            focus_low = max(focus_low, min(focus_high - 0.4, max(82.0, focus_high - 2.0)))
+            angle_focus_text = f"{focus_low:.1f} bis {focus_high:.1f} Grad"
+        else:
+            angle_focus_text = angle_band_text
 
         if angle_chain.get("too_fast_steep_not_hold"):
             if None not in {angle_10, angle_15, angle_20, angle_peak, angle_end, peak_t, rollback_deg}:
@@ -482,6 +492,29 @@ def build_jump_review(
                     "Im Aufbau nicht zu schnell maximal steil werden: "
                     f"erst stabil im Bereich {angle_band_text} bleiben und dann schrittweise steigern. "
                     "Wenn der Winkel wieder rückläufig wird, 1 bis 2 Grad rausnehmen und die Linie beruhigen."
+                ),
+            )
+        elif angle_chain.get("late_hard_steepening_vhor_collapse"):
+            if None not in {angle_20, angle_peak, peak_t, angle_gain_20_peak, vhor_min_after_20, vhor_drop_after_20_pct}:
+                not_good.append(
+                    "Der Übergang in den Steilflug kommt zu hart: "
+                    f"bei +20s liegt der Winkel noch bei {angle_20:.1f} Grad, "
+                    f"steigt dann bis +{peak_t:.1f}s auf {angle_peak:.1f} Grad "
+                    f"(+{angle_gain_20_peak:.1f} Grad), während vHor bis {vhor_min_after_20:.1f} km/h fällt "
+                    f"({vhor_drop_after_20_pct:.0f}% Einbruch)."
+                )
+            else:
+                not_good.append(
+                    "Der Übergang in den Steilflug kommt zu hart: erst bleibt der Aufbau moderat, danach fällt vHor in der Peak-Phase stark weg."
+                )
+            _add_action(
+                actions_by_key,
+                key="late_hard_steepening_vhor_collapse",
+                score=10,
+                text=(
+                    "Den Übergang in den Steilflug früher und gleichmäßiger fahren: "
+                    f"ab +15s schrittweise Richtung {angle_focus_text} aufbauen "
+                    "und dabei die Vorwärtsgeschwindigkeit erhalten."
                 ),
             )
         elif angle_chain.get("rollback_with_instability"):
@@ -1322,6 +1355,11 @@ def build_jump_review(
     happened_clean = _compact_lines(happened, max_items=14)
     good_clean = _compact_lines(good, max_items=4)
     not_good_clean = _compact_lines(not_good, max_items=6)
+    primary_diagnosis = _build_primary_diagnosis(
+        angle_chain=angle_chain if isinstance(angle_chain, dict) else {},
+        coaching_goals=coaching_goals,
+        personal_profile=personal_profile,
+    )
 
     # Keep output compact and readable.
     return {
@@ -1330,7 +1368,119 @@ def build_jump_review(
         "not_good": not_good_clean,
         "improve": improve,
         "coaching_goals": coaching_goals,
+        "primary_diagnosis": primary_diagnosis,
     }
+
+
+def _build_primary_diagnosis(
+    *,
+    angle_chain: dict[str, Any],
+    coaching_goals: list[dict[str, Any]],
+    personal_profile: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(angle_chain, dict) or not bool(angle_chain.get("available")):
+        return {"available": False}
+
+    angle_20 = _num(angle_chain.get("angle_20"))
+    angle_peak = _num(angle_chain.get("angle_peak"))
+    peak_t = _num(angle_chain.get("t_peak_s"))
+    angle_gain_20_peak = _num(angle_chain.get("angle_gain_20_peak"))
+    vhor_at_20 = _num(angle_chain.get("vhor_at_20_kmh"))
+    vhor_min_after_20 = _num(angle_chain.get("vhor_min_after_20_kmh"))
+    vhor_drop_pct = _num(angle_chain.get("vhor_drop_after_20_pct"))
+    target_low = _num(personal_profile.get("angle_20_target_low"))
+    target_high = _num(personal_profile.get("angle_20_target_high"))
+    vhor_floor = _num(personal_profile.get("vhor_min_20_25_floor"))
+
+    def _goal_text(goal_id: str) -> str:
+        for goal in coaching_goals:
+            if str(goal.get("id") or "") == goal_id:
+                return str(goal.get("text") or "")
+        return ""
+
+    if bool(angle_chain.get("late_hard_steepening_vhor_collapse")):
+        if target_low is not None and target_high is not None and target_high > target_low:
+            focus_low = max(target_low, min(target_high - 0.4, max(82.0, target_high - 2.0)))
+            angle_target = f"{focus_low:.1f} bis {target_high:.1f} Grad"
+        else:
+            angle_target = "83 bis 85 Grad"
+        vhor_target = f"{vhor_floor:.1f} km/h" if vhor_floor is not None else "ca. 35 km/h"
+        evidence = {
+            "angle_20": angle_20,
+            "angle_peak": angle_peak,
+            "angle_peak_s": peak_t,
+            "angle_gain_20_peak": angle_gain_20_peak,
+            "vhor_20": vhor_at_20,
+            "vhor_min_after_20": vhor_min_after_20,
+            "vhor_drop_after_20_pct": vhor_drop_pct,
+        }
+        action = _goal_text("late_hard_steepening_vhor_collapse")
+        if not action:
+            action = (
+                "Den Übergang in den Steilflug früher und gleichmäßiger fahren, "
+                f"Richtung {angle_target} aufbauen und vHor über {vhor_target} halten."
+            )
+        return {
+            "available": True,
+            "pattern": "late_hard_steepening_vhor_collapse",
+            "severity": "high",
+            "phase": "transition_to_peak",
+            "title": "Zu harter Übergang in den Steilflug",
+            "summary": (
+                "Der Aufbau bleibt bis etwa +20s moderat, danach wird der Winkel schnell steil "
+                "und die Vorwärtsgeschwindigkeit bricht in der Peak-Phase stark ein."
+            ),
+            "main_issue": (
+                "Der Winkel wird nicht gleichmäßig in die schnelle Phase geführt; "
+                "der späte harte Steilflug kostet vHor und Stabilität."
+            ),
+            "next_focus": (
+                f"Ab +15s schrittweise Richtung {angle_target} aufbauen, "
+                f"aber vHor in der Hot-Zone über {vhor_target} halten."
+            ),
+            "action": action,
+            "evidence": evidence,
+        }
+
+    if bool(angle_chain.get("too_fast_steep_not_hold")):
+        action = _goal_text("phase_10_15_too_steep_not_hold")
+        return {
+            "available": True,
+            "pattern": "too_fast_steep_not_hold",
+            "severity": "high",
+            "phase": "build",
+            "title": "Zu schnell steil, dann nicht gehalten",
+            "summary": "Der Winkel wird im Aufbau zu schnell steil und bleibt danach nicht stabil.",
+            "main_issue": "Zu schneller Winkelaufbau löst Nachkorrekturen und Stabilitätsverlust aus.",
+            "next_focus": action or "Winkel langsamer aufbauen und die Linie vor weiterem Steilerwerden stabilisieren.",
+            "action": action,
+            "evidence": {
+                "angle_20": angle_20,
+                "angle_peak": angle_peak,
+                "angle_peak_s": peak_t,
+            },
+        }
+
+    if bool(angle_chain.get("rollback_with_instability")):
+        action = _goal_text("segment_20_25_angle_rollback")
+        return {
+            "available": True,
+            "pattern": "angle_rollback_with_instability",
+            "severity": "medium",
+            "phase": "hot_zone",
+            "title": "Winkel läuft in der schnellen Phase zurück",
+            "summary": "Nach dem Winkel-Peak wird der Winkel rückläufig und die Linie verliert Stabilität.",
+            "main_issue": "Nach dem Peak entstehen Gegenbewegungen, die den Winkel und die Beschleunigung stören.",
+            "next_focus": action or "Ab dem Winkel-Peak nur kleine frühe Korrekturen setzen.",
+            "action": action,
+            "evidence": {
+                "angle_peak": angle_peak,
+                "angle_peak_s": peak_t,
+                "rollback_deg": _num(angle_chain.get("rollback_deg")),
+            },
+        }
+
+    return {"available": False}
 
 
 def _unique_keep_order(items: list[str]) -> list[str]:
@@ -2679,6 +2829,25 @@ def _angle_progression_stability_analysis(
         if vvert_at_peak is not None and vvert_at_end is not None:
             vvert_drop_after_peak = max(0.0, vvert_at_peak - vvert_at_end)
 
+    vhor_at_20 = None
+    vhor_min_after_20 = None
+    vhor_drop_after_20_pct = None
+    t_vhor, vhor = _window_series(chart_data, "vHor_kmh", start_s=0.0, end_s=end_s)
+    if len(t_vhor) >= 10 and len(t_vhor) == len(vhor):
+        vhor_s = _moving_average(vhor, window=5)
+        t_vhor_arr = np.asarray(t_vhor, dtype=float)
+        vhor_arr = np.asarray(vhor_s, dtype=float)
+        vhor_at_20 = _interp(t_vhor_arr, vhor_arr, 20.0)
+        after_20_values = [
+            float(vhor_arr[i])
+            for i, raw_t in enumerate(t_vhor_arr)
+            if float(raw_t) >= 20.0 and float(raw_t) <= end_s
+        ]
+        if after_20_values:
+            vhor_min_after_20 = min(after_20_values)
+        if vhor_at_20 is not None and vhor_min_after_20 is not None and vhor_at_20 > 1e-6:
+            vhor_drop_after_20_pct = max(0.0, (vhor_at_20 - vhor_min_after_20) / vhor_at_20 * 100.0)
+
     phase_10_15_high = None if profile is None else _num(profile.get("phase_10_15_angle_high"))
     if phase_10_15_high is None and profile is not None:
         phase_10_15_high = _num(profile.get("angle_20_target_high"))
@@ -2700,6 +2869,23 @@ def _angle_progression_stability_analysis(
         steep_too_fast = True
     if risk_above is not None and angle_20 is not None and angle_20 >= risk_above:
         steep_too_fast = True
+
+    vhor_floor = None if profile is None else _num(profile.get("vhor_min_20_25_floor"))
+    angle_gain_20_peak = None
+    if angle_20 is not None:
+        angle_gain_20_peak = max(0.0, angle_peak - angle_20)
+    late_hard_steepening_vhor_collapse = (
+        angle_20 is not None
+        and angle_peak >= max(85.5, (risk_above + 0.2) if risk_above is not None else 85.5)
+        and t_peak >= 21.0
+        and angle_gain_20_peak is not None
+        and angle_gain_20_peak >= 4.5
+        and (risk_above is None or angle_20 < risk_above - 0.4)
+        and vhor_drop_after_20_pct is not None
+        and vhor_drop_after_20_pct >= 35.0
+        and vhor_min_after_20 is not None
+        and vhor_min_after_20 <= (vhor_floor if vhor_floor is not None else 30.0)
+    )
 
     has_stable_post_window = (t_end - t_peak) >= 2.0
     rollback_with_instability = (
@@ -2723,8 +2909,17 @@ def _angle_progression_stability_analysis(
         "rollback_deg": rollback_deg,
         "turns_after_peak": float(turns_after_peak),
         "vvert_drop_after_peak_kmh": vvert_drop_after_peak,
+        "angle_gain_20_peak": angle_gain_20_peak,
+        "vhor_at_20_kmh": vhor_at_20,
+        "vhor_min_after_20_kmh": vhor_min_after_20,
+        "vhor_drop_after_20_pct": vhor_drop_after_20_pct,
+        "late_hard_steepening_vhor_collapse": bool(late_hard_steepening_vhor_collapse),
         "too_fast_steep_not_hold": bool(too_fast_steep_not_hold),
-        "rollback_with_instability": bool(rollback_with_instability and not too_fast_steep_not_hold),
+        "rollback_with_instability": bool(
+            rollback_with_instability
+            and not too_fast_steep_not_hold
+            and not late_hard_steepening_vhor_collapse
+        ),
     }
 
 

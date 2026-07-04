@@ -179,6 +179,7 @@ def _compact_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "metrics",
         "scorecard",
         "review",
+        "primary_diagnosis",
         "jump_brief",
         "tip_follow_up",
         "quality",
@@ -208,7 +209,9 @@ def _instructions_for_view(view_mode: str) -> str:
         "Du bist ein Speed-Skydiving-Coach. Formuliere Coaching-Texte ausschliesslich aus den gelieferten "
         "Analyse-Fakten. Erfinde keine Messwerte, keine Ursachen und keine Sicherheitsdiagnosen. "
         "Die deterministische Analyse ist die Quelle der Wahrheit; wenn Datenqualitaet eingeschraenkt ist, "
-        "formuliere vorsichtig. Antworte nur als JSON gemaess Schema. "
+        "formuliere vorsichtig. Wenn primary_diagnosis.available=true ist, behandle diese Diagnose als Hauptursache "
+        "und formuliere keine widerspruechlichen Ziele wie gleichzeitig steiler und flacher werden. "
+        "Antworte nur als JSON gemaess Schema. "
         f"{style}"
     )
 

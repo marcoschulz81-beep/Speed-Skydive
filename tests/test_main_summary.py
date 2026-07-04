@@ -307,6 +307,94 @@ def test_ai_coaching_payload_uses_compact_facts_without_raw_chart_data():
     assert payload["review"]["coaching_goals"][0]["target_metrics"][0]["metric"] == "angle_10"
     assert payload["jump"]["jump_context"] == "training"
     assert payload["performance_profile"]["performance_band"] == "schnell"
+    assert payload["primary_diagnosis"]["available"] is False
+
+
+def test_ai_payload_includes_primary_diagnosis_when_available():
+    report = {
+        "jump": {"jumper_name": "Test Jumper", "file_name": "ai.csv", "jump_context": "training"},
+        "metrics": {"best_3s_vVert_kmh": 324.6, "best_3s_start_s": 22.8, "best_3s_end_s": 25.8},
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 31.4},
+        "quality_flags": [],
+    }
+    review = {
+        "happened": [],
+        "good": [],
+        "not_good": [],
+        "coaching_goals": [],
+        "primary_diagnosis": {
+            "available": True,
+            "pattern": "late_hard_steepening_vhor_collapse",
+            "severity": "high",
+            "phase": "transition_to_peak",
+            "title": "Zu harter Uebergang in den Steilflug",
+            "summary": "Der Winkel wird spaet sehr steil und vHor bricht ein.",
+            "main_issue": "Der Uebergang in den Steilflug ist zu hart.",
+            "next_focus": "Winkel gleichmaessiger aufbauen und vHor halten.",
+            "evidence": {
+                "angle_20": 78.4,
+                "angle_peak": 86.4,
+                "angle_peak_s": 23.4,
+                "angle_gain_20_peak": 8.0,
+                "vhor_20": 66.7,
+                "vhor_min_after_20": 18.5,
+                "vhor_drop_after_20_pct": 72.0,
+            },
+        },
+    }
+    jump_brief = {
+        "summary": "Hauptdiagnose: Zu harter Uebergang.",
+        "main_issues": ["Der Uebergang in den Steilflug ist zu hart."],
+        "strengths": ["Start nutzbar."],
+        "actions": ["Winkel gleichmaessiger aufbauen."],
+    }
+
+    payload = _build_ai_coaching_payload(
+        report=report,
+        review=review,
+        jump_brief=jump_brief,
+        jump_brief_simple=jump_brief,
+        scorecard_rows=[],
+        tip_follow_up={"available": False},
+        jumper_summary={"performance_profile": {"available": False}},
+        quality_issue_lines=[],
+        view_mode="expert",
+    )
+
+    assert payload["primary_diagnosis"]["available"] is True
+    assert payload["primary_diagnosis"]["pattern"] == "late_hard_steepening_vhor_collapse"
+    assert payload["primary_diagnosis"]["evidence"]["angle_peak"] == 86.4
+
+
+def test_simple_brief_prioritizes_primary_diagnosis():
+    jump_brief = {
+        "summary": "Die groessten Baustellen liegen bei Aufbau und Hot-Zone.",
+        "primary_diagnosis": {
+            "available": True,
+            "title": "Zu harter Uebergang in den Steilflug",
+            "summary": "Der Aufbau bleibt moderat, danach wird der Winkel schnell steil und vHor bricht ein.",
+            "main_issue": "Der spaete harte Steilflug kostet vHor und Stabilitaet.",
+            "next_focus": "Ab +15s gleichmaessiger Richtung 83 bis 85 Grad aufbauen.",
+        },
+        "main_issues": ["Aufbau: Winkel zu flach.", "Hot-Zone kritisch."],
+        "strengths": ["Der Start war kontrolliert."],
+        "actions": ["Mehr Druck aufbauen.", "Hot-Zone beruhigen."],
+    }
+
+    out = _build_jump_brief_simple(
+        report={"notes": {}},
+        jump_brief=jump_brief,
+        scorecard_rows=[
+            {"name": "Aufbau 10-20s", "score": 23},
+            {"name": "Hot-Zone", "score": 21},
+        ],
+    )
+
+    assert out["summary"] == "Zu harter Uebergang in den Steilflug"
+    assert out["main_issues"] == [
+        "Der Aufbau bleibt moderat, danach wird der Winkel schnell steil und vHor bricht ein."
+    ]
+    assert out["actions"] == ["Ab +15s gleichmaessiger Richtung 83 bis 85 Grad aufbauen."]
 
 
 def test_fs2_quality_issue_lines_only_for_non_stable_labels():

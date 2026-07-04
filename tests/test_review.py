@@ -43,7 +43,15 @@ def test_build_jump_review_contains_all_sections():
     }
 
     review = build_jump_review(report, best_compare=best_compare)
-    assert set(review.keys()) == {"happened", "good", "not_good", "improve", "coaching_goals"}
+    assert set(review.keys()) == {
+        "happened",
+        "good",
+        "not_good",
+        "improve",
+        "coaching_goals",
+        "primary_diagnosis",
+    }
+    assert review["primary_diagnosis"]["available"] is False
     assert len(review["happened"]) >= 1
     assert len(review["good"]) >= 1
     assert len(review["not_good"]) >= 1
@@ -424,6 +432,86 @@ def test_build_jump_review_detects_too_fast_steep_not_hold_pattern():
 
     assert any("zu schnell steil" in line for line in review["not_good"])
     assert any("nicht zu schnell maximal steil" in line for line in review["improve"])
+
+
+def test_build_jump_review_detects_late_hard_steepening_vhor_collapse():
+    time_s = [float(i) for i in range(0, 27)]
+    angle = []
+    vhor = []
+    vvert = []
+    for i in range(0, 27):
+        t = float(i)
+        if t <= 20.0:
+            angle.append(66.0 + 0.62 * t)
+            vhor.append(96.0 - 1.45 * t)
+            vvert.append(220.0 + 5.2 * t)
+        elif t <= 23.0:
+            angle.append(78.4 + 2.65 * (t - 20.0))
+            vhor.append(67.0 - 15.0 * (t - 20.0))
+            vvert.append(324.0 + 1.0 * (t - 20.0))
+        else:
+            angle.append(86.4 - 0.3 * (t - 23.0))
+            vhor.append(22.0 + 7.0 * (t - 23.0))
+            vvert.append(327.0 - 2.0 * (t - 23.0))
+
+    report = {
+        "jump": {"file_name": "late-hard.csv"},
+        "metrics": {
+            "best_3s_start_s": 22.0,
+            "best_3s_end_s": 25.0,
+            "best_3s_vVert_kmh": 326.0,
+            "best_3s_vHor_kmh": 24.0,
+        },
+        "notes": {
+            "curve_window_start_s": 0.0,
+            "curve_window_end_s": 26.0,
+            "decel_start_s": 30.0,
+        },
+        "scorecard": {
+            "exit": "sauber",
+            "phase_10_20": "zu flach",
+            "hot_zone": "kritisch",
+            "kipp_risiko": "hoch",
+        },
+        "quality_flags": [],
+        "fixpoints": [
+            {"t_rel_s": 10.0, "vVert_kmh": 272.0, "vHor_kmh": 81.5, "angle_deg": 72.2},
+            {"t_rel_s": 15.0, "vVert_kmh": 298.0, "vHor_kmh": 74.2, "angle_deg": 75.3},
+            {"t_rel_s": 20.0, "vVert_kmh": 324.0, "vHor_kmh": 67.0, "angle_deg": 78.4},
+            {"t_rel_s": 24.0, "vVert_kmh": 325.0, "vHor_kmh": 29.0, "angle_deg": 86.1},
+        ],
+        "chart_data": {
+            "time_s": time_s,
+            "vVert_kmh": vvert,
+            "vHor_kmh": vhor,
+            "angle_deg": angle,
+            "accVert_mps2": [2.0 for _ in time_s],
+            "hAGL_m": [3600.0 - 55.0 * t for t in time_s],
+        },
+    }
+    stability_reference = {
+        "available": True,
+        "thresholds": {
+            "angle_20_target_low": 78.0,
+            "angle_20_target_high": 85.0,
+            "angle_20_risk_above": 85.0,
+            "phase_10_15_angle_high": 85.0,
+            "vhor_min_20_25_floor": 35.0,
+        },
+    }
+
+    review = build_jump_review(
+        report,
+        best_compare=None,
+        jumper_stability_reference=stability_reference,
+    )
+
+    diagnosis = review["primary_diagnosis"]
+    assert diagnosis["available"] is True
+    assert diagnosis["pattern"] == "late_hard_steepening_vhor_collapse"
+    assert diagnosis["evidence"]["angle_20"] < diagnosis["evidence"]["angle_peak"]
+    assert any("Steilflug kommt zu hart" in line for line in review["not_good"])
+    assert any("Übergang in den Steilflug" in line for line in review["improve"])
 
 
 def test_build_jump_review_does_not_mix_fs2_quality_into_flight_feedback():

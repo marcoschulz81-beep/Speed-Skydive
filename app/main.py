@@ -2029,6 +2029,12 @@ def _build_jump_brief_summary(
         }
 
     weak_rows_all = [row for row in scorecard_rows if int(row.get("score", 0)) < 70]
+    primary_diagnosis = (
+        review.get("primary_diagnosis", {})
+        if isinstance(review.get("primary_diagnosis"), dict)
+        else {}
+    )
+    has_primary_diagnosis = bool(primary_diagnosis.get("available"))
     weak_rows = sorted(
         weak_rows_all,
         key=lambda row: int(row.get("score", 0)),
@@ -2046,7 +2052,11 @@ def _build_jump_brief_summary(
         reverse=True,
     )
 
-    if not weak_rows:
+    if has_primary_diagnosis:
+        title = str(primary_diagnosis.get("title") or "Hauptdiagnose").strip()
+        speed_text = f" Top-Speed: {best_3s_kmh:.1f} km/h." if best_3s_kmh is not None else ""
+        summary = f"Hauptdiagnose: {title}.{speed_text}".strip()
+    elif not weak_rows:
         summary = (
             f"Sehr stabiler Sprung mit wenigen Schwaechen. "
             f"Top-Speed: {best_3s_kmh:.1f} km/h."
@@ -2068,6 +2078,15 @@ def _build_jump_brief_summary(
         + review_not_good
     )
     main_issues = _compact_main_issues(main_issue_candidates, max_items=4)
+    if has_primary_diagnosis:
+        primary_issue = str(
+            primary_diagnosis.get("main_issue")
+            or primary_diagnosis.get("summary")
+            or primary_diagnosis.get("title")
+            or ""
+        ).strip()
+        if primary_issue:
+            main_issues = _merge_priority_texts(primary_issue, main_issues, max_items=4)
     if not main_issues:
         main_issues = ["Keine klaren Hauptprobleme in den Hauptdaten gefunden."]
 
@@ -2089,6 +2108,15 @@ def _build_jump_brief_summary(
         actions=cleaned_actions,
         max_items=5,
     )
+    if has_primary_diagnosis:
+        primary_action = str(
+            primary_diagnosis.get("next_focus")
+            or primary_diagnosis.get("action")
+            or ""
+        ).strip()
+        if primary_action:
+            actions = _merge_priority_texts(primary_action, actions, max_items=4)
+        actions = _filter_actions_for_primary_diagnosis(primary_diagnosis, actions, max_items=3)
     if not actions:
         actions = ["Ablauf stabil wiederholen und nur kleine Korrekturen setzen."]
 
@@ -2096,6 +2124,7 @@ def _build_jump_brief_summary(
         "summary": summary,
         "basis_lines": basis_lines,
         "key_facts": key_facts,
+        "primary_diagnosis": primary_diagnosis if has_primary_diagnosis else {"available": False},
         "main_issues": main_issues,
         "strengths": strengths,
         "actions": actions,
@@ -2132,6 +2161,42 @@ def _build_jump_brief_simple(
                 _render_simple_glossary("Sprungdatei neu einlesen und Absprungzeitpunkt pruefen."),
                 _render_simple_glossary("Diesen Sprung nicht für den Technikvergleich nutzen."),
             ],
+        }
+
+    primary_diagnosis = (
+        jump_brief.get("primary_diagnosis", {})
+        if isinstance(jump_brief.get("primary_diagnosis"), dict)
+        else {}
+    )
+    if primary_diagnosis.get("available"):
+        summary = str(primary_diagnosis.get("title") or "Ein Hauptproblem ist klar sichtbar.").strip()
+        main_issue = str(primary_diagnosis.get("summary") or primary_diagnosis.get("main_issue") or "").strip()
+        next_focus = str(primary_diagnosis.get("next_focus") or primary_diagnosis.get("action") or "").strip()
+        if not main_issue:
+            main_issue = "Der Sprung verliert in der schnellen Phase Stabilitaet."
+        if not next_focus:
+            next_focus = "Im naechsten Sprung nur einen Fokus setzen: ruhiger Uebergang in die schnelle Phase."
+        strengths = _unique_texts(
+            [
+                _simplify_coaching_line(item)
+                for item in (jump_brief.get("strengths") or [])
+                if item
+            ]
+        )[:2]
+        if not strengths:
+            strengths = ["Der Sprung war insgesamt nutzbar."]
+        return {
+            "summary": summary,
+            "summary_ui": _render_simple_glossary(summary),
+            "basis_line": "",
+            "basis_line_ui": "",
+            "primary_diagnosis": primary_diagnosis,
+            "main_issues": [main_issue],
+            "main_issues_ui": [_render_simple_glossary(main_issue)],
+            "strengths": strengths,
+            "strengths_ui": [_render_simple_glossary(item) for item in strengths],
+            "actions": [next_focus],
+            "actions_ui": [_render_simple_glossary(next_focus)],
         }
 
     weak_rows = sorted(
@@ -2323,6 +2388,7 @@ def _build_ai_coaching_payload(
             "not_good": _limit_texts(review.get("not_good"), max_items=5, max_len=260),
             "coaching_goals": _compact_coaching_goals_for_ai(review.get("coaching_goals")),
         },
+        "primary_diagnosis": _compact_primary_diagnosis_for_ai(review.get("primary_diagnosis")),
         "jump_brief": {
             "summary": _truncate_text(str(selected_brief.get("summary") or ""), 280),
             "main_issues": _limit_texts(selected_brief.get("main_issues"), max_items=4, max_len=260),
@@ -2334,6 +2400,31 @@ def _build_ai_coaching_payload(
             "analysis_blocked": bool(notes.get("analysis_blocked")),
             "quality_flags": [str(item) for item in (report.get("quality_flags") or [])[:8]],
             "quality_issue_lines": _limit_texts(quality_issue_lines, max_items=4, max_len=240),
+        },
+    }
+
+
+def _compact_primary_diagnosis_for_ai(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not value.get("available"):
+        return {"available": False}
+    evidence = value.get("evidence") if isinstance(value.get("evidence"), dict) else {}
+    return {
+        "available": True,
+        "pattern": str(value.get("pattern") or ""),
+        "severity": str(value.get("severity") or ""),
+        "phase": str(value.get("phase") or ""),
+        "title": _truncate_text(str(value.get("title") or ""), 120),
+        "summary": _truncate_text(str(value.get("summary") or ""), 260),
+        "main_issue": _truncate_text(str(value.get("main_issue") or ""), 260),
+        "next_focus": _truncate_text(str(value.get("next_focus") or ""), 260),
+        "evidence": {
+            "angle_20": _round_float(evidence.get("angle_20"), 1),
+            "angle_peak": _round_float(evidence.get("angle_peak"), 1),
+            "angle_peak_s": _round_float(evidence.get("angle_peak_s"), 1),
+            "angle_gain_20_peak": _round_float(evidence.get("angle_gain_20_peak"), 1),
+            "vhor_20": _round_float(evidence.get("vhor_20"), 1),
+            "vhor_min_after_20": _round_float(evidence.get("vhor_min_after_20"), 1),
+            "vhor_drop_after_20_pct": _round_float(evidence.get("vhor_drop_after_20_pct"), 0),
         },
     }
 
@@ -4103,6 +4194,62 @@ def _unique_texts(items: list[str]) -> list[str]:
             continue
         seen.add(text)
         out.append(text)
+    return out
+
+
+def _merge_priority_texts(primary: str, items: list[str], *, max_items: int) -> list[str]:
+    primary_text = str(primary or "").strip()
+    if not primary_text:
+        return _unique_texts_semantic(items)[:max_items]
+    out = [primary_text]
+    for item in _unique_texts_semantic(items):
+        if len(out) >= max_items:
+            break
+        if _is_semantic_near_duplicate_text(primary_text, item):
+            continue
+        out.append(item)
+    return out
+
+
+def _filter_actions_for_primary_diagnosis(
+    primary_diagnosis: dict[str, Any],
+    actions: list[str],
+    *,
+    max_items: int,
+) -> list[str]:
+    if str(primary_diagnosis.get("pattern") or "") != "late_hard_steepening_vhor_collapse":
+        return actions[:max_items]
+    if not actions:
+        return []
+
+    out = [actions[0]]
+    skip_markers = [
+        "mehr druck aufbauen",
+        "mindestens +180",
+        "fehlen gegen die referenz",
+        "bis +15s fehlen",
+        "zuwachs",
+        "steiler werden",
+    ]
+    keep_markers = [
+        "uebergang",
+        "übergang",
+        "vhor",
+        "hot-zone",
+        "hotzone",
+        "korrektur",
+        "druck laenger tragen",
+        "druck länger tragen",
+    ]
+    for action in actions[1:]:
+        if len(out) >= max_items:
+            break
+        lowered = normalize_german_text(action)
+        should_skip = any(normalize_german_text(marker) in lowered for marker in skip_markers)
+        should_keep = any(normalize_german_text(marker) in lowered for marker in keep_markers)
+        if should_skip and not should_keep:
+            continue
+        out.append(action)
     return out
 
 
