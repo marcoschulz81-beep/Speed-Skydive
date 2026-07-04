@@ -300,6 +300,10 @@ def test_ai_coaching_payload_uses_compact_facts_without_raw_chart_data():
     serialized = str(payload)
     assert "chart_data" not in serialized
     assert "time_s" not in serialized
+    assert "Test Jumper" not in serialized
+    assert "ai.csv" not in serialized
+    assert payload["jump"]["jumper_name"] == ""
+    assert payload["jump"]["file_name"] == ""
     assert payload["review"]["coaching_goals"][0]["target_metrics"][0]["metric"] == "angle_10"
     assert payload["jump"]["jump_context"] == "training"
     assert payload["performance_profile"]["performance_band"] == "schnell"

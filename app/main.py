@@ -23,6 +23,8 @@ from app.analysis.potential import build_speed_potential_preview
 from app.analysis.review import build_jump_review
 from app.config import (
     AI_COACHING_ENABLED,
+    AI_COACHING_INCLUDE_IDENTIFIERS,
+    AI_COACHING_MAX_REQUESTS_PER_DAY,
     AI_COACHING_MODEL,
     AI_COACHING_TIMEOUT_S,
     BASE_DIR,
@@ -2257,6 +2259,7 @@ def _build_ai_coaching(
         enabled=AI_COACHING_ENABLED,
         model=AI_COACHING_MODEL,
         timeout_s=AI_COACHING_TIMEOUT_S,
+        max_requests_per_day=AI_COACHING_MAX_REQUESTS_PER_DAY,
     )
     result["payload_schema_version"] = AI_COACHING_SCHEMA_VERSION
     return result
@@ -2288,11 +2291,11 @@ def _build_ai_coaching_payload(
         "schema_version": AI_COACHING_SCHEMA_VERSION,
         "view_mode": view_mode,
         "jump": {
-            "jumper_name": str(jump.get("jumper_name") or ""),
-            "file_name": str(jump.get("file_name") or ""),
+            "jumper_name": str(jump.get("jumper_name") or "") if AI_COACHING_INCLUDE_IDENTIFIERS else "",
+            "file_name": str(jump.get("file_name") or "") if AI_COACHING_INCLUDE_IDENTIFIERS else "",
             "jump_context": _normalize_jump_context(str(jump.get("jump_context") or "unknown")),
             "jump_context_label": _jump_context_label(str(jump.get("jump_context") or "unknown")),
-            "t0_utc": str(jump.get("t0_utc") or ""),
+            "t0_utc": str(jump.get("t0_utc") or "") if AI_COACHING_INCLUDE_IDENTIFIERS else "",
         },
         "performance_profile": _compact_performance_profile_for_ai(performance_profile),
         "metrics": {

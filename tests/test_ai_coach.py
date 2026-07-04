@@ -80,6 +80,65 @@ def test_ai_coaching_accepts_valid_json_schema_response():
     assert fake_client.responses.calls[0]["text"]["format"]["type"] == "json_schema"
 
 
+def test_ai_coaching_daily_limit_blocks_new_uncached_requests():
+    clear_ai_coaching_cache()
+    response_payload = {
+        "summary": "Der Sprung ist verwertbar.",
+        "main_issue": "Der groesste Hebel liegt im Aufbau.",
+        "coaching_text": "Bleib bis +15s ruhiger im Winkel und steigere erst danach.",
+        "next_jump_focus": "Ein klarer Fokus: Aufbau ruhiger halten.",
+        "confidence_note": "Datenbasis ist ausreichend.",
+    }
+    fake_client = _FakeClient(json.dumps(response_payload))
+
+    first = generate_ai_coaching_texts(
+        {"schema_version": 1, "metrics": {"best_3s_vVert_kmh": 420.0}},
+        view_mode="expert",
+        enabled=True,
+        model="gpt-5.4-mini",
+        timeout_s=1.0,
+        max_requests_per_day=1,
+        api_key="test-key",
+        client_factory=lambda _key, _timeout: fake_client,
+    )
+    second = generate_ai_coaching_texts(
+        {"schema_version": 1, "metrics": {"best_3s_vVert_kmh": 421.0}},
+        view_mode="expert",
+        enabled=True,
+        model="gpt-5.4-mini",
+        timeout_s=1.0,
+        max_requests_per_day=1,
+        api_key="test-key",
+        client_factory=lambda _key, _timeout: fake_client,
+    )
+
+    assert first["available"] is True
+    assert second["available"] is False
+    assert "Tageslimit" in second["reason"]
+    assert len(fake_client.responses.calls) == 1
+
+
+def test_ai_coaching_does_not_expose_client_exception_text():
+    clear_ai_coaching_cache()
+
+    def failing_factory(_key, _timeout):
+        raise RuntimeError("secret sk-test-key leaked")
+
+    result = generate_ai_coaching_texts(
+        {"schema_version": 1},
+        view_mode="expert",
+        enabled=True,
+        model="gpt-5.4-mini",
+        timeout_s=1.0,
+        api_key="test-key",
+        client_factory=failing_factory,
+    )
+
+    assert result["available"] is False
+    assert "secret" not in result["reason"]
+    assert "test-key" not in result["reason"]
+
+
 def test_ai_coaching_rejects_invalid_response_and_falls_back():
     clear_ai_coaching_cache()
     fake_client = _FakeClient(json.dumps({"summary": "zu wenig"}))

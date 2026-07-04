@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import date
 from typing import Any, Callable
 
 AI_COACHING_SCHEMA_VERSION = 1
@@ -22,6 +23,7 @@ _MAX_FIELD_LENGTHS = {
     "confidence_note": 280,
 }
 _AI_COACHING_CACHE: dict[str, dict[str, Any]] = {}
+_AI_COACHING_DAILY_USAGE: dict[str, int] = {}
 
 ClientFactory = Callable[[str, float], Any]
 
@@ -33,6 +35,7 @@ def generate_ai_coaching_texts(
     enabled: bool,
     model: str,
     timeout_s: float,
+    max_requests_per_day: int | None = None,
     api_key: str | None = None,
     client_factory: ClientFactory | None = None,
 ) -> dict[str, Any]:
@@ -52,12 +55,19 @@ def generate_ai_coaching_texts(
     if cached is not None:
         return dict(cached, cached=True)
 
+    if _daily_limit_reached(max_requests_per_day):
+        return _unavailable(
+            enabled=True,
+            reason="KI-Coaching Tageslimit ist erreicht. Die normale Analyse bleibt aktiv.",
+        )
+
     try:
         client = (
             client_factory(resolved_key, timeout_s)
             if client_factory is not None
             else _default_client(resolved_key, timeout_s)
         )
+        _track_daily_request()
         response = client.responses.create(
             model=model,
             instructions=_instructions_for_view(view_mode),
@@ -87,10 +97,10 @@ def generate_ai_coaching_texts(
             enabled=True,
             reason="OpenAI-Python-Paket fehlt. Bitte requirements.txt installieren.",
         )
-    except Exception as exc:
+    except Exception:
         return _unavailable(
             enabled=True,
-            reason=f"KI-Coaching konnte nicht erzeugt werden: {exc}",
+            reason="KI-Coaching konnte nicht erzeugt werden. Die normale Analyse bleibt aktiv.",
         )
 
     try:
@@ -123,6 +133,25 @@ def generate_ai_coaching_texts(
 
 def clear_ai_coaching_cache() -> None:
     _AI_COACHING_CACHE.clear()
+    _AI_COACHING_DAILY_USAGE.clear()
+
+
+def _daily_limit_reached(max_requests_per_day: int | None) -> bool:
+    if max_requests_per_day is None:
+        return False
+    limit = int(max_requests_per_day)
+    if limit <= 0:
+        return False
+    return _AI_COACHING_DAILY_USAGE.get(_usage_day_key(), 0) >= limit
+
+
+def _track_daily_request() -> None:
+    key = _usage_day_key()
+    _AI_COACHING_DAILY_USAGE[key] = int(_AI_COACHING_DAILY_USAGE.get(key, 0)) + 1
+
+
+def _usage_day_key() -> str:
+    return date.today().isoformat()
 
 
 def _default_client(api_key: str, timeout_s: float) -> Any:

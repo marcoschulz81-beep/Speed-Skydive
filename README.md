@@ -46,16 +46,46 @@ Danach: `http://127.0.0.1:8000`
 
 Die technische Analyse bleibt lokal und deterministisch. OpenAI wird nur genutzt, um aus den bereits berechneten Fakten bessere Coaching-Texte zu formulieren.
 
-Aktivierung:
+### Online-Deployment
+
+Fuer die Onlineversion wird der OpenAI-Key zentral im Backend als Secret gesetzt. Nutzer tragen keinen eigenen Key ein und der Browser erhaelt den Key nie.
+
+Server-/Hosting-Secrets:
+
+```powershell
+AI_COACHING_ENABLED=true
+AI_COACHING_MODEL=gpt-5.4-mini
+AI_COACHING_TIMEOUT_S=12
+AI_COACHING_MAX_REQUESTS_PER_DAY=500
+AI_COACHING_INCLUDE_IDENTIFIERS=false
+OPENAI_API_KEY=sk-...
+```
+
+Empfohlene Modelle:
+
+- `gpt-5.4-mini`: Standard fuer gute Coaching-Texte bei niedrigen Kosten
+- `gpt-5.4-nano`: Sparmodus fuer sehr viele Texte
+- `gpt-5.5`: Qualitaetsmodus, nicht als Standard noetig
+
+Schutzmechanismen:
+
+- OpenAI-Aufruf nur serverseitig in FastAPI.
+- Kein Key in Templates, JavaScript, API-Responses, Logs oder GitHub.
+- KI-Payload enthaelt standardmaessig keine Namen, Dateinamen oder Zeitstempel.
+- Es werden keine CSV-Rohdaten oder kompletten GPS-Kurven an OpenAI gesendet.
+- Cache verhindert neue API-Aufrufe fuer identische Coaching-Payloads.
+- `AI_COACHING_MAX_REQUESTS_PER_DAY` begrenzt neue OpenAI-Anfragen pro Serverprozess und Tag. `0` deaktiviert dieses Limit.
+
+### Lokale Entwicklung
+
+Fuer lokale Entwicklung kann `.env.example` als Vorlage fuer eine lokale `.env` genutzt werden. Die App liest `.env` beim Start ein; bereits gesetzte Umgebungsvariablen haben Vorrang. `.env` ist absichtlich nicht versioniert.
 
 ```powershell
 $env:AI_COACHING_ENABLED="true"
-$env:AI_COACHING_MODEL="gpt-5.5"
+$env:AI_COACHING_MODEL="gpt-5.4-mini"
 $env:OPENAI_API_KEY="sk-..."
 uvicorn app.main:app --reload
 ```
-
-Alternativ kann `.env.example` als Vorlage fuer eine lokale `.env` genutzt werden. Die App liest `.env` beim Start ein; bereits gesetzte Umgebungsvariablen haben Vorrang. `.env` ist absichtlich nicht versioniert.
 
 Hinweise:
 
