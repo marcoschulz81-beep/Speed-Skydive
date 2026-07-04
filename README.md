@@ -54,7 +54,7 @@ Server-/Hosting-Secrets:
 
 ```powershell
 AI_COACHING_ENABLED=true
-AI_COACHING_MODEL=gpt-5.4-mini
+AI_COACHING_MODEL=gpt-5-mini
 AI_COACHING_TIMEOUT_S=12
 AI_COACHING_MAX_REQUESTS_PER_DAY=500
 AI_COACHING_INCLUDE_IDENTIFIERS=false
@@ -63,9 +63,9 @@ OPENAI_API_KEY=sk-...
 
 Empfohlene Modelle:
 
-- `gpt-5.4-mini`: Standard fuer gute Coaching-Texte bei niedrigen Kosten
-- `gpt-5.4-nano`: Sparmodus fuer sehr viele Texte
-- `gpt-5.5`: Qualitaetsmodus, nicht als Standard noetig
+- `gpt-5-mini`: Standard fuer gute Coaching-Texte bei niedrigen Kosten
+- `gpt-5-chat-latest`: Alternative fuer kurze, dialognahe Coaching-Texte
+- `gpt-5.4`: Qualitaetsmodus, falls im API-Account verfuegbar
 
 Schutzmechanismen:
 
@@ -82,7 +82,7 @@ Fuer lokale Entwicklung kann `.env.example` als Vorlage fuer eine lokale `.env` 
 
 ```powershell
 $env:AI_COACHING_ENABLED="true"
-$env:AI_COACHING_MODEL="gpt-5.4-mini"
+$env:AI_COACHING_MODEL="gpt-5-mini"
 $env:OPENAI_API_KEY="sk-..."
 uvicorn app.main:app --reload
 ```

@@ -90,7 +90,8 @@ def generate_ai_coaching_texts(
                     "schema": _response_schema(),
                 }
             },
-            max_output_tokens=900,
+            reasoning={"effort": "low"},
+            max_output_tokens=1800,
         )
     except ImportError:
         return _unavailable(

@@ -84,7 +84,7 @@ _load_local_env()
 
 COACH_VIEW_ENABLED = _env_flag("COACH_VIEW_ENABLED", False)
 AI_COACHING_ENABLED = _env_flag("AI_COACHING_ENABLED", False)
-AI_COACHING_MODEL = os.getenv("AI_COACHING_MODEL", "gpt-5.4-mini").strip() or "gpt-5.4-mini"
+AI_COACHING_MODEL = os.getenv("AI_COACHING_MODEL", "gpt-5-mini").strip() or "gpt-5-mini"
 AI_COACHING_TIMEOUT_S = _env_float("AI_COACHING_TIMEOUT_S", 12.0)
 AI_COACHING_MAX_REQUESTS_PER_DAY = max(0, _env_int("AI_COACHING_MAX_REQUESTS_PER_DAY", 500))
 AI_COACHING_INCLUDE_IDENTIFIERS = _env_flag("AI_COACHING_INCLUDE_IDENTIFIERS", False)
