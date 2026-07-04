@@ -476,10 +476,24 @@ def jump_detail(
         historical_reports=jumper_history_reports,
     )
     marco_profile = _get_marco_top15_profile(limit=15)
+    previous_review = (
+        build_jump_review(
+            previous_jump_report,
+            jumper_stability_reference=jumper_stability_reference,
+            tip_effect_profile=tip_effect_profile,
+        )
+        if previous_jump_report is not None
+        else None
+    )
     tip_follow_up = _build_tip_follow_up(
         current_report=report,
         previous_report=previous_jump_report,
         marco_profile=marco_profile,
+        previous_coaching_goals=(
+            previous_review.get("coaching_goals", [])
+            if isinstance(previous_review, dict)
+            else []
+        ),
     )
     review = build_jump_review(
         report,
@@ -1517,8 +1531,11 @@ def _scorecard_metric_snapshot(report: dict[str, Any]) -> dict[str, float | None
     chart = report.get("chart_data", {}) if isinstance(report.get("chart_data"), dict) else {}
 
     fp10 = _fixpoint_at(fixpoints, 10.0)
+    fp15 = _fixpoint_at(fixpoints, 15.0)
     fp20 = _fixpoint_at(fixpoints, 20.0)
     v10 = _to_float(fp10.get("vVert_kmh")) if fp10 else None
+    angle_10 = _to_float(fp10.get("angle_deg")) if fp10 else None
+    angle_15 = _to_float(fp15.get("angle_deg")) if fp15 else None
     v20_fixed = _to_float(fp20.get("vVert_kmh")) if fp20 else None
     angle_20_fixed = _to_float(fp20.get("angle_deg")) if fp20 else None
     gain_10_20_fixed = None if v10 is None or v20_fixed is None else float(v20_fixed - v10)
@@ -1601,6 +1618,8 @@ def _scorecard_metric_snapshot(report: dict[str, Any]) -> dict[str, float | None
 
     return {
         "v10": v10,
+        "angle_10": angle_10,
+        "angle_15": angle_15,
         "carry_ratio": carry_ratio,
         "gain_10_20": gain_10_20,
         "angle_20": angle_20,
@@ -3513,6 +3532,134 @@ def _fmt_delta(value: float | None, *, unit: str, decimals: int = 1) -> str:
     return f"{sign}{value:.{decimals}f}{unit}"
 
 
+def _goal_metric_value(
+    metric: str,
+    *,
+    snapshot: dict[str, float | None],
+    report: dict[str, Any],
+) -> float | None:
+    value = _to_float(snapshot.get(metric))
+    if value is not None:
+        return value
+    if metric == "negative_risk_score":
+        return _to_float((report.get("metrics") or {}).get("negative_risk_score"))
+    return None
+
+
+def _evaluate_goal_metric(
+    target: dict[str, Any],
+    *,
+    prev_snapshot: dict[str, float | None],
+    curr_snapshot: dict[str, float | None],
+    prev_report: dict[str, Any],
+    curr_report: dict[str, Any],
+) -> dict[str, Any] | None:
+    metric = str(target.get("metric") or "").strip()
+    if not metric:
+        return None
+    prev_value = _goal_metric_value(metric, snapshot=prev_snapshot, report=prev_report)
+    curr_value = _goal_metric_value(metric, snapshot=curr_snapshot, report=curr_report)
+    if prev_value is None or curr_value is None:
+        return None
+
+    direction = str(target.get("direction") or "").strip().lower()
+    min_delta = abs(float(_to_float(target.get("min_delta")) or 0.0))
+    unit = str(target.get("unit") or "")
+    decimals = int(target.get("decimals") or 1)
+    delta = float(curr_value - prev_value)
+    label = str(target.get("label") or metric)
+
+    improved = False
+    worsened = False
+    if direction == "increase":
+        improved = delta >= min_delta
+        worsened = delta <= -min_delta
+    elif direction == "decrease":
+        improved = delta <= -min_delta
+        worsened = delta >= min_delta
+    else:
+        improved = abs(delta) >= min_delta
+
+    status_key = "met" if improved else "missed" if worsened else "partial"
+    detail = (
+        f"{label}: {prev_value:.{decimals}f} -> {curr_value:.{decimals}f}{unit} "
+        f"({_fmt_delta(delta, unit=unit, decimals=decimals)})"
+    )
+    return {
+        "metric": metric,
+        "label": label,
+        "status_key": status_key,
+        "detail": detail,
+        "delta": round(delta, decimals),
+    }
+
+
+def _goal_follow_status(*, positive_hits: int, negative_hits: int, total_hits: int) -> tuple[str, str]:
+    if total_hits <= 0:
+        return "teilweise", "Teilweise"
+    if positive_hits >= max(1, total_hits) and negative_hits == 0:
+        return "umgesetzt", "Umgesetzt"
+    if positive_hits >= 1 and negative_hits == 0:
+        return "teilweise", "Teilweise"
+    if negative_hits > positive_hits:
+        return "offen", "Noch offen"
+    return "teilweise", "Teilweise"
+
+
+def _build_goal_follow_item(
+    *,
+    goal: dict[str, Any],
+    prev_snapshot: dict[str, float | None],
+    curr_snapshot: dict[str, float | None],
+    prev_report: dict[str, Any],
+    curr_report: dict[str, Any],
+) -> dict[str, Any] | None:
+    target_metrics = goal.get("target_metrics") if isinstance(goal.get("target_metrics"), list) else []
+    evaluated = [
+        item
+        for target in target_metrics
+        for item in [
+            _evaluate_goal_metric(
+                target,
+                prev_snapshot=prev_snapshot,
+                curr_snapshot=curr_snapshot,
+                prev_report=prev_report,
+                curr_report=curr_report,
+            )
+        ]
+        if item is not None
+    ]
+    if not evaluated:
+        return None
+
+    positive_hits = sum(1 for item in evaluated if item.get("status_key") == "met")
+    negative_hits = sum(1 for item in evaluated if item.get("status_key") == "missed")
+    status_key, status_label = _goal_follow_status(
+        positive_hits=positive_hits,
+        negative_hits=negative_hits,
+        total_hits=len(evaluated),
+    )
+    message_prefix = {
+        "umgesetzt": "Das konkrete Ziel wurde messbar umgesetzt.",
+        "teilweise": "Das konkrete Ziel wurde teilweise umgesetzt.",
+        "offen": "Das konkrete Ziel ist noch offen.",
+    }[status_key]
+    goal_text = _strip_priority_prefix(str(goal.get("text") or goal.get("display_text") or "")).strip()
+    details = "; ".join(str(item.get("detail") or "") for item in evaluated if item.get("detail"))
+    detail_text = message_prefix
+    if details:
+        detail_text = f"{detail_text} Messwerte: {details}."
+
+    return {
+        "phase": str(goal.get("phase") or "Coaching-Ziel"),
+        "status_key": status_key,
+        "status": status_label,
+        "goal_text": goal_text,
+        "detail": detail_text,
+        "target_results": evaluated,
+    }
+
+
 def _build_tip_follow_item(
     *,
     phase_name: str,
@@ -3639,6 +3786,7 @@ def _build_tip_follow_up(
     current_report: dict[str, Any],
     previous_report: dict[str, Any] | None,
     marco_profile: dict[str, Any] | None,
+    previous_coaching_goals: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if previous_report is None:
         return {
@@ -3661,26 +3809,43 @@ def _build_tip_follow_up(
         previous_score_rows=previous_rows,
         previous_tips=[str(item) for item in previous_tips],
     )
-    if not focus_phases:
-        return {
-            "available": False,
-            "reason": "Keine klaren Schwerpunkte aus dem vorherigen Sprung gefunden.",
-        }
 
     current_snapshot = _scorecard_metric_snapshot(current_report)
     previous_snapshot = _scorecard_metric_snapshot(previous_report)
-    items = [
-        _build_tip_follow_item(
-            phase_name=phase_name,
-            prev_score=previous_score_map.get(phase_name),
-            curr_score=current_score_map.get(phase_name),
+    structured_items: list[dict[str, Any]] = []
+    for goal in (previous_coaching_goals or [])[:5]:
+        if not isinstance(goal, dict):
+            continue
+        item = _build_goal_follow_item(
+            goal=goal,
             prev_snapshot=previous_snapshot,
             curr_snapshot=current_snapshot,
             prev_report=previous_report,
             curr_report=current_report,
         )
-        for phase_name in focus_phases[:4]
-    ]
+        if item is not None:
+            structured_items.append(item)
+
+    if structured_items:
+        items = structured_items
+    else:
+        if not focus_phases:
+            return {
+                "available": False,
+                "reason": "Keine klaren Schwerpunkte aus dem vorherigen Sprung gefunden.",
+            }
+        items = [
+            _build_tip_follow_item(
+                phase_name=phase_name,
+                prev_score=previous_score_map.get(phase_name),
+                curr_score=current_score_map.get(phase_name),
+                prev_snapshot=previous_snapshot,
+                curr_snapshot=current_snapshot,
+                prev_report=previous_report,
+                curr_report=current_report,
+            )
+            for phase_name in focus_phases[:4]
+        ]
     done_count = sum(1 for item in items if item.get("status_key") == "umgesetzt")
     open_count = sum(1 for item in items if item.get("status_key") == "offen")
     partial_count = sum(1 for item in items if item.get("status_key") == "teilweise")

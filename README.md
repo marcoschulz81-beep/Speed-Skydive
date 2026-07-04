@@ -62,6 +62,30 @@ pytest
   - Basis/Aufbau fokussiert staerker Exit und Aufbau
   - Schnell/Elite fokussiert staerker Hot-Zone, Stabilitaet und Korrekturen
 
+## Strukturierte Coaching-Ziele
+
+- Die bisherigen Tipptexte bleiben erhalten, werden aber zusaetzlich als strukturierte Coaching-Ziele gespeichert.
+- Jedes Ziel enthaelt Phase, Prioritaet, Originaltext und messbare Zielmetriken.
+- Beispiele fuer Zielmetriken:
+  - `angle_10` / `angle_15`: frueher Tauchwinkel soll bei zu schnellem Steilwerden sinken
+  - `gain_10_20`: Speed-Aufbau zwischen +10s und +20s soll steigen
+  - `vhor_min_20_25`: Vorwaertsreserve in der Hot-Zone soll stabiler bleiben
+  - `angle_turns_20_25`: Korrekturen in der Hot-Zone sollen sinken
+- Beim naechsten Sprung prueft die Expertenansicht zuerst diese konkreten Ziele.
+- Falls ein alter Datensatz noch keine strukturierten Ziele hat, nutzt die Software weiterhin den bisherigen Phasen-Fallback.
+
+## KI-Vorbereitung fuer Coaching-Texte
+
+- Die technische Bewertung bleibt deterministisch und nachvollziehbar.
+- Eine spaetere KI-Erweiterung sollte nur die Formulierung der Coaching-Texte verbessern.
+- Als Eingabe fuer KI eignen sich die strukturierten Fakten: Phase, Ziel, Messwerte vorher/nachher, Status und Leistungsprofil.
+- Die KI sollte keine Speed-Berechnung ersetzen und keine neuen Messwerte erfinden.
+- Empfohlener Ablauf fuer eine spaetere Version:
+  - Analyse erzeugt Fakten und Zielmetriken lokal.
+  - KI formuliert daraus einfache oder Experten-Coaching-Texte.
+  - UI markiert KI-Texte klar als Formulierungshilfe.
+  - Ohne KI-Schluessel funktioniert die bestehende lokale Analyse unveraendert weiter.
+
 ## Datenmodell
 
 - `jumps`: Metadaten pro Sprung, t0, Exit-Höhe, Gültigkeit, Qualität

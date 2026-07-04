@@ -5,6 +5,7 @@ from app.main import (
     _build_jump_brief_summary,
     _build_jump_brief_simple,
     _build_jumper_stability_reference,
+    _build_tip_follow_up,
     _build_jumper_trend_rows,
     _jumper_overview_simple_status,
     _normalize_view_mode,
@@ -12,6 +13,69 @@ from app.main import (
     _tip_focus_from_previous,
     _tip_follow_status,
 )
+
+
+def _minimal_goal_follow_report(
+    *,
+    jump_id: str,
+    file_name: str,
+    angle_10: float,
+    angle_15: float,
+    risk_score: float = 35.0,
+) -> dict:
+    time_s = [float(i) for i in range(0, 31)]
+    angle = [68.0 + (0.45 * t) for t in time_s]
+    vvert = [230.0 + (7.0 * t) for t in time_s]
+    vhor = [96.0 - (2.0 * t) for t in time_s]
+    return {
+        "jump": {"jump_id": jump_id, "file_name": file_name, "t0_utc": "2026-01-01T12:00:00Z"},
+        "metrics": {
+            "best_3s_vVert_kmh": 410.0,
+            "best_3s_start_s": 20.0,
+            "best_3s_end_s": 23.0,
+            "negative_risk_score": risk_score,
+        },
+        "notes": {
+            "curve_window_start_s": 0.0,
+            "curve_window_end_s": 30.0,
+            "exit_profile": {"carry_ratio": 0.75},
+        },
+        "scorecard": {
+            "exit": "sauber",
+            "phase_10_20": "optimal",
+            "hot_zone": "stabil",
+            "kipp_risiko": "mittel",
+        },
+        "quality_flags": [],
+        "fixpoints": [
+            {"t_rel_s": 10.0, "vVert_kmh": 292.0, "vHor_kmh": 70.0, "angle_deg": angle_10},
+            {"t_rel_s": 15.0, "vVert_kmh": 340.0, "vHor_kmh": 58.0, "angle_deg": angle_15},
+            {"t_rel_s": 20.0, "vVert_kmh": 390.0, "vHor_kmh": 42.0, "angle_deg": 83.0},
+            {"t_rel_s": 24.0, "vVert_kmh": 405.0, "vHor_kmh": 32.0, "angle_deg": 84.0},
+            {"t_rel_s": 28.0, "vVert_kmh": 407.0, "vHor_kmh": 31.0, "angle_deg": 84.2},
+        ],
+        "chart_data": {
+            "time_s": time_s,
+            "vVert_kmh": vvert,
+            "vHor_kmh": vhor,
+            "angle_deg": angle,
+            "hAGL_m": [3600.0 - (55.0 * t) for t in time_s],
+            "accVert_mps2": [2.2 for _ in time_s],
+        },
+    }
+
+
+_TEST_MARCO_PROFILE = {
+    "v10_ref": 300.0,
+    "carry_ref": 0.85,
+    "gain_10_20_ref": 120.0,
+    "angle_20_low": 82.0,
+    "angle_20_high": 85.0,
+    "dur_400_ref": 2.0,
+    "vhor_min_ref": 30.0,
+    "vvert_gain_20_25_ref": 10.0,
+    "turns_ref": 1.0,
+}
 
 
 def test_jump_brief_summary_uses_compact_sections_and_strips_priority_prefix():
@@ -341,6 +405,59 @@ def test_tip_follow_status_classifies_implemented_partial_open():
     assert _tip_follow_status(score_delta=8, positive_hits=2, negative_hits=0)[0] == "umgesetzt"
     assert _tip_follow_status(score_delta=2, positive_hits=1, negative_hits=0)[0] == "teilweise"
     assert _tip_follow_status(score_delta=-7, positive_hits=0, negative_hits=2)[0] == "offen"
+
+
+def test_tip_follow_up_uses_structured_goal_metrics_before_text_fallback():
+    previous_report = _minimal_goal_follow_report(
+        jump_id="prev",
+        file_name="previous.csv",
+        angle_10=75.0,
+        angle_15=85.0,
+    )
+    current_report = _minimal_goal_follow_report(
+        jump_id="current",
+        file_name="current.csv",
+        angle_10=72.5,
+        angle_15=82.0,
+    )
+    previous_goals = [
+        {
+            "id": "phase_10_15_too_steep_not_hold",
+            "phase": "Aufbau 10-20s",
+            "text": "Im Aufbau nicht zu schnell maximal steil werden.",
+            "target_metrics": [
+                {
+                    "metric": "angle_10",
+                    "label": "Winkel +10s",
+                    "direction": "decrease",
+                    "min_delta": 1.0,
+                    "unit": " Grad",
+                    "decimals": 1,
+                },
+                {
+                    "metric": "angle_15",
+                    "label": "Winkel +15s",
+                    "direction": "decrease",
+                    "min_delta": 1.0,
+                    "unit": " Grad",
+                    "decimals": 1,
+                },
+            ],
+        }
+    ]
+
+    follow_up = _build_tip_follow_up(
+        current_report=current_report,
+        previous_report=previous_report,
+        marco_profile=_TEST_MARCO_PROFILE,
+        previous_coaching_goals=previous_goals,
+    )
+
+    assert follow_up["available"] is True
+    assert follow_up["entries"][0]["status_key"] == "umgesetzt"
+    assert follow_up["entries"][0]["goal_text"] == "Im Aufbau nicht zu schnell maximal steil werden."
+    assert "Winkel +10s" in follow_up["entries"][0]["detail"]
+    assert "Winkel +15s" in follow_up["entries"][0]["detail"]
 
 
 def test_view_mode_normalization_and_simple_status():

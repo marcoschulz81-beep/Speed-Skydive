@@ -19,7 +19,7 @@ def build_jump_review(
     top_reference_compares: list[dict[str, Any]] | None = None,
     jumper_stability_reference: dict[str, Any] | None = None,
     tip_effect_profile: dict[str, Any] | None = None,
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     jump = report["jump"]
     metrics = report["metrics"]
     notes = report.get("notes", {})
@@ -56,6 +56,7 @@ def build_jump_review(
             "good": ["Keine verlässliche Technikbewertung möglich."],
             "not_good": [reason],
             "improve": improve[:5],
+            "coaching_goals": [],
         }
 
     fp10 = _fixpoint_at(fixpoints, 10.0)
@@ -1293,9 +1294,30 @@ def build_jump_review(
     if not not_good:
         not_good.append("Keine deutlichen Schwachstellen in den Hauptdaten gefunden.")
 
-    improve = _build_priority_actions(actions_by_key, max_items=5, phase_boosts=phase_boosts)
+    coaching_goals = _build_priority_action_items(actions_by_key, max_items=5, phase_boosts=phase_boosts)
+    improve = [str(item.get("display_text") or "") for item in coaching_goals if str(item.get("display_text") or "").strip()]
     if not improve:
         improve = ["Priorität 1 (stabil halten): den aktuellen Ablauf möglichst reproduzierbar wiederholen."]
+        coaching_goals = [
+            {
+                "id": "stabilize_repeatable_line",
+                "priority": 1,
+                "phase": "Stabilität / Kipp-Risiko",
+                "text": "Den aktuellen Ablauf möglichst reproduzierbar wiederholen.",
+                "display_text": improve[0],
+                "score": 1,
+                "target_metrics": [
+                    {
+                        "metric": "angle_turns_20_25",
+                        "label": "Korrekturen 20-25s",
+                        "direction": "decrease",
+                        "min_delta": 1.0,
+                        "unit": "",
+                        "decimals": 0,
+                    }
+                ],
+            }
+        ]
 
     happened_clean = _compact_lines(happened, max_items=14)
     good_clean = _compact_lines(good, max_items=4)
@@ -1307,6 +1329,7 @@ def build_jump_review(
         "good": good_clean,
         "not_good": not_good_clean,
         "improve": improve,
+        "coaching_goals": coaching_goals,
     }
 
 
@@ -2036,12 +2059,12 @@ def _forward_track_behavior(
     }
 
 
-def _build_priority_actions(
+def _build_priority_action_items(
     actions_by_key: dict[str, dict[str, Any]],
     *,
     max_items: int = 5,
     phase_boosts: dict[int, int] | None = None,
-) -> list[str]:
+) -> list[dict[str, Any]]:
     if not actions_by_key:
         return []
 
@@ -2063,7 +2086,7 @@ def _build_priority_actions(
             str(item[0]).lower(),
         ),
     )
-    out: list[str] = []
+    out: list[dict[str, Any]] = []
     seen_texts: set[str] = set()
     for key, item in ordered:
         text = str(item.get("text", "")).strip()
@@ -2073,10 +2096,121 @@ def _build_priority_actions(
             continue
         seen_texts.add(text)
         idx = len(out) + 1
-        out.append(f"Priorität {idx}: {text}")
+        phase_rank = _action_phase_rank(key=str(key), text=text)
+        out.append(
+            {
+                "id": str(key),
+                "priority": idx,
+                "phase": _phase_label_for_rank(phase_rank),
+                "text": text,
+                "display_text": f"Priorität {idx}: {text}",
+                "score": int(item.get("score", 0)),
+                "target_metrics": _goal_metrics_for_action(
+                    key=str(key),
+                    text=text,
+                    phase_rank=phase_rank,
+                ),
+            }
+        )
         if len(out) >= max_items:
             break
     return out
+
+
+def _phase_label_for_rank(rank: int) -> str:
+    if rank == 0:
+        return "Exit"
+    if rank == 1:
+        return "Aufbau 10-20s"
+    if rank == 2:
+        return "Hot-Zone"
+    if rank == 3:
+        return "Stabilität / Kipp-Risiko"
+    return "Allgemein"
+
+
+def _goal_metrics_for_action(*, key: str, text: str, phase_rank: int) -> list[dict[str, Any]]:
+    key_l = normalize_german_text(key)
+    text_l = normalize_german_text(text)
+    metrics: list[dict[str, Any]] = []
+
+    def add(
+        metric: str,
+        label: str,
+        direction: str,
+        *,
+        min_delta: float,
+        unit: str,
+        decimals: int = 1,
+    ) -> None:
+        if any(item.get("metric") == metric and item.get("direction") == direction for item in metrics):
+            return
+        metrics.append(
+            {
+                "metric": metric,
+                "label": label,
+                "direction": direction,
+                "min_delta": float(min_delta),
+                "unit": unit,
+                "decimals": int(decimals),
+            }
+        )
+
+    if phase_rank == 0 or any(token in key_l for token in ["exit", "early", "carryover"]):
+        add("v10", "vVert +10s", "increase", min_delta=8.0, unit=" km/h")
+        add("carry_ratio", "Druck-Mitnahme", "increase", min_delta=0.04, unit="", decimals=2)
+    if any(token in key_l for token in ["too_steep", "angle_flatter", "early_steep", "steep_not_hold"]):
+        add("angle_10", "Winkel +10s", "decrease", min_delta=1.0, unit=" Grad")
+        add("angle_15", "Winkel +15s", "decrease", min_delta=1.0, unit=" Grad")
+        add("angle_turns_20_25", "Korrekturen 20-25s", "decrease", min_delta=1.0, unit="", decimals=0)
+    if any(token in key_l for token in ["build", "below_corridor", "gain", "vvert_gap", "angle_steeper"]):
+        add("gain_10_20", "Zuwachs +10 bis +20s", "increase", min_delta=12.0, unit=" km/h")
+    if "angle_steeper" in key_l or "flach" in text_l:
+        add("angle_20", "Winkel +20s", "increase", min_delta=1.0, unit=" Grad")
+    if phase_rank == 2 or any(
+        token in key_l
+        for token in [
+            "hot",
+            "peak",
+            "vhor",
+            "hold",
+            "segment_20_25",
+            "corridor",
+            "tail",
+            "lateral",
+            "efficiency",
+        ]
+    ):
+        add("vhor_min_20_25", "vHor-Min 20-25s", "increase", min_delta=2.0, unit=" km/h")
+        add("dur_400", "Dauer >400 km/h", "increase", min_delta=0.3, unit="s")
+        add("angle_turns_20_25", "Korrekturen 20-25s", "decrease", min_delta=1.0, unit="", decimals=0)
+    if phase_rank == 3 or any(token in key_l for token in ["curve", "kipp", "stability"]):
+        add("angle_turns_20_25", "Korrekturen 20-25s", "decrease", min_delta=1.0, unit="", decimals=0)
+        add("negative_risk_score", "Risiko-Score", "decrease", min_delta=5.0, unit="")
+
+    if not metrics:
+        if phase_rank <= 1:
+            add("gain_10_20", "Zuwachs +10 bis +20s", "increase", min_delta=8.0, unit=" km/h")
+        else:
+            add("angle_turns_20_25", "Korrekturen 20-25s", "decrease", min_delta=1.0, unit="", decimals=0)
+    return metrics
+
+
+def _build_priority_actions(
+    actions_by_key: dict[str, dict[str, Any]],
+    *,
+    max_items: int = 5,
+    phase_boosts: dict[int, int] | None = None,
+) -> list[str]:
+    return [
+        str(item.get("display_text") or "")
+        for item in _build_priority_action_items(
+            actions_by_key,
+            max_items=max_items,
+            phase_boosts=phase_boosts,
+        )
+        if str(item.get("display_text") or "").strip()
+    ]
 
 
 def _action_timeline_rank(*, key: str, text: str) -> int:

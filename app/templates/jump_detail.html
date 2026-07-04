@@ -199,6 +199,9 @@
                 </div>
             </div>
             <ul class="tips compact">
+                {% if item.goal_text %}
+                <li>Ziel: {{ item.goal_text }}</li>
+                {% endif %}
                 <li>{{ item.detail }}</li>
             </ul>
         </article>

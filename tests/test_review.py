@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from app.analysis.review import _build_priority_actions, _forward_eval_end_s, build_jump_review
+from app.analysis.review import (
+    _build_priority_action_items,
+    _build_priority_actions,
+    _forward_eval_end_s,
+    build_jump_review,
+)
 
 
 def test_build_jump_review_contains_all_sections():
@@ -38,11 +43,16 @@ def test_build_jump_review_contains_all_sections():
     }
 
     review = build_jump_review(report, best_compare=best_compare)
-    assert set(review.keys()) == {"happened", "good", "not_good", "improve"}
+    assert set(review.keys()) == {"happened", "good", "not_good", "improve", "coaching_goals"}
     assert len(review["happened"]) >= 1
     assert len(review["good"]) >= 1
     assert len(review["not_good"]) >= 1
     assert len(review["improve"]) >= 1
+    assert len(review["coaching_goals"]) >= 1
+    assert {"id", "priority", "phase", "text", "display_text", "target_metrics"}.issubset(
+        review["coaching_goals"][0]
+    )
+    assert isinstance(review["coaching_goals"][0]["target_metrics"], list)
 
 
 def test_build_jump_review_prioritizes_start_and_build_when_low():
@@ -159,6 +169,26 @@ def test_priority_actions_follow_flight_sequence():
     stability_idx = plain.index(actions["kipp_risk_high"]["text"])
 
     assert exit_idx < build_idx < peak_idx < stability_idx
+
+
+def test_priority_action_items_add_structured_goal_metrics():
+    actions = {
+        "phase_10_15_too_steep_not_hold": {
+            "score": 9,
+            "text": "Im Aufbau nicht zu schnell maximal steil werden und die Linie beruhigen.",
+        }
+    }
+
+    items = _build_priority_action_items(actions, max_items=5)
+
+    assert len(items) == 1
+    assert items[0]["id"] == "phase_10_15_too_steep_not_hold"
+    assert items[0]["phase"] == "Aufbau 10-20s"
+    assert items[0]["display_text"].startswith("Priorit")
+    metrics = {item["metric"]: item for item in items[0]["target_metrics"]}
+    assert metrics["angle_10"]["direction"] == "decrease"
+    assert metrics["angle_15"]["direction"] == "decrease"
+    assert metrics["angle_turns_20_25"]["direction"] == "decrease"
 
 
 def test_build_jump_review_detects_negative_forward_drift():
