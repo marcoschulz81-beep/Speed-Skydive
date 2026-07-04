@@ -21,8 +21,16 @@ from app.analysis.comparison import build_jump_comparison
 from app.analysis.lateral import analyze_lateral_dynamics
 from app.analysis.potential import build_speed_potential_preview
 from app.analysis.review import build_jump_review
-from app.config import BASE_DIR, COACH_VIEW_ENABLED, RAW_UPLOAD_DIR
+from app.config import (
+    AI_COACHING_ENABLED,
+    AI_COACHING_MODEL,
+    AI_COACHING_TIMEOUT_S,
+    BASE_DIR,
+    COACH_VIEW_ENABLED,
+    RAW_UPLOAD_DIR,
+)
 from app.database import init_db
+from app.services.ai_coach import AI_COACHING_SCHEMA_VERSION, generate_ai_coaching_texts
 from app.services.storage import (
     VALID_JUMP_CONTEXTS,
     delete_jump,
@@ -527,6 +535,17 @@ def jump_detail(
     quality_issue_lines = _build_quality_issue_lines(report.get("quality_flags", []))
     quality_issue_lines.extend(_build_fs2_quality_issue_lines(report.get("notes", {})))
     quality_issue_lines = _unique_texts(quality_issue_lines)
+    ai_coaching = _build_ai_coaching(
+        report=report,
+        review=review,
+        jump_brief=jump_brief,
+        jump_brief_simple=jump_brief_simple,
+        scorecard_rows=scorecard_rows,
+        tip_follow_up=tip_follow_up,
+        jumper_summary=jumper_summary,
+        quality_issue_lines=quality_issue_lines,
+        view_mode=view_mode,
+    )
 
     return templates.TemplateResponse(
         request,
@@ -544,6 +563,7 @@ def jump_detail(
             "top_reference_jumps": top_reference_jumps,
             "phase_rows": phase_rows,
             "tip_follow_up": tip_follow_up,
+            "ai_coaching": ai_coaching,
             "chart_data_json": json.dumps(_chart_data_for_client(report)),
             "report_meta_json": json.dumps(_report_for_client(report)),
             "quality_flags_json": json.dumps(report["quality_flags"]),
@@ -2206,6 +2226,213 @@ def _build_jump_brief_simple(
         "actions": actions,
         "actions_ui": [_render_simple_glossary(item) for item in actions],
     }
+
+
+def _build_ai_coaching(
+    *,
+    report: dict[str, Any],
+    review: dict[str, Any],
+    jump_brief: dict[str, Any],
+    jump_brief_simple: dict[str, Any],
+    scorecard_rows: list[dict[str, Any]],
+    tip_follow_up: dict[str, Any],
+    jumper_summary: dict[str, Any],
+    quality_issue_lines: list[str],
+    view_mode: str,
+) -> dict[str, Any]:
+    payload = _build_ai_coaching_payload(
+        report=report,
+        review=review,
+        jump_brief=jump_brief,
+        jump_brief_simple=jump_brief_simple,
+        scorecard_rows=scorecard_rows,
+        tip_follow_up=tip_follow_up,
+        jumper_summary=jumper_summary,
+        quality_issue_lines=quality_issue_lines,
+        view_mode=view_mode,
+    )
+    result = generate_ai_coaching_texts(
+        payload,
+        view_mode=view_mode,
+        enabled=AI_COACHING_ENABLED,
+        model=AI_COACHING_MODEL,
+        timeout_s=AI_COACHING_TIMEOUT_S,
+    )
+    result["payload_schema_version"] = AI_COACHING_SCHEMA_VERSION
+    return result
+
+
+def _build_ai_coaching_payload(
+    *,
+    report: dict[str, Any],
+    review: dict[str, Any],
+    jump_brief: dict[str, Any],
+    jump_brief_simple: dict[str, Any],
+    scorecard_rows: list[dict[str, Any]],
+    tip_follow_up: dict[str, Any],
+    jumper_summary: dict[str, Any],
+    quality_issue_lines: list[str],
+    view_mode: str,
+) -> dict[str, Any]:
+    jump = report.get("jump", {}) if isinstance(report.get("jump"), dict) else {}
+    metrics = report.get("metrics", {}) if isinstance(report.get("metrics"), dict) else {}
+    notes = report.get("notes", {}) if isinstance(report.get("notes"), dict) else {}
+    performance_profile = (
+        jumper_summary.get("performance_profile", {})
+        if isinstance(jumper_summary.get("performance_profile"), dict)
+        else {}
+    )
+    selected_brief = jump_brief_simple if view_mode == _VIEW_MODE_SIMPLE else jump_brief
+
+    return {
+        "schema_version": AI_COACHING_SCHEMA_VERSION,
+        "view_mode": view_mode,
+        "jump": {
+            "jumper_name": str(jump.get("jumper_name") or ""),
+            "file_name": str(jump.get("file_name") or ""),
+            "jump_context": _normalize_jump_context(str(jump.get("jump_context") or "unknown")),
+            "jump_context_label": _jump_context_label(str(jump.get("jump_context") or "unknown")),
+            "t0_utc": str(jump.get("t0_utc") or ""),
+        },
+        "performance_profile": _compact_performance_profile_for_ai(performance_profile),
+        "metrics": {
+            "best_3s_vVert_kmh": _round_float(metrics.get("best_3s_vVert_kmh"), 1),
+            "best_3s_start_s": _round_float(metrics.get("best_3s_start_s"), 1),
+            "best_3s_end_s": _round_float(metrics.get("best_3s_end_s"), 1),
+            "best_3s_vHor_kmh": _round_float(metrics.get("best_3s_vHor_kmh"), 1),
+            "rule_based_3s_score": _round_float(metrics.get("rule_based_3s_score"), 1),
+            "negative_risk_score": _round_float(metrics.get("negative_risk_score"), 1),
+            "curve_window_start_s": _round_float(notes.get("curve_window_start_s"), 1),
+            "curve_window_end_s": _round_float(notes.get("curve_window_end_s"), 1),
+        },
+        "scorecard": [
+            {
+                "phase": str(row.get("name") or ""),
+                "score": int(row.get("score", 0) or 0),
+                "status": str(row.get("status") or ""),
+                "reason": _truncate_text(str(row.get("reason") or ""), 260),
+            }
+            for row in scorecard_rows[:4]
+        ],
+        "review": {
+            "happened": _limit_texts(review.get("happened"), max_items=6, max_len=260),
+            "good": _limit_texts(review.get("good"), max_items=4, max_len=220),
+            "not_good": _limit_texts(review.get("not_good"), max_items=5, max_len=260),
+            "coaching_goals": _compact_coaching_goals_for_ai(review.get("coaching_goals")),
+        },
+        "jump_brief": {
+            "summary": _truncate_text(str(selected_brief.get("summary") or ""), 280),
+            "main_issues": _limit_texts(selected_brief.get("main_issues"), max_items=4, max_len=260),
+            "strengths": _limit_texts(selected_brief.get("strengths"), max_items=3, max_len=220),
+            "actions": _limit_texts(selected_brief.get("actions"), max_items=4, max_len=240),
+        },
+        "tip_follow_up": _compact_tip_follow_up_for_ai(tip_follow_up),
+        "quality": {
+            "analysis_blocked": bool(notes.get("analysis_blocked")),
+            "quality_flags": [str(item) for item in (report.get("quality_flags") or [])[:8]],
+            "quality_issue_lines": _limit_texts(quality_issue_lines, max_items=4, max_len=240),
+        },
+    }
+
+
+def _compact_performance_profile_for_ai(profile: dict[str, Any]) -> dict[str, Any]:
+    if not profile or not profile.get("available"):
+        return {"available": False, "summary": str(profile.get("reason") or "Noch kein Leistungsprofil.")}
+    return {
+        "available": True,
+        "summary": str(profile.get("summary") or ""),
+        "performance_band": str(profile.get("performance_band") or ""),
+        "performance_band_label": str(profile.get("performance_band_label") or ""),
+        "confidence": str(profile.get("confidence") or ""),
+        "confidence_label": str(profile.get("confidence_label") or ""),
+        "valid_jump_count": int(profile.get("valid_jump_count") or 0),
+        "top_available_avg_kmh": _round_float(profile.get("top_available_avg_kmh"), 1),
+    }
+
+
+def _compact_coaching_goals_for_ai(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for raw in value[:5]:
+        if not isinstance(raw, dict):
+            continue
+        target_metrics: list[dict[str, Any]] = []
+        for target in raw.get("target_metrics") or []:
+            if not isinstance(target, dict):
+                continue
+            target_metrics.append(
+                {
+                    "metric": str(target.get("metric") or ""),
+                    "label": str(target.get("label") or ""),
+                    "direction": str(target.get("direction") or ""),
+                    "min_delta": _round_float(target.get("min_delta"), 2),
+                    "unit": str(target.get("unit") or ""),
+                }
+            )
+        out.append(
+            {
+                "id": str(raw.get("id") or ""),
+                "priority": int(raw.get("priority") or 0),
+                "phase": str(raw.get("phase") or ""),
+                "text": _truncate_text(str(raw.get("text") or ""), 260),
+                "target_metrics": target_metrics[:4],
+            }
+        )
+    return out
+
+
+def _compact_tip_follow_up_for_ai(tip_follow_up: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(tip_follow_up, dict) or not tip_follow_up.get("available"):
+        return {
+            "available": False,
+            "reason": str((tip_follow_up or {}).get("reason") or ""),
+        }
+    entries: list[dict[str, Any]] = []
+    for raw in tip_follow_up.get("entries") or []:
+        if not isinstance(raw, dict):
+            continue
+        entries.append(
+            {
+                "phase": str(raw.get("phase") or ""),
+                "status": str(raw.get("status") or ""),
+                "status_key": str(raw.get("status_key") or ""),
+                "goal_text": _truncate_text(str(raw.get("goal_text") or ""), 260),
+                "detail": _truncate_text(str(raw.get("detail") or ""), 420),
+            }
+        )
+    return {
+        "available": True,
+        "summary": str(tip_follow_up.get("summary") or ""),
+        "entries": entries[:4],
+    }
+
+
+def _round_float(value: Any, decimals: int = 1) -> float | None:
+    number = _to_float(value)
+    if number is None:
+        return None
+    return round(float(number), int(decimals))
+
+
+def _limit_texts(value: Any, *, max_items: int, max_len: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for raw in value:
+        text = _truncate_text(str(raw or ""), max_len)
+        if text:
+            out.append(text)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _truncate_text(value: str, max_len: int) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if len(text) <= max_len:
+        return text
+    return text[: max(0, max_len - 1)].rstrip() + "..."
 
 
 def _render_simple_glossary(text: str) -> str:

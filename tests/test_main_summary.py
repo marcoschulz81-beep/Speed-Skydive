@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.main import (
+    _build_ai_coaching_payload,
     _build_fs2_quality_issue_lines,
     _build_jump_brief_summary,
     _build_jump_brief_simple,
@@ -222,6 +223,86 @@ def test_jump_brief_summary_strengths_remove_semantic_duplicates():
     ]
     assert len(start_lines) == 1
     assert any("Exit-Dynamik" in item for item in summary["strengths"])
+
+
+def test_ai_coaching_payload_uses_compact_facts_without_raw_chart_data():
+    report = _minimal_goal_follow_report(
+        jump_id="ai",
+        file_name="ai.csv",
+        angle_10=74.0,
+        angle_15=83.0,
+    )
+    report["jump"]["jumper_name"] = "Test Jumper"
+    report["jump"]["jump_context"] = "training"
+    review = {
+        "happened": ["Bestes 3-Sekunden-Fenster: +20.0s bis +23.0s mit 410.0 km/h."],
+        "good": ["Exit war ruhig."],
+        "not_good": ["Im Aufbau wird der Winkel zu schnell steil."],
+        "improve": ["Prioritaet 1: Im Aufbau ruhiger steigern."],
+        "coaching_goals": [
+            {
+                "id": "phase_10_15_too_steep_not_hold",
+                "priority": 1,
+                "phase": "Aufbau 10-20s",
+                "text": "Im Aufbau nicht zu schnell maximal steil werden.",
+                "target_metrics": [
+                    {
+                        "metric": "angle_10",
+                        "label": "Winkel +10s",
+                        "direction": "decrease",
+                        "min_delta": 1.0,
+                        "unit": " Grad",
+                    }
+                ],
+            }
+        ],
+    }
+    jump_brief = {
+        "summary": "Groesster Hebel im Aufbau.",
+        "main_issues": ["Aufbau: Winkel zu frueh steil."],
+        "strengths": ["Exit ruhig."],
+        "actions": ["Im Aufbau ruhiger steigern."],
+    }
+    jump_brief_simple = {
+        "summary": "Arbeite am Aufbau.",
+        "main_issues": ["Du wirst zu frueh zu steil."],
+        "strengths": ["Der Start war ruhig."],
+        "actions": ["Bleib am Anfang ruhiger."],
+    }
+    scorecard_rows = [
+        {"name": "Exit", "score": 82, "status": "gut", "reason": "Exit stabil."},
+        {"name": "Aufbau 10-20s", "score": 55, "status": "kritisch", "reason": "Winkel steigt zu schnell."},
+    ]
+
+    payload = _build_ai_coaching_payload(
+        report=report,
+        review=review,
+        jump_brief=jump_brief,
+        jump_brief_simple=jump_brief_simple,
+        scorecard_rows=scorecard_rows,
+        tip_follow_up={"available": False, "reason": "Kein vorheriger Sprung."},
+        jumper_summary={
+            "performance_profile": {
+                "available": True,
+                "summary": "Schnell: Top-3 Training 440.0 km/h.",
+                "performance_band": "schnell",
+                "performance_band_label": "Schnell",
+                "confidence": "medium",
+                "confidence_label": "mittel",
+                "valid_jump_count": 3,
+                "top_available_avg_kmh": 440.0,
+            }
+        },
+        quality_issue_lines=[],
+        view_mode="expert",
+    )
+
+    serialized = str(payload)
+    assert "chart_data" not in serialized
+    assert "time_s" not in serialized
+    assert payload["review"]["coaching_goals"][0]["target_metrics"][0]["metric"] == "angle_10"
+    assert payload["jump"]["jump_context"] == "training"
+    assert payload["performance_profile"]["performance_band"] == "schnell"
 
 
 def test_fs2_quality_issue_lines_only_for_non_stable_labels():

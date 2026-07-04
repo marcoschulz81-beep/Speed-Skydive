@@ -42,6 +42,30 @@ uvicorn app.main:app --reload
 
 Danach: `http://127.0.0.1:8000`
 
+## Optionale OpenAI KI-Coaching-Texte
+
+Die technische Analyse bleibt lokal und deterministisch. OpenAI wird nur genutzt, um aus den bereits berechneten Fakten bessere Coaching-Texte zu formulieren.
+
+Aktivierung:
+
+```powershell
+$env:AI_COACHING_ENABLED="true"
+$env:AI_COACHING_MODEL="gpt-5.5"
+$env:OPENAI_API_KEY="sk-..."
+uvicorn app.main:app --reload
+```
+
+Alternativ kann `.env.example` als Vorlage fuer eine lokale `.env` genutzt werden. Die App liest `.env` beim Start ein; bereits gesetzte Umgebungsvariablen haben Vorrang. `.env` ist absichtlich nicht versioniert.
+
+Hinweise:
+
+- Benoetigt wird ein OpenAI API-Key von `https://platform.openai.com/api-keys`.
+- Ein ChatGPT Pro Account ist nicht automatisch ein API-Key. Fuer API-Nutzung muss der Key im OpenAI-Platform-Account erzeugt und ggf. API-Billing aktiv sein.
+- Wenn `AI_COACHING_ENABLED=false` ist oder kein Key gesetzt wurde, funktioniert die normale Analyse unveraendert.
+- Die KI bekommt keine Rohkurven, sondern nur kompakte Fakten: Scorecard, Hauptprobleme, strukturierte Coaching-Ziele, Follow-up und Qualitaetshinweise.
+- Die KI darf keine Messwerte erfinden und ersetzt weder Speed-Berechnung noch Ranking.
+- Im Expertenmodus wird ein Hinweis angezeigt, falls KI aktiviert ist, aber nicht erzeugt werden konnte.
+
 ## Tests
 
 ```powershell
@@ -77,13 +101,13 @@ pytest
 ## KI-Vorbereitung fuer Coaching-Texte
 
 - Die technische Bewertung bleibt deterministisch und nachvollziehbar.
-- Eine spaetere KI-Erweiterung sollte nur die Formulierung der Coaching-Texte verbessern.
+- Die OpenAI-Erweiterung verbessert nur die Formulierung der Coaching-Texte.
 - Als Eingabe fuer KI eignen sich die strukturierten Fakten: Phase, Ziel, Messwerte vorher/nachher, Status und Leistungsprofil.
 - Die KI sollte keine Speed-Berechnung ersetzen und keine neuen Messwerte erfinden.
-- Empfohlener Ablauf fuer eine spaetere Version:
+- Ablauf:
   - Analyse erzeugt Fakten und Zielmetriken lokal.
-  - KI formuliert daraus einfache oder Experten-Coaching-Texte.
-  - UI markiert KI-Texte klar als Formulierungshilfe.
+  - KI formuliert daraus einfache oder Experten-Coaching-Texte per OpenAI Responses API.
+  - UI zeigt die KI-Texte als zusaetzlichen Coaching-Block.
   - Ohne KI-Schluessel funktioniert die bestehende lokale Analyse unveraendert weiter.
 
 ## Datenmodell

@@ -37,6 +37,22 @@ TARGET_ANGLE_BANDS = [
 ]
 
 
+def _load_local_env() -> None:
+    env_path = BASE_DIR / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        value = raw_value.strip().strip('"').strip("'")
+        os.environ[key] = value
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -44,4 +60,19 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw.strip().replace(",", "."))
+    except ValueError:
+        return default
+
+
+_load_local_env()
+
 COACH_VIEW_ENABLED = _env_flag("COACH_VIEW_ENABLED", False)
+AI_COACHING_ENABLED = _env_flag("AI_COACHING_ENABLED", False)
+AI_COACHING_MODEL = os.getenv("AI_COACHING_MODEL", "gpt-5.5").strip() or "gpt-5.5"
+AI_COACHING_TIMEOUT_S = _env_float("AI_COACHING_TIMEOUT_S", 12.0)

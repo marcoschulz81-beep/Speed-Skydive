@@ -184,6 +184,42 @@
     {% endif %}
 </section>
 
+{% if ai_coaching and ai_coaching.available %}
+<section class="panel">
+    <h2>KI-Coaching</h2>
+    {% if vm == "expert" %}
+    <p class="muted">Quelle: Messwerte, Scorecard, strukturierte Coaching-Ziele und Follow-up.</p>
+    {% endif %}
+    <div class="score-grid vertical-grid">
+        <div class="score-box">
+            <span class="k">Kurzfazit</span>
+            <p>{{ ai_coaching.summary }}</p>
+        </div>
+        <div class="score-box">
+            <span class="k">Haupthebel</span>
+            <p>{{ ai_coaching.main_issue }}</p>
+        </div>
+        <div class="score-box">
+            <span class="k">Coaching</span>
+            <p>{{ ai_coaching.coaching_text }}</p>
+        </div>
+        <div class="score-box">
+            <span class="k">Naechster Sprung</span>
+            <p>{{ ai_coaching.next_jump_focus }}</p>
+            {% if vm == "expert" %}
+            <span class="m">{{ ai_coaching.confidence_note }}</span>
+            <span class="m">Modell: {{ ai_coaching.model }}{% if ai_coaching.cached %}, Cache{% endif %}</span>
+            {% endif %}
+        </div>
+    </div>
+</section>
+{% elif vm == "expert" and ai_coaching and ai_coaching.enabled and ai_coaching.reason %}
+<section class="panel">
+    <h2>KI-Coaching</h2>
+    <p class="muted">{{ ai_coaching.reason }}</p>
+</section>
+{% endif %}
+
 {% if vm == "expert" and tip_follow_up and tip_follow_up.available %}
 <section class="panel">
     <h2>Tipp-Umsetzung Seit Letztem Sprung</h2>
