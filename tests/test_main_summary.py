@@ -5,6 +5,7 @@ from app.main import (
     _build_fs2_quality_issue_lines,
     _build_jump_brief_summary,
     _build_jump_brief_simple,
+    _build_scorecard_rows,
     _build_jumper_stability_reference,
     _build_tip_follow_up,
     _build_jumper_trend_rows,
@@ -119,6 +120,28 @@ def test_jump_brief_summary_uses_compact_sections_and_strips_priority_prefix():
     assert summary["key_facts"][0].startswith("Bestes 3s-Fenster:")
 
 
+def test_jump_brief_summary_hides_global_top5_basis_below_elite_speed():
+    report = {
+        "jump": {"file_name": "sub-elite.csv"},
+        "metrics": {
+            "best_3s_vVert_kmh": 401.0,
+            "best_3s_start_s": 22.0,
+            "best_3s_end_s": 25.0,
+        },
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 34.0},
+    }
+
+    summary = _build_jump_brief_summary(
+        report=report,
+        review={"happened": [], "good": [], "not_good": [], "improve": []},
+        scorecard_rows=[],
+        best_reference=None,
+        top_reference_jumps=[{"jump_id": "elite", "best_3s_vVert_kmh": 520.0}],
+    )
+
+    assert not any("Top-5" in line for line in summary["basis_lines"])
+
+
 def test_jump_brief_summary_actions_follow_timeline_and_focus_main_issues():
     report = {
         "jump": {"file_name": "timeline.csv"},
@@ -173,6 +196,197 @@ def test_jump_brief_summary_actions_follow_timeline_and_focus_main_issues():
     build_idx = next(i for i, item in enumerate(summary["actions"]) if "Bis +15s früher Druck aufbauen" in item)
     hot_idx = next(i for i, item in enumerate(summary["actions"]) if "Hot-Zone" in item)
     assert build_idx < hot_idx
+
+
+def test_jump_brief_summary_suppresses_pressure_tip_when_build_is_too_steep():
+    report = {
+        "jump": {"file_name": "too-steep.csv"},
+        "metrics": {
+            "best_3s_vVert_kmh": 416.0,
+            "best_3s_start_s": 21.0,
+            "best_3s_end_s": 24.0,
+        },
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 34.0},
+    }
+    review = {
+        "happened": [],
+        "good": [],
+        "not_good": [
+            "Bei +10s ist der Tauchwinkel fuer dein aktuelles stabiles Niveau zu steil.",
+            "In der Hot-Zone wechselst du seitlich mehrfach die Richtung.",
+        ],
+        "improve": [
+            "Prioritaet 1: Zwischen +10s und +20s mehr Druck aufbauen. Ziel: in diesem Abschnitt mindestens +180 km/h Zuwachs.",
+            "Prioritaet 2: Bis +10s zuerst stabil im Bereich 72.3 bis 76.5 Grad bleiben. Erst wenn die Linie bis +15s ruhig bleibt, schrittweise weiter steiler werden.",
+            "Prioritaet 3: Hot-Zone ruhiger halten.",
+        ],
+    }
+    scorecard_rows = [
+        {"name": "Aufbau 10-20s", "score": 45, "reason": "Der Tauchwinkel ist zu steil."},
+        {"name": "Hot-Zone", "score": 51, "reason": "In der Hot-Zone gibt es Nachkorrekturen."},
+    ]
+
+    summary = _build_jump_brief_summary(
+        report=report,
+        review=review,
+        scorecard_rows=scorecard_rows,
+        best_reference=None,
+        top_reference_jumps=[],
+    )
+
+    assert any("zuerst stabil" in item for item in summary["actions"])
+    assert not any("mehr Druck aufbauen" in item for item in summary["actions"])
+
+
+def test_jump_brief_summary_keeps_personal_stability_corridor_in_build_focus():
+    report = {
+        "jump": {"file_name": "stability-corridor.csv"},
+        "metrics": {
+            "best_3s_vVert_kmh": 438.6,
+            "best_3s_start_s": 23.9,
+            "best_3s_end_s": 26.9,
+        },
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 31.0},
+    }
+    review = {
+        "happened": [],
+        "good": [],
+        "not_good": ["Bei +20s wird der Winkel zu hart in die schnelle Phase geschoben."],
+        "improve": [
+            "Prioritaet 1: Bei +20s nicht ueber deinen persoenlichen Stabilitaetsbereich schieben: 77.3 bis 80.4 Grad.",
+            "Prioritaet 2: Die letzte schnelle Phase mit weniger Lenkimpulsen fliegen.",
+        ],
+    }
+
+    summary = _build_jump_brief_summary(
+        report=report,
+        review=review,
+        scorecard_rows=[
+            {"name": "Aufbau 10-20s", "score": 45, "reason": "Winkel wird zu steil."},
+            {"name": "Stabilitaet / Kipp-Risiko", "score": 50, "reason": "Linie wird unruhig."},
+        ],
+        best_reference=None,
+        top_reference_jumps=[],
+    )
+
+    assert "Aufbau 10-20s" in summary["summary"]
+
+
+def test_jump_brief_summary_uses_actual_issue_topics_for_focus_line():
+    report = {
+        "jump": {"file_name": "focus.csv"},
+        "metrics": {
+            "best_3s_vVert_kmh": 401.6,
+            "best_3s_start_s": 22.0,
+            "best_3s_end_s": 25.0,
+        },
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 34.0},
+    }
+    review = {
+        "happened": [],
+        "good": [],
+        "not_good": [
+            "Sobald du schnell wirst, wird die Linie unruhig mit Seitbewegung und Winkelschwankung.",
+            "Hot-Zone: Du kommst in die sehr schnelle Phase, haeltst sie aber nur kurz.",
+            "Stabilitaet / Kipp-Risiko: In der schnellen Phase verlierst du zu stark Vorwaertsbewegung.",
+        ],
+        "improve": [
+            "Prioritaet 1: Hot-Zone ruhiger halten.",
+            "Prioritaet 2: Die letzte schnelle Phase mit weniger Lenkimpulsen fliegen.",
+        ],
+    }
+    scorecard_rows = [
+        {
+            "name": "Aufbau 10-20s",
+            "score": 33,
+            "reason": "Der Aufbau ist sehr stark und dabei kontrolliert. Der Tauchwinkel ist dabei eher zu flach.",
+            "reason_lines": [
+                "Der Aufbau ist sehr stark und dabei kontrolliert.",
+                "Der Tauchwinkel ist dabei eher zu flach.",
+            ],
+        },
+        {"name": "Hot-Zone", "score": 48, "reason": "Du haeltst die schnelle Phase nur kurz."},
+        {"name": "Stabilitaet / Kipp-Risiko", "score": 43, "reason": "In der schnellen Phase verlierst du vHor."},
+    ]
+
+    summary = _build_jump_brief_summary(
+        report=report,
+        review=review,
+        scorecard_rows=scorecard_rows,
+        best_reference=None,
+        top_reference_jumps=[],
+    )
+
+    assert "Hot-Zone" in summary["summary"]
+    assert "Stabil" in summary["summary"]
+    assert "Aufbau 10-20s" not in summary["summary"]
+    assert not any("Tauchwinkel ist dabei" in item for item in summary["main_issues"])
+
+
+def test_jump_brief_summary_removes_duplicate_primary_transition_action():
+    report = {
+        "jump": {"file_name": "primary.csv"},
+        "metrics": {
+            "best_3s_vVert_kmh": 324.6,
+            "best_3s_start_s": 22.0,
+            "best_3s_end_s": 25.0,
+        },
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 31.0},
+    }
+    review = {
+        "happened": [],
+        "good": [],
+        "not_good": ["Der Winkel wird nicht gleichmaessig in die schnelle Phase gefuehrt."],
+        "improve": [
+            "Prioritaet 1: Den Uebergang in den Steilflug frueher und gleichmaessiger fahren.",
+            "Prioritaet 2: Nach dem Exit den Druck laenger tragen.",
+        ],
+        "primary_diagnosis": {
+            "available": True,
+            "pattern": "late_hard_steepening_vhor_collapse",
+            "title": "Zu harter Uebergang in den Steilflug",
+            "main_issue": "Der spaete harte Steilflug kostet vHor und Stabilitaet.",
+            "next_focus": "Ab +15s schrittweise Richtung 83 bis 85 Grad aufbauen und vHor halten.",
+        },
+    }
+
+    summary = _build_jump_brief_summary(
+        report=report,
+        review=review,
+        scorecard_rows=[{"name": "Hot-Zone", "score": 42, "reason": "vHor bricht ein."}],
+        best_reference=None,
+        top_reference_jumps=[],
+    )
+
+    assert summary["actions"][0].startswith("Ab +15s")
+    assert not any("Uebergang in den Steilflug" in item for item in summary["actions"][1:])
+
+
+def test_scorecard_low_reference_score_gets_reference_context():
+    report = _minimal_goal_follow_report(
+        jump_id="ref-score",
+        file_name="ref-score.csv",
+        angle_10=70.0,
+        angle_15=77.0,
+    )
+    marco_profile = {
+        "v10_ref": 430.0,
+        "carry_ref": 0.94,
+        "gain_10_20_ref": 324.0,
+        "angle_20_low": 83.8,
+        "angle_20_high": 86.0,
+        "dur_400_ref": 5.5,
+        "vhor_min_ref": 31.8,
+        "vvert_gain_20_25_ref": 36.6,
+        "turns_ref": 0.0,
+    }
+
+    rows = _build_scorecard_rows(report, marco_profile=marco_profile)
+    build_row = next(row for row in rows if row["name"] == "Aufbau 10-20s")
+
+    assert build_row["score"] < 70
+    assert "Referenzscore" in build_row["reason"]
+    assert "Referenzband" in build_row["reason"]
 
 
 def test_jump_brief_summary_strengths_remove_semantic_duplicates():
@@ -269,6 +483,12 @@ def test_ai_coaching_payload_uses_compact_facts_without_raw_chart_data():
         "strengths": ["Der Start war ruhig."],
         "actions": ["Bleib am Anfang ruhiger."],
     }
+    long_action = (
+        "Im Segment +10 bis +15s frueher Druck aufbauen, aber den Winkel nicht erzwingen "
+        "und die Linie ruhiger halten, damit der Zuwachs in Richtung stabiler Referenz geht. "
+        "Erst Stabilitaet sichern und nicht sofort steiler werden, sondern die aktuelle Linie ruhig halten."
+    )
+    jump_brief["actions"] = [long_action]
     scorecard_rows = [
         {"name": "Exit", "score": 82, "status": "gut", "reason": "Exit stabil."},
         {"name": "Aufbau 10-20s", "score": 55, "status": "kritisch", "reason": "Winkel steigt zu schnell."},
@@ -308,6 +528,47 @@ def test_ai_coaching_payload_uses_compact_facts_without_raw_chart_data():
     assert payload["jump"]["jump_context"] == "training"
     assert payload["performance_profile"]["performance_band"] == "schnell"
     assert payload["primary_diagnosis"]["available"] is False
+    assert payload["jump_brief"]["actions"][0] == long_action
+
+
+def test_ai_coaching_payload_simple_uses_expert_brief_for_focus_source():
+    report = {
+        "jump": {"jumper_name": "Test Jumper", "file_name": "ai.csv", "jump_context": "training"},
+        "metrics": {"best_3s_vVert_kmh": 416.2, "best_3s_start_s": 23.0, "best_3s_end_s": 26.0},
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 36.0},
+        "quality_flags": [],
+    }
+    expert_action = (
+        "Bis +10s zuerst stabil im Bereich 72.3 bis 76.5 Grad bleiben. "
+        "Erst wenn die Linie bis +15s ruhig bleibt, den Winkel in kleinen Schritten weiter aufbauen."
+    )
+    simple_action = "Aufbauphase: Zwischen +10s und +20s gleichmaessig weiter beschleunigen."
+
+    payload = _build_ai_coaching_payload(
+        report=report,
+        review={"happened": [], "good": [], "not_good": [], "coaching_goals": []},
+        jump_brief={
+            "summary": "Die groessten Baustellen liegen bei Aufbau 10-20s.",
+            "main_issues": ["Bei +10s ist der Tauchwinkel fuer dein stabiles Niveau zu steil."],
+            "strengths": ["Exit ruhig."],
+            "actions": [expert_action],
+        },
+        jump_brief_simple={
+            "summary": "Arbeite am Aufbau.",
+            "main_issues": ["Du wirst zu frueh zu steil."],
+            "strengths": ["Der Start war ruhig."],
+            "actions": [simple_action],
+        },
+        scorecard_rows=[],
+        tip_follow_up={"available": False},
+        jumper_summary={"performance_profile": {"available": False}},
+        quality_issue_lines=[],
+        view_mode="simple",
+    )
+
+    assert payload["view_mode"] == "simple"
+    assert payload["jump_brief"]["actions"] == [expert_action]
+    assert simple_action not in payload["jump_brief"]["actions"]
 
 
 def test_ai_payload_includes_primary_diagnosis_when_available():
@@ -362,8 +623,74 @@ def test_ai_payload_includes_primary_diagnosis_when_available():
     )
 
     assert payload["primary_diagnosis"]["available"] is True
-    assert payload["primary_diagnosis"]["pattern"] == "late_hard_steepening_vhor_collapse"
+    assert "pattern" not in payload["primary_diagnosis"]
     assert payload["primary_diagnosis"]["evidence"]["angle_peak"] == 86.4
+
+
+def test_ai_payload_includes_compact_technical_assessment():
+    report = {
+        "jump": {"jumper_name": "Test Jumper", "file_name": "ai.csv", "jump_context": "training"},
+        "metrics": {"best_3s_vVert_kmh": 430.0, "best_3s_start_s": 20.0, "best_3s_end_s": 23.0},
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 28.0},
+        "quality_flags": [],
+    }
+    review = {
+        "happened": [],
+        "good": [],
+        "not_good": [],
+        "coaching_goals": [],
+        "technical_assessment": {
+            "available": True,
+            "summary_line": "Technikmodell: 3s-Fenster kritisch.",
+            "best_window_quality": {
+                "available": True,
+                "label": "kritisch",
+                "vvert_std_kmh": 18.2,
+                "angle_std_deg": 2.4,
+                "vhor_min_kmh": 23.1,
+                "vvert_drop_after_kmh": 28.0,
+            },
+            "jerk_quality": {
+                "available": True,
+                "label": "unruhig",
+                "jerk_rms_mps3": 5.3,
+            },
+            "phases": [
+                {
+                    "name": "Hauptbeschleunigung",
+                    "start_s": 8.0,
+                    "end_s": 15.0,
+                    "angle_status": "too_steep",
+                    "avg_angle_deg": 84.5,
+                    "max_angle_deg": 87.2,
+                    "vvert_gain_kmh": 21.0,
+                    "min_vhor_kmh": 48.0,
+                    "acc_mean_mps2": 0.5,
+                    "steep_without_gain": True,
+                    "oversteep_vhor_cost": False,
+                }
+            ],
+            "issues": ["Das beste 3s-Fenster wirkt eher wie ein kurzer Peak."],
+            "actions": [{"text": "Im Peak nicht weiter nachdruecken."}],
+        },
+    }
+
+    payload = _build_ai_coaching_payload(
+        report=report,
+        review=review,
+        jump_brief={"summary": "Kurz.", "main_issues": [], "strengths": [], "actions": []},
+        jump_brief_simple={"summary": "Kurz.", "main_issues": [], "strengths": [], "actions": []},
+        scorecard_rows=[],
+        tip_follow_up={"available": False},
+        jumper_summary={"performance_profile": {"available": False}},
+        quality_issue_lines=[],
+        view_mode="expert",
+    )
+
+    assert payload["technical_assessment"]["available"] is True
+    assert payload["technical_assessment"]["best_window_quality"]["label"] == "kritisch"
+    assert payload["technical_assessment"]["phase_issues"][0]["name"] == "Hauptbeschleunigung"
+    assert "chart_data" not in str(payload["technical_assessment"])
 
 
 def test_simple_brief_prioritizes_primary_diagnosis():
@@ -631,6 +958,91 @@ def test_tip_follow_up_uses_structured_goal_metrics_before_text_fallback():
     assert follow_up["entries"][0]["goal_text"] == "Im Aufbau nicht zu schnell maximal steil werden."
     assert "Winkel +10s" in follow_up["entries"][0]["detail"]
     assert "Winkel +15s" in follow_up["entries"][0]["detail"]
+
+
+def test_tip_follow_up_compacts_duplicate_structured_goals_and_flags_quality():
+    previous_report = _minimal_goal_follow_report(
+        jump_id="prev",
+        file_name="previous.csv",
+        angle_10=75.0,
+        angle_15=83.0,
+    )
+    current_report = _minimal_goal_follow_report(
+        jump_id="current",
+        file_name="current.csv",
+        angle_10=73.5,
+        angle_15=84.5,
+    )
+    current_report["quality_flags"] = ["TIME_GAPS"]
+    previous_goals = [
+        {
+            "id": "angle_flatter",
+            "phase": "Aufbau 10-20s",
+            "text": "Im Aufbau flacher und ruhiger bleiben.",
+            "target_metrics": [
+                {
+                    "metric": "angle_10",
+                    "label": "Winkel +10s",
+                    "direction": "decrease",
+                    "min_delta": 1.0,
+                    "unit": " Grad",
+                    "decimals": 1,
+                },
+                {
+                    "metric": "angle_15",
+                    "label": "Winkel +15s",
+                    "direction": "decrease",
+                    "min_delta": 1.0,
+                    "unit": " Grad",
+                    "decimals": 1,
+                },
+            ],
+        },
+        {
+            "id": "efficiency_20_25_low",
+            "phase": "Hot-Zone",
+            "text": "Hot-Zone ruhiger halten.",
+            "target_metrics": [
+                {
+                    "metric": "vhor_min_20_25",
+                    "label": "vHor-Min 20-25s",
+                    "direction": "increase",
+                    "min_delta": 2.0,
+                    "unit": " km/h",
+                    "decimals": 1,
+                },
+            ],
+        },
+        {
+            "id": "vhor_price_20_25",
+            "phase": "Hot-Zone",
+            "text": "Ab +20s sauberer arbeiten.",
+            "target_metrics": [
+                {
+                    "metric": "vhor_min_20_25",
+                    "label": "vHor-Min 20-25s",
+                    "direction": "increase",
+                    "min_delta": 2.0,
+                    "unit": " km/h",
+                    "decimals": 1,
+                },
+            ],
+        },
+    ]
+
+    follow_up = _build_tip_follow_up(
+        current_report=current_report,
+        previous_report=previous_report,
+        marco_profile=_TEST_MARCO_PROFILE,
+        previous_coaching_goals=previous_goals,
+    )
+
+    assert follow_up["available"] is True
+    assert len(follow_up["entries"]) == 2
+    assert follow_up["entries"][0]["status_key"] == "gemischt"
+    assert follow_up["entries"][1]["phase"] == "Hot-Zone"
+    assert "ähnliche" in follow_up["entries"][1]["detail"]
+    assert "Zeitlücken" in follow_up["quality_note"]
 
 
 def test_view_mode_normalization_and_simple_status():

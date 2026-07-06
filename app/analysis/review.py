@@ -10,6 +10,14 @@ from app.text_utils import normalize_german_text
 
 from app.analysis.lateral import analyze_lateral_dynamics
 
+_TECHNICAL_PHASE_SPECS: list[dict[str, Any]] = [
+    {"name": "Exit / Stabilisierung", "start_s": 0.0, "end_s": 3.0, "angle_min": 0.0, "angle_max": 40.0},
+    {"name": "Dive-Aufbau", "start_s": 3.0, "end_s": 8.0, "angle_min": 60.0, "angle_max": 70.0},
+    {"name": "Hauptbeschleunigung", "start_s": 8.0, "end_s": 15.0, "angle_min": 75.0, "angle_max": 83.0},
+    {"name": "Hot-Zone Aufbau", "start_s": 15.0, "end_s": 22.0, "angle_min": 82.0, "angle_max": 86.0},
+    {"name": "Max-Speed Fenster", "start_s": 20.0, "end_s": 28.0, "angle_min": 83.0, "angle_max": 87.0},
+]
+
 
 def build_jump_review(
     report: dict[str, Any],
@@ -36,6 +44,11 @@ def build_jump_review(
     capability_mode = str(personal_profile.get("capability_mode") or "")
     capability_text = str(personal_profile.get("capability_text") or "").strip()
     performance_text = str(personal_profile.get("performance_text") or "").strip()
+    performance_band = str(personal_profile.get("performance_band") or "").strip().lower()
+    best_3s_kmh = _num(metrics.get("best_3s_vVert_kmh"))
+    allow_global_top5_coaching = performance_band == "elite" or (
+        best_3s_kmh is not None and best_3s_kmh >= 500.0
+    )
 
     if analysis_blocked:
         reason = analysis_block_reason or "Sprungdaten nicht korrekt. Sprung endet zu früh."
@@ -180,6 +193,36 @@ def build_jump_review(
         chart_data,
         eval_end_s=eval_end_s,
     )
+    technical_assessment = _technical_coaching_assessment(
+        chart_data=chart_data,
+        metrics=metrics,
+        eval_end_s=eval_end_s,
+    )
+    if technical_assessment.get("available"):
+        summary_line = str(technical_assessment.get("summary_line") or "").strip()
+        if summary_line:
+            happened.append(summary_line)
+        for strength in technical_assessment.get("strengths") or []:
+            strength_text = str(strength).strip()
+            if strength_text:
+                good.append(strength_text)
+        for issue in technical_assessment.get("issues") or []:
+            issue_text = str(issue).strip()
+            if issue_text:
+                not_good.append(issue_text)
+        for raw_action in technical_assessment.get("actions") or []:
+            if not isinstance(raw_action, dict):
+                continue
+            action_key = str(raw_action.get("key") or "").strip()
+            action_text = str(raw_action.get("text") or "").strip()
+            action_score = int(raw_action.get("score") or 0)
+            if action_key and action_text:
+                _add_action(
+                    actions_by_key,
+                    key=action_key,
+                    score=action_score,
+                    text=action_text,
+                )
     if exit_carry.get("available"):
         happened.append(
             "Exit-Mitnahme: acc 0-2s "
@@ -402,7 +445,7 @@ def build_jump_review(
                 key="phase_10_15_below_corridor",
                 score=8,
                 text=(
-                    "Im Segment +10 bis +15s früher Druck aufbauen und die Linie ruhiger halten, "
+                    "Im Segment +10 bis +15s früher Druck aufbauen, aber den Winkel nicht erzwingen und die Linie ruhiger halten, "
                     f"damit der Zuwachs in Richtung +{phase_10_15_low:.0f} km/h geht.{mode_hint}"
                 ),
             )
@@ -427,7 +470,7 @@ def build_jump_review(
                 key="phase_15_20_below_corridor",
                 score=8,
                 text=(
-                    "Im Segment +15 bis +20s Druck gleichmäßig weiterziehen und kleine, frühe Korrekturen setzen, "
+                    "Im Segment +15 bis +20s Druck gleichmäßig weiterziehen, ohne den Winkel hart zu erzwingen, "
                     f"damit der Zuwachs wieder Richtung +{phase_15_20_low:.0f} km/h geht.{mode_hint}"
                 ),
             )
@@ -766,7 +809,7 @@ def build_jump_review(
             score=10,
             text=(
                 f"Bis +10s zuerst stabil im Bereich {a10_text} bleiben. "
-                "Erst wenn die Linie bis +15s ruhig bleibt, schrittweise weiter steiler werden."
+                "Erst wenn die Linie bis +15s ruhig bleibt, den Winkel in kleinen Schritten weiter aufbauen."
             ),
         )
 
@@ -821,8 +864,9 @@ def build_jump_review(
                     key="angle_20_personal_steep",
                     score=7,
                     text=(
-                        "Im Aufbau bis +20s etwas flacher bleiben und den Winkel stabil im eigenen Korridor halten: "
-                        f"{target_angle_low:.1f} bis {target_angle_high:.1f} Grad."
+                        "Bei +20s nicht über deinen persönlichen Stabilitätsbereich schieben: "
+                        f"{target_angle_low:.1f} bis {target_angle_high:.1f} Grad. "
+                        "Erst vHor und Linie stabilisieren, dann später wieder steiler pushen."
                     ),
                 )
     if scorecard.get("hot_zone") in {"stabil", "sehr gut"}:
@@ -1194,7 +1238,7 @@ def build_jump_review(
                 )
 
     reference_compares: list[dict[str, Any]] = []
-    if top_reference_compares:
+    if top_reference_compares and allow_global_top5_coaching:
         reference_compares = [item for item in top_reference_compares if isinstance(item, dict)]
     elif external_compare is not None:
         # Backward compatibility: if no top-5 set is provided, keep single external reference behavior.
@@ -1369,6 +1413,7 @@ def build_jump_review(
         "improve": improve,
         "coaching_goals": coaching_goals,
         "primary_diagnosis": primary_diagnosis,
+        "technical_assessment": technical_assessment if technical_assessment.get("available") else {"available": False},
     }
 
 
@@ -1593,6 +1638,341 @@ def _effective_eval_window_end_s(*, notes: dict[str, Any], chart_data: dict[str,
     if max_time is not None:
         end_s = min(end_s, float(max_time))
     return end_s if end_s >= 8.0 else None
+
+
+def _technical_coaching_assessment(
+    *,
+    chart_data: dict[str, Any],
+    metrics: dict[str, Any],
+    eval_end_s: float | None,
+) -> dict[str, Any]:
+    phases = _technical_phase_model_analysis(chart_data=chart_data, eval_end_s=eval_end_s)
+    window_quality = _best_3s_window_quality_analysis(chart_data=chart_data, metrics=metrics)
+    jerk_quality = _jerk_quality_analysis(chart_data=chart_data, eval_end_s=eval_end_s)
+
+    available = bool(phases) or bool(window_quality.get("available")) or bool(jerk_quality.get("available"))
+    if not available:
+        return {"available": False}
+
+    strengths: list[str] = []
+    issues: list[str] = []
+    actions: list[dict[str, Any]] = []
+
+    if window_quality.get("available"):
+        label = str(window_quality.get("label") or "")
+        if label == "stabil":
+            strengths.append("Das beste 3s-Fenster ist technisch ruhig genug und wirkt reproduzierbar.")
+        elif label in {"unruhig", "kritisch"}:
+            quality_causes = _best_window_quality_cause_texts(window_quality)
+            cause_text = ", ".join(quality_causes) if quality_causes else "Qualitaet auffaellig"
+            issues.append(
+                "Das beste 3s-Fenster wirkt eher wie ein kurzer Peak als wie ein sauber gehaltenes Speed-Fenster "
+                f"({cause_text})."
+            )
+            actions.append(
+                {
+                    "key": "best_3s_window_quality",
+                    "score": 8 if label == "kritisch" else 7,
+                    "text": (
+                        "Im Peak nicht weiter nachdruecken: die beste 3s-Zone ruhiger halten, "
+                        "vHor nicht abreissen lassen und Korrekturen vor dem Fenster kleiner setzen."
+                    ),
+                }
+            )
+
+    for phase in phases:
+        if phase.get("steep_without_gain"):
+            issues.append(
+                f"{phase['name']}: Der Winkel wird steiler, aber die vertikale Beschleunigung profitiert kaum "
+                f"(Winkel +{phase['angle_gain_deg']:.1f} Grad, vVert +{phase['vvert_gain_kmh']:.1f} km/h, "
+                f"acc {phase['acc_mean_mps2']:.2f} m/s2)."
+            )
+            actions.append(
+                {
+                    "key": f"phase_efficiency_{phase['key']}",
+                    "score": 8,
+                    "text": (
+                        f"In der Phase {phase['name']} den Winkel nicht einfach weiter aufdruecken. "
+                        "Erst Druck und Linie stabilisieren, dann nur so weit steiler werden, wie vVert weiter sauber steigt."
+                    ),
+                }
+            )
+        if phase.get("oversteep_vhor_cost"):
+            issues.append(
+                f"{phase['name']}: Sehr steiler Winkel bei knapper vHor-Reserve "
+                f"(Winkel-Max {phase['max_angle_deg']:.1f} Grad, vHor-Min {phase['min_vhor_kmh']:.1f} km/h)."
+            )
+            actions.append(
+                {
+                    "key": f"phase_oversteep_vhor_{phase['key']}",
+                    "score": 8,
+                    "text": (
+                        f"In der Phase {phase['name']} die horizontale Reserve schuetzen: "
+                        "nicht uebersteilen, kleine fruehe Korrekturen setzen und vHor stabil halten."
+                    ),
+                }
+            )
+
+    if jerk_quality.get("available") and jerk_quality.get("label") in {"unruhig", "kritisch"}:
+        issues.append(
+            "Die Beschleunigung wirkt unruhig; das passt zu harten Korrekturen statt einer gleichmaessigen Linie "
+            f"(Jerk-RMS {jerk_quality['jerk_rms_mps3']:.1f} m/s3)."
+        )
+        actions.append(
+            {
+                "key": "jerk_correction_unrest",
+                "score": 7,
+                "text": (
+                    "Korrekturen frueher und kleiner setzen, damit die Beschleunigungskurve ruhiger wird "
+                    "und der Speed nicht durch harte Gegenbewegungen verloren geht."
+                ),
+            }
+        )
+
+    summary_bits: list[str] = []
+    if window_quality.get("available"):
+        summary_bits.append(f"3s-Fenster {window_quality.get('label')}")
+    if phases:
+        bad_phase = next((phase for phase in phases if phase.get("steep_without_gain") or phase.get("oversteep_vhor_cost")), None)
+        if bad_phase is not None:
+            summary_bits.append(f"auffaellige Phase: {bad_phase['name']}")
+    if jerk_quality.get("available") and jerk_quality.get("label") != "ruhig":
+        summary_bits.append(f"Beschleunigungsruhe {jerk_quality.get('label')}")
+
+    return {
+        "available": True,
+        "summary_line": "" if not summary_bits else "Technikmodell: " + ", ".join(summary_bits) + ".",
+        "phases": phases,
+        "best_window_quality": window_quality,
+        "jerk_quality": jerk_quality,
+        "strengths": _unique_keep_order(strengths)[:2],
+        "issues": _unique_keep_order(issues)[:3],
+        "actions": actions[:3],
+    }
+
+
+def _technical_phase_model_analysis(
+    *,
+    chart_data: dict[str, Any],
+    eval_end_s: float | None,
+) -> list[dict[str, Any]]:
+    time_s = chart_data.get("time_s", []) or []
+    if not time_s:
+        return []
+    max_time = max((float(v) for raw in time_s for v in [_num(raw)] if v is not None), default=None)
+    if max_time is None:
+        return []
+    eval_end = float(min(max_time, eval_end_s if eval_end_s is not None else max_time))
+    out: list[dict[str, Any]] = []
+    for spec in _TECHNICAL_PHASE_SPECS:
+        start_s = float(spec["start_s"])
+        end_s = min(float(spec["end_s"]), eval_end)
+        if end_s <= start_s + 0.75:
+            continue
+        phase = _phase_measurement(chart_data=chart_data, start_s=start_s, end_s=end_s)
+        if not phase.get("available"):
+            continue
+        target_low = float(spec["angle_min"])
+        target_high = float(spec["angle_max"])
+        avg_angle = float(phase["avg_angle_deg"])
+        max_angle = float(phase["max_angle_deg"])
+        min_vhor = float(phase["min_vhor_kmh"])
+        vvert_gain = float(phase["vvert_gain_kmh"])
+        angle_gain = float(phase["angle_gain_deg"])
+        acc_mean = float(phase["acc_mean_mps2"])
+        positive_acc_ratio = float(phase["positive_acc_ratio"])
+        is_build_phase = start_s < 15.0
+        steep_without_gain = bool(
+            is_build_phase
+            and angle_gain >= 5.5
+            and max_angle > target_high + 1.0
+            and (acc_mean < 1.15 or positive_acc_ratio < 0.58 or vvert_gain < (30.0 if end_s <= 8.0 else 45.0))
+        )
+        oversteep_vhor_cost = bool(
+            start_s >= 15.0
+            and max_angle > target_high + 1.2
+            and min_vhor < 28.0
+        )
+        out.append(
+            {
+                **phase,
+                "key": str(spec["name"]).lower().replace(" ", "_").replace("/", "_"),
+                "name": str(spec["name"]),
+                "target_angle_low": target_low,
+                "target_angle_high": target_high,
+                "angle_status": _phase_angle_status(avg_angle=avg_angle, target_low=target_low, target_high=target_high),
+                "steep_without_gain": steep_without_gain,
+                "oversteep_vhor_cost": oversteep_vhor_cost,
+            }
+        )
+    return out
+
+
+def _phase_measurement(*, chart_data: dict[str, Any], start_s: float, end_s: float) -> dict[str, Any]:
+    t_angle, angle = _window_series(chart_data, "angle_deg", start_s=start_s, end_s=end_s)
+    t_vvert, vvert = _window_series(chart_data, "vVert_kmh", start_s=start_s, end_s=end_s)
+    t_vhor, vhor = _window_series(chart_data, "vHor_kmh", start_s=start_s, end_s=end_s)
+    t_acc, acc = _window_series(chart_data, "accVert_mps2", start_s=start_s, end_s=end_s)
+    if len(angle) < 4 or len(vvert) < 4 or len(vhor) < 4:
+        return {"available": False}
+    if not (len(t_angle) == len(angle) and len(t_vvert) == len(vvert) and len(t_vhor) == len(vhor)):
+        return {"available": False}
+    t_arr = np.asarray(t_vvert, dtype=float)
+    vvert_arr = np.asarray(vvert, dtype=float)
+    angle_arr = np.asarray(angle, dtype=float)
+    vhor_arr = np.asarray(vhor, dtype=float)
+    acc_arr = np.asarray(acc, dtype=float) if len(acc) >= 3 else np.asarray([], dtype=float)
+
+    v_start = _interp(t_arr, vvert_arr, start_s)
+    v_end = _interp(t_arr, vvert_arr, end_s)
+    angle_start = _interp(np.asarray(t_angle, dtype=float), angle_arr, start_s)
+    angle_end = _interp(np.asarray(t_angle, dtype=float), angle_arr, end_s)
+    if None in {v_start, v_end, angle_start, angle_end}:
+        return {"available": False}
+
+    finite_acc = acc_arr[np.isfinite(acc_arr)]
+    acc_mean = float(np.mean(finite_acc)) if len(finite_acc) else 0.0
+    positive_acc_ratio = float(np.mean(finite_acc > 0.0)) if len(finite_acc) else 0.0
+    return {
+        "available": True,
+        "start_s": round(start_s, 2),
+        "end_s": round(end_s, 2),
+        "avg_angle_deg": float(np.mean(angle_arr)),
+        "max_angle_deg": float(np.max(angle_arr)),
+        "min_angle_deg": float(np.min(angle_arr)),
+        "avg_vvert_kmh": float(np.mean(vvert_arr)),
+        "vvert_gain_kmh": float(float(v_end) - float(v_start)),
+        "avg_vhor_kmh": float(np.mean(vhor_arr)),
+        "min_vhor_kmh": float(np.min(vhor_arr)),
+        "angle_gain_deg": float(float(angle_end) - float(angle_start)),
+        "acc_mean_mps2": acc_mean,
+        "positive_acc_ratio": positive_acc_ratio,
+    }
+
+
+def _best_3s_window_quality_analysis(*, chart_data: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
+    start_s = _num(metrics.get("best_3s_start_s"))
+    end_s = _num(metrics.get("best_3s_end_s"))
+    if start_s is None or end_s is None or end_s <= start_s:
+        return {"available": False}
+    t_vvert, vvert = _window_series(chart_data, "vVert_kmh", start_s=float(start_s), end_s=float(end_s))
+    _, vhor = _window_series(chart_data, "vHor_kmh", start_s=float(start_s), end_s=float(end_s))
+    _, angle = _window_series(chart_data, "angle_deg", start_s=float(start_s), end_s=float(end_s))
+    _, acc = _window_series(chart_data, "accVert_mps2", start_s=float(start_s), end_s=float(end_s))
+    if len(vvert) < 5 or len(vhor) < 5 or len(angle) < 5:
+        return {"available": False}
+
+    vvert_std = float(pstdev(vvert)) if len(vvert) >= 2 else 0.0
+    angle_std = float(pstdev(angle)) if len(angle) >= 2 else 0.0
+    vhor_min = float(min(vhor))
+    acc_mean = float(mean(acc)) if acc else 0.0
+    after_end = float(end_s) + 2.0
+    _, vvert_after = _window_series(chart_data, "vVert_kmh", start_s=float(end_s), end_s=after_end)
+    drop_after = 0.0
+    if vvert_after:
+        drop_after = max(0.0, float(max(vvert) - min(vvert_after)))
+
+    score = 0
+    if vvert_std > 16.0:
+        score += 2
+    elif vvert_std > 10.0:
+        score += 1
+    if angle_std > 2.2:
+        score += 2
+    elif angle_std > 1.2:
+        score += 1
+    if vhor_min < 25.0:
+        score += 2
+    elif vhor_min < 30.0:
+        score += 1
+    if acc_mean < -0.4:
+        score += 1
+    if drop_after > 22.0:
+        score += 1
+
+    label = "stabil"
+    if score >= 4:
+        label = "kritisch"
+    elif score >= 2:
+        label = "unruhig"
+
+    return {
+        "available": True,
+        "label": label,
+        "start_s": float(start_s),
+        "end_s": float(end_s),
+        "vvert_std_kmh": vvert_std,
+        "angle_std_deg": angle_std,
+        "vhor_min_kmh": vhor_min,
+        "acc_mean_mps2": acc_mean,
+        "vvert_drop_after_kmh": drop_after,
+    }
+
+
+def _best_window_quality_cause_texts(window_quality: dict[str, Any]) -> list[str]:
+    causes: list[str] = []
+    vvert_std = _num(window_quality.get("vvert_std_kmh"))
+    angle_std = _num(window_quality.get("angle_std_deg"))
+    vhor_min = _num(window_quality.get("vhor_min_kmh"))
+    acc_mean = _num(window_quality.get("acc_mean_mps2"))
+    drop_after = _num(window_quality.get("vvert_drop_after_kmh"))
+
+    if vvert_std is not None and vvert_std > 10.0:
+        causes.append(f"vVert-Streuung {vvert_std:.1f} km/h")
+    if angle_std is not None and angle_std > 1.2:
+        causes.append(f"Winkelstreuung {angle_std:.1f} Grad")
+    if vhor_min is not None and vhor_min < 30.0:
+        causes.append(f"vHor-Min {vhor_min:.1f} km/h")
+    if acc_mean is not None and acc_mean < -0.4:
+        causes.append(f"negative Beschleunigung {acc_mean:.2f} m/s2")
+    if drop_after is not None and drop_after > 22.0:
+        causes.append(f"Speed-Drop danach {drop_after:.1f} km/h")
+    return causes
+
+
+def _jerk_quality_analysis(*, chart_data: dict[str, Any], eval_end_s: float | None) -> dict[str, Any]:
+    time_s = chart_data.get("time_s", []) or []
+    if not time_s:
+        return {"available": False}
+    end_s = eval_end_s
+    if end_s is None:
+        end_s = max((float(v) for raw in time_s for v in [_num(raw)] if v is not None), default=0.0)
+    end_s = min(float(end_s), 28.0)
+    t_acc, acc = _window_series(chart_data, "accVert_mps2", start_s=3.0, end_s=end_s)
+    if len(t_acc) < 12 or len(acc) < 12:
+        return {"available": False}
+    acc_s = np.asarray(_moving_average(acc, window=5), dtype=float)
+    t_arr = np.asarray(t_acc, dtype=float)
+    dt = np.diff(t_arr)
+    if len(dt) < 8 or float(np.nanmedian(dt)) <= 0.0:
+        return {"available": False}
+    jerk = np.gradient(acc_s, t_arr)
+    jerk = jerk[np.isfinite(jerk)]
+    if len(jerk) < 8:
+        return {"available": False}
+    jerk_rms = float(np.sqrt(np.mean(jerk ** 2)))
+    jerk_p95 = float(np.nanpercentile(np.abs(jerk), 95))
+    label = "ruhig"
+    if jerk_rms >= 7.0 or jerk_p95 >= 18.0:
+        label = "kritisch"
+    elif jerk_rms >= 4.5 or jerk_p95 >= 12.0:
+        label = "unruhig"
+    return {
+        "available": True,
+        "label": label,
+        "start_s": 3.0,
+        "end_s": float(end_s),
+        "jerk_rms_mps3": jerk_rms,
+        "jerk_p95_abs_mps3": jerk_p95,
+    }
+
+
+def _phase_angle_status(*, avg_angle: float, target_low: float, target_high: float) -> str:
+    if avg_angle < target_low - 1.5:
+        return "too_flat"
+    if avg_angle > target_high + 1.0:
+        return "too_steep"
+    return "in_band"
 
 
 def _build_phase_detail_lines(
@@ -2089,6 +2469,28 @@ def _action_phase_rank(*, key: str, text: str) -> int:
     if any(normalize_german_text(token) in text_l for token in ["absprung", "nach dem exit", "ersten 2 sekunden", "startphase"]):
         return 0
 
+    if any(
+        token in key_l
+        for token in [
+            "segment_20_25",
+            "vhor_mid",
+            "vhor_tail",
+            "vhor_price_20_25",
+            "efficiency_20_25",
+            "lateral_",
+            "forward_track",
+            "peak",
+            "hold_",
+            "tail",
+            "top5_hold",
+            "vhor_gap_to_reference",
+        ]
+    ) or any(
+        normalize_german_text(token) in text_l
+        for token in ["hot-zone", "hot-phase", "peak-phase", "peak-bereich", "+20 bis +25", "20-25s", "schlussteil"]
+    ):
+        return 2
+
     # 1: Aufbau (10-20s)
     if any(token in key_l for token in ["build", "angle_", "top5_build", "vvert_gap_20"]):
         return 1
@@ -2109,7 +2511,6 @@ def _action_phase_rank(*, key: str, text: str) -> int:
             "peak",
             "hold_",
             "tail",
-            "corridor",
             "top5_hold",
             "vhor_gap_to_reference",
         ]
@@ -2238,15 +2639,30 @@ def _build_priority_action_items(
     )
     out: list[dict[str, Any]] = []
     seen_texts: set[str] = set()
+    seen_families: set[str] = set()
     for key, item in ordered:
         text = str(item.get("text", "")).strip()
         if not text:
             continue
         if text in seen_texts:
             continue
-        seen_texts.add(text)
-        idx = len(out) + 1
         phase_rank = _action_phase_rank(key=str(key), text=text)
+        target_metrics = _goal_metrics_for_action(
+            key=str(key),
+            text=text,
+            phase_rank=phase_rank,
+        )
+        family = _action_goal_family(
+            key=str(key),
+            text=text,
+            phase_rank=phase_rank,
+            target_metrics=target_metrics,
+        )
+        if family in seen_families:
+            continue
+        seen_texts.add(text)
+        seen_families.add(family)
+        idx = len(out) + 1
         out.append(
             {
                 "id": str(key),
@@ -2255,16 +2671,62 @@ def _build_priority_action_items(
                 "text": text,
                 "display_text": f"Priorität {idx}: {text}",
                 "score": int(item.get("score", 0)),
-                "target_metrics": _goal_metrics_for_action(
-                    key=str(key),
-                    text=text,
-                    phase_rank=phase_rank,
-                ),
+                "target_metrics": target_metrics,
             }
         )
         if len(out) >= max_items:
             break
     return out
+
+
+def _action_goal_family(
+    *,
+    key: str,
+    text: str,
+    phase_rank: int,
+    target_metrics: list[dict[str, Any]],
+) -> str:
+    key_l = normalize_german_text(key)
+    text_l = normalize_german_text(text)
+    metric_names = {str(item.get("metric") or "") for item in target_metrics}
+
+    if key_l == "late_hard_steepening_vhor_collapse":
+        return "build_to_peak_transition"
+    if "v10" in metric_names or "carry_ratio" in metric_names:
+        return "exit_pressure"
+    if metric_names.intersection({"angle_10", "angle_15", "angle_20"}):
+        if "gain_10_20" not in metric_names:
+            return "build_angle"
+    if "gain_10_20" in metric_names and not metric_names.intersection({"vhor_min_20_25", "dur_400"}):
+        return "build_speed"
+    if metric_names.intersection({"vhor_min_20_25", "dur_400"}):
+        return "hot_zone_control"
+    if "negative_risk_score" in metric_names or "kipp" in key_l or "stability" in key_l:
+        return "stability_control"
+    if any(
+        token in key_l
+        for token in [
+            "segment_20_25",
+            "vhor",
+            "efficiency",
+            "peak",
+            "hold",
+            "lateral",
+            "tail",
+            "corridor",
+            "forward_track",
+        ]
+    ) or any(token in text_l for token in ["hot-zone", "peak", "20-25s", "ab +20s"]):
+        return "hot_zone_control"
+    if phase_rank == 0:
+        return "exit_pressure"
+    if phase_rank == 1:
+        return "build_general"
+    if phase_rank == 2:
+        return "hot_zone_control"
+    if phase_rank == 3:
+        return "stability_control"
+    return f"general:{key_l}"
 
 
 def _phase_label_for_rank(rank: int) -> str:
@@ -2309,13 +2771,39 @@ def _goal_metrics_for_action(*, key: str, text: str, phase_rank: int) -> list[di
     if phase_rank == 0 or any(token in key_l for token in ["exit", "early", "carryover"]):
         add("v10", "vVert +10s", "increase", min_delta=8.0, unit=" km/h")
         add("carry_ratio", "Druck-Mitnahme", "increase", min_delta=0.04, unit="", decimals=2)
-    if any(token in key_l for token in ["too_steep", "angle_flatter", "early_steep", "steep_not_hold"]):
+    stability_first_guardrail = any(
+        token in key_l
+        for token in ["safe_limit"]
+    ) or any(
+        token in text_l
+        for token in [
+            "nicht sofort steiler",
+            "erst stabilitaet sichern",
+            "erst stabilität sichern",
+            "zuerst stabil",
+            "erst wenn die linie",
+            "linie ruhig halten",
+        ]
+    )
+    needs_flatter_angle = any(
+        token in key_l
+        for token in ["too_steep", "angle_flatter", "early_steep", "steep_not_hold", "personal_steep", "safe_limit"]
+    ) or any(token in text_l for token in ["flacher", "zu steil", "maximal steil"])
+    needs_steeper_angle = any(
+        token in key_l
+        for token in ["angle_steeper", "personal_flat"]
+    ) or any(token in text_l for token in ["zu flach", "anheben", "steiler werden"])
+    if stability_first_guardrail and not any(token in key_l for token in ["angle_steeper", "personal_flat"]):
+        needs_steeper_angle = False
+    if needs_flatter_angle:
         add("angle_10", "Winkel +10s", "decrease", min_delta=1.0, unit=" Grad")
         add("angle_15", "Winkel +15s", "decrease", min_delta=1.0, unit=" Grad")
         add("angle_turns_20_25", "Korrekturen 20-25s", "decrease", min_delta=1.0, unit="", decimals=0)
     if any(token in key_l for token in ["build", "below_corridor", "gain", "vvert_gap", "angle_steeper"]):
         add("gain_10_20", "Zuwachs +10 bis +20s", "increase", min_delta=12.0, unit=" km/h")
-    if "angle_steeper" in key_l or "flach" in text_l:
+    if needs_flatter_angle:
+        add("angle_20", "Winkel +20s", "decrease", min_delta=1.0, unit=" Grad")
+    elif needs_steeper_angle:
         add("angle_20", "Winkel +20s", "increase", min_delta=1.0, unit=" Grad")
     if phase_rank == 2 or any(
         token in key_l
@@ -2754,11 +3242,11 @@ def _angle_target_for_steep(angle_20: float | None, *, profile: dict[str, Any] |
             cap = min(cap, target_low + max(0.8, (target_high - target_low) * 0.6))
         if angle_20 is not None and risk_above is not None and angle_20 >= risk_above:
             return (
-                f"im nächsten Sprung klar flacher planen: bei +20s zuerst den Zielkorridor "
-                f"{target_low:.1f} bis {cap:.1f} Grad anpeilen."
+                f"im nächsten Sprung klarer stabilisieren: bei +20s zuerst den persönlichen Stabilitätsbereich "
+                f"{target_low:.1f} bis {cap:.1f} Grad anpeilen, nicht sofort steiler pushen."
             )
         return (
-            "im nächsten Sprung etwas flacher bleiben und den Winkel stabil im Zielkorridor "
+            "im nächsten Sprung etwas flacher bleiben und den Winkel zuerst im persönlichen Stabilitätsbereich "
             f"{target_low:.1f} bis {cap:.1f} Grad halten."
         )
     if angle_20 is None:

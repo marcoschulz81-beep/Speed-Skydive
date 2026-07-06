@@ -46,6 +46,44 @@ Danach: `http://127.0.0.1:8000`
 
 Die technische Analyse bleibt lokal und deterministisch. OpenAI wird nur genutzt, um aus den bereits berechneten Fakten bessere Coaching-Texte zu formulieren.
 
+### Coaching-Bewertung ab aktueller Version
+
+Die Reporte nutzen jetzt eine klarere Coaching-Bewertung statt paralleler, doppelter Textbloecke:
+
+- Wenn KI-Coaching verfuegbar ist, ersetzt der KI-Coaching-Block den alten Sprungbewertungs-Textblock.
+- Wenn KI-Coaching deaktiviert ist oder kein API-Key gesetzt wurde, bleibt die lokale Regelanalyse als Fallback aktiv.
+- Die einfache Ansicht zeigt bewusst nur:
+  - einfache Coaching-Erklaerung
+  - konkreter Trainingsfokus fuer den naechsten Sprung
+- Die Expertenansicht zeigt zusaetzlich technische Details:
+  - Kurzfazit
+  - Hauptdiagnose/Coaching-Erklaerung
+  - konkreter Trainingsfokus
+  - Technikmodell, Zielwinkel und 3s-Fenster-Qualitaet
+  - Umsetzung des letzten Fokus
+
+Die KI darf keine neuen Messwerte erfinden. Quelle der Wahrheit bleibt die lokale Analyse aus CSV-Daten, Scorecard, Hauptdiagnose, Technikmodell, strukturierten Zielen und Qualitaetsflags.
+
+### Bewertungslogik fuer Coaching
+
+Die Coaching-Bewertung betrachtet einen Sprung nicht nur ueber die Top-Speed-Zahl, sondern ueber mehrere technische Blickwinkel:
+
+- Timing und Aufbau bis +10s, +15s und +20s
+- persoenlicher Stabilitaetskorridor fuer Winkel und Speed-Aufbau
+- Hot-Zone-Effizienz: zusaetzlicher Speed pro Hoehenverlust
+- Vorwaertsreserve in der schnellen Phase
+- Qualitaet des besten 3s-Fensters: gehaltenes Fenster oder kurzer Peak
+- Korrekturverhalten: seitliche Bewegung, Richtungsdrehen, Winkelschwankungen und Beschleunigungsruhe
+- Rueckblick, ob der letzte Trainingsfokus umgesetzt wurde
+
+Damit werden Springer mit aehnlicher Geschwindigkeit nicht automatisch gleich bewertet. Ein Sprung mit zu fruehem steilem Aufbau bekommt andere Hinweise als ein Sprung, der erst in der Mitte oder am Ende unruhig wird.
+
+### Einfache Ansicht vs. Expertenansicht
+
+Die einfache Ansicht vermeidet interne Begriffe wie `vHor`, `vVert`, `Jerk`, `RMS`, technische Payload-Felder oder KI-Systemdetails. Sie formuliert stattdessen in Coach-Sprache: Vorwaertsbewegung, vertikale Geschwindigkeit, harte Korrekturen, Geschwindigkeitseinbruch und 3s-Fenster.
+
+Die Expertenansicht darf technische Messwerte und Fachbegriffe zeigen, damit die Analyse nachvollziehbar bleibt.
+
 ### Online-Deployment
 
 Fuer die Onlineversion wird der OpenAI-Key zentral im Backend als Secret gesetzt. Nutzer tragen keinen eigenen Key ein und der Browser erhaelt den Key nie.
