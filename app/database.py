@@ -108,6 +108,22 @@ def init_db() -> None:
             );
 
             CREATE INDEX IF NOT EXISTS idx_metrics_best_3s ON metrics(best_3s_vVert_kmh DESC);
+
+            CREATE TABLE IF NOT EXISTS jump_feedback (
+                jump_id TEXT PRIMARY KEY,
+                feedback_text TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(jump_id) REFERENCES jumps(jump_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS coaching_snapshots (
+                jump_id TEXT PRIMARY KEY,
+                snapshot_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(jump_id) REFERENCES jumps(jump_id) ON DELETE CASCADE
+            );
             """
         )
 

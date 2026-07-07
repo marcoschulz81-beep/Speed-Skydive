@@ -11,6 +11,7 @@ from app.analysis.curve_window import detect_curve_window
 from app.database import get_connection
 
 VALID_JUMP_CONTEXTS = {"unknown", "training", "competition"}
+MAX_JUMP_FEEDBACK_CHARS = 2000
 
 
 def normalize_jump_context(raw: Any, *, default: str = "unknown") -> str:
@@ -18,6 +19,15 @@ def normalize_jump_context(raw: Any, *, default: str = "unknown") -> str:
     if value in VALID_JUMP_CONTEXTS:
         return value
     return default
+
+
+def normalize_jump_feedback_text(raw: Any) -> str:
+    raw_text = str(raw or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [" ".join(line.split()) for line in raw_text.split("\n")]
+    text = "\n".join(line for line in lines).strip()
+    if len(text) > MAX_JUMP_FEEDBACK_CHARS:
+        return text[:MAX_JUMP_FEEDBACK_CHARS].rstrip()
+    return text
 
 
 def save_analysis_result(
@@ -100,6 +110,7 @@ def replace_analysis_result(
             "SELECT jump_context FROM jumps WHERE jump_id = ? LIMIT 1",
             (jump_id,),
         ).fetchone()
+        feedback_text = _fetch_jump_feedback_text(conn=conn, jump_id=jump_id)
         resolved_context = normalize_jump_context(
             jump_context if jump_context is not None else (None if existing is None else existing["jump_context"])
         )
@@ -112,6 +123,8 @@ def replace_analysis_result(
             source_file_sha256=source_file_sha256,
             source_file_path=source_file_path,
         )
+        if feedback_text:
+            _upsert_jump_feedback(conn=conn, jump_id=jump_id, feedback_text=feedback_text)
         conn.commit()
     return jump_id
 
@@ -136,6 +149,98 @@ def update_jump_context(jump_id: str, jump_context: str) -> bool:
     return True
 
 
+def get_jump_feedback(jump_id: str) -> dict[str, Any]:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT jump_id, feedback_text, created_at, updated_at
+            FROM jump_feedback
+            WHERE jump_id = ?
+            LIMIT 1
+            """,
+            (jump_id,),
+        ).fetchone()
+    if row is None:
+        return {"available": False, "text": "", "created_at": None, "updated_at": None}
+    return {
+        "available": True,
+        "text": str(row["feedback_text"] or ""),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def upsert_jump_feedback(jump_id: str, feedback_text: Any) -> bool:
+    text = normalize_jump_feedback_text(feedback_text)
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT jump_id FROM jumps WHERE jump_id = ? LIMIT 1",
+            (jump_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        if not text:
+            conn.execute("DELETE FROM jump_feedback WHERE jump_id = ?", (jump_id,))
+        else:
+            _upsert_jump_feedback(conn=conn, jump_id=jump_id, feedback_text=text)
+        conn.commit()
+    return True
+
+
+def get_coaching_snapshot(jump_id: str) -> dict[str, Any]:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT snapshot_json, created_at, updated_at
+            FROM coaching_snapshots
+            WHERE jump_id = ?
+            LIMIT 1
+            """,
+            (jump_id,),
+        ).fetchone()
+    if row is None:
+        return {"available": False}
+    try:
+        payload = json.loads(row["snapshot_json"])
+    except (TypeError, json.JSONDecodeError):
+        return {"available": False, "reason": "INVALID_SNAPSHOT_JSON"}
+    if not isinstance(payload, dict):
+        return {"available": False, "reason": "INVALID_SNAPSHOT_PAYLOAD"}
+    payload["available"] = True
+    payload["created_at"] = row["created_at"]
+    payload["updated_at"] = row["updated_at"]
+    return payload
+
+
+def upsert_coaching_snapshot(jump_id: str, snapshot: dict[str, Any]) -> bool:
+    if not isinstance(snapshot, dict) or not snapshot:
+        return False
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT jump_id FROM jumps WHERE jump_id = ? LIMIT 1",
+            (jump_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        payload = dict(snapshot)
+        payload.pop("created_at", None)
+        payload.pop("updated_at", None)
+        payload["available"] = True
+        snapshot_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        conn.execute(
+            """
+            INSERT INTO coaching_snapshots (jump_id, snapshot_json, created_at, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(jump_id) DO UPDATE SET
+                snapshot_json = excluded.snapshot_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (jump_id, snapshot_json),
+        )
+        conn.commit()
+    return True
+
+
 def delete_jump(jump_id: str) -> bool:
     with get_connection() as conn:
         row = conn.execute(
@@ -147,6 +252,34 @@ def delete_jump(jump_id: str) -> bool:
         conn.execute("DELETE FROM jumps WHERE jump_id = ?", (jump_id,))
         conn.commit()
     return True
+
+
+def _fetch_jump_feedback_text(*, conn, jump_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT feedback_text FROM jump_feedback WHERE jump_id = ? LIMIT 1",
+        (jump_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    text = normalize_jump_feedback_text(row["feedback_text"])
+    return text or None
+
+
+def _upsert_jump_feedback(*, conn, jump_id: str, feedback_text: str) -> None:
+    text = normalize_jump_feedback_text(feedback_text)
+    if not text:
+        conn.execute("DELETE FROM jump_feedback WHERE jump_id = ?", (jump_id,))
+        return
+    conn.execute(
+        """
+        INSERT INTO jump_feedback (jump_id, feedback_text, created_at, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(jump_id) DO UPDATE SET
+            feedback_text = excluded.feedback_text,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (jump_id, text),
+    )
 
 
 def _find_duplicate_jump_id(
@@ -577,6 +710,24 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
     with get_connection() as conn:
         jump = conn.execute("SELECT * FROM jumps WHERE jump_id = ?", (jump_id,)).fetchone()
         metrics = conn.execute("SELECT * FROM metrics WHERE jump_id = ?", (jump_id,)).fetchone()
+        feedback = conn.execute(
+            """
+            SELECT feedback_text, created_at, updated_at
+            FROM jump_feedback
+            WHERE jump_id = ?
+            LIMIT 1
+            """,
+            (jump_id,),
+        ).fetchone()
+        coaching_snapshot = conn.execute(
+            """
+            SELECT snapshot_json, created_at, updated_at
+            FROM coaching_snapshots
+            WHERE jump_id = ?
+            LIMIT 1
+            """,
+            (jump_id,),
+        ).fetchone()
         samples = conn.execute(
             """
             SELECT
@@ -599,6 +750,17 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
     scorecard = json.loads(metrics_dict["scorecard_json"])
     tips = json.loads(metrics_dict["tips_json"])
     quality_flags = json.loads(jump_dict["quality_flags"])
+    coaching_snapshot_payload: dict[str, Any] = {"available": False}
+    if coaching_snapshot is not None:
+        try:
+            raw_snapshot = json.loads(coaching_snapshot["snapshot_json"])
+        except (TypeError, json.JSONDecodeError):
+            raw_snapshot = {}
+        if isinstance(raw_snapshot, dict):
+            coaching_snapshot_payload = dict(raw_snapshot)
+            coaching_snapshot_payload["available"] = True
+            coaching_snapshot_payload["created_at"] = coaching_snapshot["created_at"]
+            coaching_snapshot_payload["updated_at"] = coaching_snapshot["updated_at"]
 
     chart_data = {
         "time_s": [float(row["t_rel_s"]) for row in samples],
@@ -648,6 +810,17 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
         "tips": tips,
         "quality_flags": quality_flags,
         "chart_data": chart_data,
+        "feedback": (
+            {"available": False, "text": "", "created_at": None, "updated_at": None}
+            if feedback is None
+            else {
+                "available": True,
+                "text": str(feedback["feedback_text"] or ""),
+                "created_at": feedback["created_at"],
+                "updated_at": feedback["updated_at"],
+            }
+        ),
+        "coaching_snapshot": coaching_snapshot_payload,
     }
 
 

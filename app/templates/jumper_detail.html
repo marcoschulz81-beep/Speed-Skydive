@@ -68,6 +68,11 @@
                 {% else %}
                     <li>Noch kein klarer Schwerpunkt.</li>
                 {% endif %}
+                {% if jumper_summary.feedback_training_profile and jumper_summary.feedback_training_profile.available %}
+                    {% for item in jumper_summary.feedback_training_profile.lines[:2] %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                {% endif %}
             </ul>
         </div>
     </div>
@@ -144,6 +149,11 @@
                 {% for item in jumper_summary.focus_actions %}
                 <li>{{ item }}</li>
                 {% endfor %}
+                {% if jumper_summary.feedback_training_profile and jumper_summary.feedback_training_profile.available %}
+                    {% for item in jumper_summary.feedback_training_profile.lines %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                {% endif %}
             </ul>
         </div>
         {% if jumper_summary.stability_reference and jumper_summary.stability_reference.available %}

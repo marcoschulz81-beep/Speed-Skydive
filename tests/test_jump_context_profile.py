@@ -6,11 +6,15 @@ import app.database as database
 from app.database import init_db
 from app.main import _build_performance_profile, _build_tip_effect_profile
 from app.services.storage import (
+    get_coaching_snapshot,
+    get_jump_feedback,
     get_jump_report,
     get_jump_summary,
     replace_analysis_result,
     save_analysis_result,
     update_jump_context,
+    upsert_coaching_snapshot,
+    upsert_jump_feedback,
 )
 
 
@@ -157,3 +161,101 @@ def test_jump_context_storage_update_and_replace_preserves_context(tmp_path, mon
 
     assert update_jump_context("jump-a", "invalid") is False
     assert get_jump_summary("jump-a")["jump_context"] == "training"
+
+
+def test_jump_feedback_storage_update_remove_and_replace_preserves_feedback(tmp_path, monkeypatch):
+    db_path = tmp_path / "speed_skydive.db"
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+    init_db()
+
+    jump_id, duplicate = save_analysis_result(
+        _minimal_result(jump_id="jump-feedback"),
+        jump_context="training",
+        source_file_sha256="hash-feedback",
+        source_file_path=str(tmp_path / "jump-feedback.csv"),
+    )
+    assert jump_id == "jump-feedback"
+    assert duplicate is False
+
+    assert upsert_jump_feedback(
+        "jump-feedback",
+        "Ich wollte die Arme enger fuehren. Am Ende wurde es unruhig.",
+    )
+    report = get_jump_report("jump-feedback")
+    assert report["feedback"]["available"] is True
+    assert "Arme enger" in report["feedback"]["text"]
+    assert get_jump_feedback("jump-feedback")["available"] is True
+
+    replace_analysis_result(
+        jump_id="jump-feedback",
+        result=_minimal_result(jump_id="replacement", rule_score=445.0),
+        source_file_sha256="hash-feedback-reprocessed",
+        source_file_path=str(tmp_path / "jump-feedback-reprocessed.csv"),
+    )
+    report = get_jump_report("jump-feedback")
+    assert report["metrics"]["rule_based_3s_score"] == 445.0
+    assert report["feedback"]["available"] is True
+    assert "Am Ende wurde es unruhig" in report["feedback"]["text"]
+
+    assert upsert_jump_feedback("jump-feedback", "")
+    assert get_jump_report("jump-feedback")["feedback"]["available"] is False
+
+
+def test_coaching_snapshot_storage_and_replace_drops_stale_snapshot(tmp_path, monkeypatch):
+    db_path = tmp_path / "speed_skydive.db"
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+    init_db()
+
+    jump_id, duplicate = save_analysis_result(
+        _minimal_result(jump_id="jump-snapshot"),
+        jump_context="training",
+        source_file_sha256="hash-snapshot",
+        source_file_path=str(tmp_path / "jump-snapshot.csv"),
+    )
+    assert jump_id == "jump-snapshot"
+    assert duplicate is False
+
+    snapshot = {
+        "available": True,
+        "schema_version": 1,
+        "jump_id": "jump-snapshot",
+        "source": "ai+feedback",
+        "focus_text": "Kompaktere Haltung nur kleiner testen.",
+        "goals": [
+            {
+                "id": "display_focus",
+                "phase": "Stabilitaet / Kipp-Risiko",
+                "text": "Kompaktere Haltung nur kleiner testen.",
+                "target_metrics": [
+                    {
+                        "metric": "negative_risk_score",
+                        "label": "Risiko-Score",
+                        "direction": "decrease",
+                        "min_delta": 5.0,
+                        "unit": "",
+                        "decimals": 1,
+                    }
+                ],
+            }
+        ],
+    }
+
+    assert upsert_coaching_snapshot("jump-snapshot", snapshot)
+    stored = get_coaching_snapshot("jump-snapshot")
+    assert stored["available"] is True
+    assert stored["focus_text"] == "Kompaktere Haltung nur kleiner testen."
+    assert stored["goals"][0]["target_metrics"][0]["metric"] == "negative_risk_score"
+
+    report = get_jump_report("jump-snapshot")
+    assert report["coaching_snapshot"]["available"] is True
+    assert report["coaching_snapshot"]["source"] == "ai+feedback"
+
+    replace_analysis_result(
+        jump_id="jump-snapshot",
+        result=_minimal_result(jump_id="replacement", rule_score=445.0),
+        source_file_sha256="hash-snapshot-reprocessed",
+        source_file_path=str(tmp_path / "jump-snapshot-reprocessed.csv"),
+    )
+    report = get_jump_report("jump-snapshot")
+    assert report["metrics"]["rule_based_3s_score"] == 445.0
+    assert report["coaching_snapshot"]["available"] is False

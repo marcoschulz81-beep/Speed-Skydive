@@ -838,6 +838,175 @@ def test_best_3s_window_quality_issue_only_names_actual_causes():
     assert "vVert-Streuung" not in issue
 
 
+def test_best_3s_window_quality_ignores_exit_drop_without_clean_after_window():
+    time_s = [i * 0.5 for i in range(0, 54)]
+    vvert = []
+    angle = []
+    vhor = []
+    for t in time_s:
+        if 20.0 <= t <= 23.0:
+            vvert.append(430.0)
+            angle.append(84.0)
+            vhor.append(35.0)
+        elif 23.0 < t <= 25.0:
+            vvert.append(330.0)
+            angle.append(78.0)
+            vhor.append(65.0)
+        else:
+            vvert.append(250.0 + min(t, 20.0) * 9.0)
+            angle.append(72.0 + min(t, 20.0) * 0.55)
+            vhor.append(90.0 - min(t, 20.0) * 2.0)
+
+    report = {
+        "jump": {"file_name": "exit-drop-window.csv"},
+        "metrics": {
+            "best_3s_start_s": 20.0,
+            "best_3s_end_s": 23.0,
+            "best_3s_vVert_kmh": 430.0,
+            "best_3s_vHor_kmh": 35.0,
+        },
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 28.0, "decel_start_s": 23.2},
+        "scorecard": {"exit": "sauber", "phase_10_20": "optimal", "hot_zone": "stabil", "kipp_risiko": "niedrig"},
+        "quality_flags": [],
+        "fixpoints": [
+            {"t_rel_s": 10.0, "vVert_kmh": 320.0, "vHor_kmh": 70.0, "angle_deg": 77.0},
+            {"t_rel_s": 20.0, "vVert_kmh": 430.0, "vHor_kmh": 35.0, "angle_deg": 84.0},
+            {"t_rel_s": 24.0, "vVert_kmh": 330.0, "vHor_kmh": 65.0, "angle_deg": 78.0},
+        ],
+        "chart_data": {
+            "time_s": time_s,
+            "vVert_kmh": vvert,
+            "vHor_kmh": vhor,
+            "angle_deg": angle,
+            "accVert_mps2": [0.4 for _ in time_s],
+            "hAGL_m": [3600.0 - 55.0 * t for t in time_s],
+        },
+    }
+
+    review = build_jump_review(report, best_compare=None)
+    best_window = review["technical_assessment"]["best_window_quality"]
+
+    assert best_window["label"] == "stabil"
+    assert best_window["drop_after_evaluable"] is False
+    assert best_window["vvert_drop_after_kmh"] == 0.0
+    assert not any("Speed-Drop danach" in line for line in review["not_good"])
+    assert not any("kurzer Peak" in line for line in review["not_good"])
+
+
+def test_best_3s_window_quality_uses_rule_window_before_late_raw_top_speed():
+    time_s = [i * 0.5 for i in range(0, 64)]
+    vvert = []
+    angle = []
+    vhor = []
+    for t in time_s:
+        if 20.0 <= t <= 23.0:
+            vvert.append(410.0)
+            angle.append(84.0)
+            vhor.append(34.0)
+        elif 26.0 <= t <= 29.0:
+            vvert.append(470.0)
+            angle.append(87.0)
+            vhor.append(20.0)
+        elif 29.0 < t <= 31.0:
+            vvert.append(350.0)
+            angle.append(78.0)
+            vhor.append(60.0)
+        else:
+            vvert.append(250.0 + min(t, 20.0) * 8.0)
+            angle.append(72.0 + min(t, 20.0) * 0.55)
+            vhor.append(90.0 - min(t, 20.0) * 2.0)
+
+    report = {
+        "jump": {"file_name": "late-raw-peak.csv"},
+        "metrics": {
+            "best_3s_start_s": 26.0,
+            "best_3s_end_s": 29.0,
+            "best_3s_vVert_kmh": 470.0,
+            "best_3s_vHor_kmh": 20.0,
+            "rule_based_3s_score": 410.0,
+            "performance_window_start_s": 0.0,
+            "performance_window_end_s": 23.0,
+        },
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 31.0, "decel_start_s": 31.0},
+        "scorecard": {"exit": "sauber", "phase_10_20": "optimal", "hot_zone": "stabil", "kipp_risiko": "niedrig"},
+        "quality_flags": [],
+        "fixpoints": [
+            {"t_rel_s": 10.0, "vVert_kmh": 320.0, "vHor_kmh": 70.0, "angle_deg": 77.0},
+            {"t_rel_s": 20.0, "vVert_kmh": 410.0, "vHor_kmh": 34.0, "angle_deg": 84.0},
+            {"t_rel_s": 28.0, "vVert_kmh": 470.0, "vHor_kmh": 20.0, "angle_deg": 87.0},
+        ],
+        "chart_data": {
+            "time_s": time_s,
+            "vVert_kmh": vvert,
+            "vHor_kmh": vhor,
+            "angle_deg": angle,
+            "accVert_mps2": [0.5 for _ in time_s],
+            "hAGL_m": [3600.0 - 55.0 * t for t in time_s],
+        },
+    }
+
+    review = build_jump_review(report, best_compare=None)
+    best_window = review["technical_assessment"]["best_window_quality"]
+
+    assert best_window["source"] == "rule_window"
+    assert best_window["end_s"] <= 23.1
+    assert best_window["label"] == "stabil"
+    assert not any("kurzer Peak" in line for line in review["not_good"])
+
+
+def test_best_3s_window_quality_keeps_real_drop_before_decel():
+    time_s = [i * 0.5 for i in range(0, 58)]
+    vvert = []
+    angle = []
+    vhor = []
+    for t in time_s:
+        if 20.0 <= t <= 23.0:
+            vvert.append(430.0)
+            angle.append(84.0)
+            vhor.append(35.0)
+        elif 23.0 < t <= 25.0:
+            vvert.append(390.0)
+            angle.append(83.0)
+            vhor.append(36.0)
+        else:
+            vvert.append(250.0 + min(t, 20.0) * 9.0)
+            angle.append(72.0 + min(t, 20.0) * 0.55)
+            vhor.append(90.0 - min(t, 20.0) * 2.0)
+
+    report = {
+        "jump": {"file_name": "real-pre-decel-drop.csv"},
+        "metrics": {
+            "best_3s_start_s": 20.0,
+            "best_3s_end_s": 23.0,
+            "best_3s_vVert_kmh": 430.0,
+            "best_3s_vHor_kmh": 35.0,
+        },
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 28.0, "decel_start_s": 27.0},
+        "scorecard": {"exit": "sauber", "phase_10_20": "optimal", "hot_zone": "stabil", "kipp_risiko": "niedrig"},
+        "quality_flags": [],
+        "fixpoints": [
+            {"t_rel_s": 10.0, "vVert_kmh": 320.0, "vHor_kmh": 70.0, "angle_deg": 77.0},
+            {"t_rel_s": 20.0, "vVert_kmh": 430.0, "vHor_kmh": 35.0, "angle_deg": 84.0},
+            {"t_rel_s": 24.0, "vVert_kmh": 390.0, "vHor_kmh": 36.0, "angle_deg": 83.0},
+        ],
+        "chart_data": {
+            "time_s": time_s,
+            "vVert_kmh": vvert,
+            "vHor_kmh": vhor,
+            "angle_deg": angle,
+            "accVert_mps2": [0.4 for _ in time_s],
+            "hAGL_m": [3600.0 - 55.0 * t for t in time_s],
+        },
+    }
+
+    review = build_jump_review(report, best_compare=None)
+    best_window = review["technical_assessment"]["best_window_quality"]
+
+    assert best_window["drop_after_evaluable"] is True
+    assert best_window["vvert_drop_after_kmh"] >= 39.0
+    assert any("Speed-Drop danach" in line for line in review["not_good"])
+
+
 def test_build_jump_review_detects_steeper_phase_without_acceleration_gain():
     time_s = [float(i) for i in range(0, 27)]
     angle = []

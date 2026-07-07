@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.analysis.pipeline import AnalysisError, analyze_flysight_csv
 from app.analysis.comparison import build_jump_comparison
+from app.analysis.feedback import build_feedback_coaching_context, build_feedback_training_profile
 from app.analysis.lateral import analyze_lateral_dynamics
 from app.analysis.potential import build_speed_potential_preview
 from app.analysis.review import build_jump_review
@@ -50,6 +51,8 @@ from app.services.storage import (
     save_analysis_result,
     normalize_jump_context,
     update_jump_context,
+    upsert_coaching_snapshot,
+    upsert_jump_feedback,
 )
 from app.text_utils import normalize_german_text
 
@@ -397,6 +400,7 @@ async def analyze_upload(
     jump_context: str = Form(_JUMP_CONTEXT_DEFAULT),
     ground_elevation_m: str = Form(""),
     breakoff_altitude_agl_m: str = Form(""),
+    jump_feedback: str = Form(""),
     view_mode: str = Form(_VIEW_MODE_EXPERT),
 ):
     resolved_view_mode = _normalize_view_mode(view_mode)
@@ -427,6 +431,14 @@ async def analyze_upload(
         source_file_sha256=source_hash,
     )
     if duplicate_id is not None:
+        if str(jump_feedback or "").strip():
+            upsert_jump_feedback(duplicate_id, jump_feedback)
+            _clear_derived_caches()
+            msg = "Sprung existiert bereits; Feedback wurde aktualisiert."
+            return RedirectResponse(
+                url=f"/jumps/{duplicate_id}?view={resolved_view_mode}&message={quote_plus(msg)}",
+                status_code=303,
+            )
         return RedirectResponse(url=f"/jumps/{duplicate_id}?view={resolved_view_mode}", status_code=303)
 
     try:
@@ -450,6 +462,8 @@ async def analyze_upload(
         source_file_path=str(source_path),
     )
     if not is_duplicate:
+        if str(jump_feedback or "").strip():
+            upsert_jump_feedback(jump_id, jump_feedback)
         _clear_derived_caches()
     jump_url = f"/jumps/{jump_id}?view={resolved_view_mode}"
     if is_duplicate:
@@ -554,6 +568,7 @@ def jump_detail(
         jumper_stability_reference=jumper_stability_reference,
         tip_effect_profile=tip_effect_profile,
     )
+    feedback_context = build_feedback_coaching_context(report, review=review)
     scorecard_rows = _build_scorecard_rows(report)
     scorecard_rows = _annotate_scorecard_with_reference(
         rows=scorecard_rows,
@@ -570,11 +585,13 @@ def jump_detail(
         scorecard_rows=scorecard_rows,
         best_reference=best_reference,
         top_reference_jumps=top_reference_jumps,
+        feedback_context=feedback_context,
     )
     jump_brief_simple = _build_jump_brief_simple(
         report=report,
         jump_brief=jump_brief,
         scorecard_rows=scorecard_rows,
+        feedback_context=feedback_context,
     )
     quality_issue_lines = _build_quality_issue_lines(report.get("quality_flags", []))
     quality_issue_lines.extend(_build_fs2_quality_issue_lines(report.get("notes", {})))
@@ -587,9 +604,23 @@ def jump_detail(
         scorecard_rows=scorecard_rows,
         tip_follow_up=tip_follow_up,
         jumper_summary=jumper_summary,
+        feedback_context=feedback_context,
         quality_issue_lines=quality_issue_lines,
         view_mode=view_mode,
     )
+    if view_mode == _VIEW_MODE_EXPERT:
+        coaching_snapshot = _build_coaching_snapshot(
+            report=report,
+            review=review,
+            jump_brief=jump_brief,
+            jump_brief_simple=jump_brief_simple,
+            ai_coaching=ai_coaching,
+            feedback_context=feedback_context,
+            view_mode=view_mode,
+        )
+        if coaching_snapshot.get("available"):
+            upsert_coaching_snapshot(jump_id, coaching_snapshot)
+            report["coaching_snapshot"] = coaching_snapshot
 
     return templates.TemplateResponse(
         request,
@@ -608,6 +639,7 @@ def jump_detail(
             "phase_rows": phase_rows,
             "tip_follow_up": tip_follow_up,
             "ai_coaching": ai_coaching,
+            "feedback_context": feedback_context,
             "chart_data_json": json.dumps(_chart_data_for_client(report)),
             "report_meta_json": json.dumps(_report_for_client(report)),
             "quality_flags_json": json.dumps(report["quality_flags"]),
@@ -690,6 +722,22 @@ def update_jump_context_route(
 
     _clear_derived_caches()
     ok_msg = f"Sprung-Kontext aktualisiert: {_jump_context_label(resolved_context)}."
+    return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&message={quote_plus(ok_msg)}", status_code=303)
+
+
+@app.post("/jumps/{jump_id}/feedback")
+def update_jump_feedback_route(
+    jump_id: str,
+    jump_feedback: str = Form(""),
+    view: str | None = None,
+):
+    view_mode = _normalize_view_mode(view)
+    changed = upsert_jump_feedback(jump_id, jump_feedback)
+    if not changed:
+        raise HTTPException(status_code=404, detail="Sprung nicht gefunden.")
+
+    _clear_derived_caches()
+    ok_msg = "Sprungfeedback aktualisiert." if str(jump_feedback or "").strip() else "Sprungfeedback entfernt."
     return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&message={quote_plus(ok_msg)}", status_code=303)
 
 
@@ -2302,6 +2350,7 @@ def _build_jump_brief_summary(
     scorecard_rows: list[dict[str, Any]],
     best_reference: dict[str, Any] | None,
     top_reference_jumps: list[dict[str, Any]],
+    feedback_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     jump = report.get("jump", {})
     metrics = report.get("metrics", {})
@@ -2407,6 +2456,9 @@ def _build_jump_brief_summary(
             main_issues = _merge_priority_texts(primary_issue, main_issues, max_items=4)
     if not main_issues:
         main_issues = ["Keine klaren Hauptprobleme in den Hauptdaten gefunden."]
+    feedback_hint = _feedback_context_line(feedback_context, key="coaching_hint")
+    if feedback_hint:
+        main_issues = _unique_texts_semantic(main_issues + [f"Feedback-Abgleich: {feedback_hint}"])[:4]
     if not has_primary_diagnosis and weak_rows:
         issue_focus_names = _focus_names_from_issue_texts(main_issues)
         if issue_focus_names:
@@ -2445,6 +2497,12 @@ def _build_jump_brief_summary(
         if primary_action:
             actions = _merge_priority_texts(primary_action, actions, max_items=4)
         actions = _filter_actions_for_primary_diagnosis(primary_diagnosis, actions, max_items=3)
+    feedback_focus = _feedback_context_line(feedback_context, key="next_focus_hint")
+    if feedback_focus:
+        if actions:
+            actions = _unique_texts([actions[0], feedback_focus] + actions[1:])[:4]
+        else:
+            actions = [feedback_focus]
     if not actions:
         actions = ["Ablauf stabil wiederholen und nur kleine Korrekturen setzen."]
     if not has_primary_diagnosis:
@@ -2470,6 +2528,7 @@ def _build_jump_brief_simple(
     report: dict[str, Any],
     jump_brief: dict[str, Any],
     scorecard_rows: list[dict[str, Any]],
+    feedback_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     notes = report.get("notes", {}) if isinstance(report.get("notes"), dict) else {}
     blocked = bool(notes.get("analysis_blocked"))
@@ -2506,10 +2565,16 @@ def _build_jump_brief_simple(
         summary = str(primary_diagnosis.get("title") or "Ein Hauptproblem ist klar sichtbar.").strip()
         main_issue = str(primary_diagnosis.get("summary") or primary_diagnosis.get("main_issue") or "").strip()
         next_focus = str(primary_diagnosis.get("next_focus") or primary_diagnosis.get("action") or "").strip()
+        feedback_hint = _feedback_context_line(feedback_context, key="coaching_hint")
+        feedback_focus = _feedback_context_line(feedback_context, key="next_focus_hint")
         if not main_issue:
             main_issue = "Der Sprung verliert in der schnellen Phase Stabilitaet."
+        if feedback_hint:
+            main_issue = f"{main_issue} {feedback_hint}"
         if not next_focus:
             next_focus = "Im naechsten Sprung nur einen Fokus setzen: ruhiger Uebergang in die schnelle Phase."
+        elif feedback_focus:
+            next_focus = feedback_focus
         strengths = _unique_texts(
             [
                 _simplify_coaching_line(item)
@@ -2580,6 +2645,9 @@ def _build_jump_brief_simple(
         )
     if not main_issues:
         main_issues = ["Keine klaren Hauptprobleme sichtbar."]
+    feedback_hint = _feedback_context_line(feedback_context, key="coaching_hint")
+    if feedback_hint:
+        main_issues = _unique_texts([f"{main_issues[0]} {feedback_hint}"] + main_issues[1:])[:2]
 
     strengths = _unique_texts(
         [
@@ -2611,6 +2679,9 @@ def _build_jump_brief_simple(
     )
     if not actions:
         actions = ["Diesen Ablauf im nächsten Sprung ruhig und sauber wiederholen."]
+    feedback_focus = _feedback_context_line(feedback_context, key="next_focus_hint")
+    if feedback_focus:
+        actions = _unique_texts([feedback_focus] + actions)
     actions = actions[:3]
 
     basis_line = ""
@@ -2634,6 +2705,15 @@ def _build_jump_brief_simple(
     }
 
 
+def _feedback_context_line(feedback_context: dict[str, Any] | None, *, key: str) -> str:
+    if not isinstance(feedback_context, dict) or not feedback_context.get("available"):
+        return ""
+    text = str(feedback_context.get(key) or "").strip()
+    if not text:
+        return ""
+    return _truncate_text(text, 360)
+
+
 def _build_ai_coaching(
     *,
     report: dict[str, Any],
@@ -2643,6 +2723,7 @@ def _build_ai_coaching(
     scorecard_rows: list[dict[str, Any]],
     tip_follow_up: dict[str, Any],
     jumper_summary: dict[str, Any],
+    feedback_context: dict[str, Any],
     quality_issue_lines: list[str],
     view_mode: str,
 ) -> dict[str, Any]:
@@ -2654,6 +2735,7 @@ def _build_ai_coaching(
         scorecard_rows=scorecard_rows,
         tip_follow_up=tip_follow_up,
         jumper_summary=jumper_summary,
+        feedback_context=feedback_context,
         quality_issue_lines=quality_issue_lines,
         view_mode=view_mode,
     )
@@ -2669,6 +2751,255 @@ def _build_ai_coaching(
     return result
 
 
+def _build_coaching_snapshot(
+    *,
+    report: dict[str, Any],
+    review: dict[str, Any],
+    jump_brief: dict[str, Any],
+    jump_brief_simple: dict[str, Any],
+    ai_coaching: dict[str, Any],
+    feedback_context: dict[str, Any],
+    view_mode: str,
+) -> dict[str, Any]:
+    jump = report.get("jump", {}) if isinstance(report.get("jump"), dict) else {}
+    focus_text = ""
+    source = "fallback"
+    if isinstance(ai_coaching, dict) and ai_coaching.get("available"):
+        focus_text = str(ai_coaching.get("next_jump_focus") or "").strip()
+        source = "ai"
+    if not focus_text:
+        brief = jump_brief_simple if view_mode == "simple" else jump_brief
+        actions = brief.get("actions") if isinstance(brief, dict) else []
+        focus_text = next((str(item).strip() for item in actions or [] if str(item or "").strip()), "")
+        source = "rule"
+    if not focus_text:
+        return {"available": False, "reason": "NO_FOCUS_TEXT"}
+    source_kind = source
+
+    feedback_goal = _feedback_snapshot_goal(feedback_context)
+    review_goals = [
+        _snapshot_goal_from_review_goal(goal)
+        for goal in (review.get("coaching_goals") if isinstance(review, dict) else []) or []
+        if isinstance(goal, dict)
+    ]
+    review_goals = [goal for goal in review_goals if goal]
+
+    focus_uses_feedback = _snapshot_focus_uses_feedback(
+        focus_text=focus_text,
+        feedback_focus=str((feedback_context or {}).get("next_focus_hint") or ""),
+    )
+    display_targets: list[dict[str, Any]] = []
+    display_phase = "Coaching-Fokus"
+    matched_review_goal = _snapshot_matching_review_goal(focus_text=focus_text, review_goals=review_goals)
+    if focus_uses_feedback and feedback_goal:
+        display_targets = list(feedback_goal.get("target_metrics") or [])
+        display_phase = str(feedback_goal.get("phase") or display_phase)
+        source = f"{source}+feedback"
+    elif matched_review_goal:
+        display_targets = list(matched_review_goal.get("target_metrics") or [])
+        display_phase = str(matched_review_goal.get("phase") or display_phase)
+    elif review_goals and source_kind == "rule":
+        display_targets = list(review_goals[0].get("target_metrics") or [])
+        display_phase = str(review_goals[0].get("phase") or display_phase)
+    elif feedback_goal:
+        display_targets = list(feedback_goal.get("target_metrics") or [])
+        display_phase = str(feedback_goal.get("phase") or display_phase)
+        source = f"{source}+feedback"
+
+    goals: list[dict[str, Any]] = []
+    if display_targets:
+        goals.append(
+            {
+                "id": "display_focus",
+                "phase": display_phase,
+                "text": focus_text,
+                "target_metrics": _dedupe_target_metrics(display_targets),
+            }
+        )
+    if feedback_goal and not _snapshot_goal_is_duplicate(feedback_goal, goals):
+        goals.append(feedback_goal)
+    for goal in review_goals:
+        if len(goals) >= 4:
+            break
+        if _snapshot_goal_is_duplicate(goal, goals):
+            continue
+        goals.append(goal)
+
+    if not goals:
+        return {"available": False, "reason": "NO_TARGET_METRICS", "focus_text": focus_text}
+
+    return {
+        "available": True,
+        "schema_version": 1,
+        "jump_id": str(jump.get("jump_id") or ""),
+        "view_mode": view_mode,
+        "source": source,
+        "focus_text": focus_text,
+        "goals": goals[:4],
+        "feedback_used": bool(feedback_goal),
+        "ai_used": bool(isinstance(ai_coaching, dict) and ai_coaching.get("available")),
+    }
+
+
+def _snapshot_goal_from_review_goal(goal: dict[str, Any]) -> dict[str, Any] | None:
+    text = str(goal.get("text") or goal.get("display_text") or "").strip()
+    target_metrics = goal.get("target_metrics") if isinstance(goal.get("target_metrics"), list) else []
+    if not text or not target_metrics:
+        return None
+    return {
+        "id": str(goal.get("id") or "review_goal"),
+        "phase": str(goal.get("phase") or "Coaching-Ziel"),
+        "text": _strip_priority_prefix(text),
+        "target_metrics": _dedupe_target_metrics(target_metrics),
+    }
+
+
+def _feedback_snapshot_goal(feedback_context: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(feedback_context, dict) or not feedback_context.get("available"):
+        return None
+    text = str(feedback_context.get("next_focus_hint") or "").strip()
+    if not text:
+        return None
+    evidence = feedback_context.get("evidence") if isinstance(feedback_context.get("evidence"), dict) else {}
+    metrics: list[dict[str, Any]] = []
+
+    def add(metric: str, label: str, direction: str, min_delta: float, unit: str, decimals: int = 1) -> None:
+        metrics.append(
+            {
+                "metric": metric,
+                "label": label,
+                "direction": direction,
+                "min_delta": float(min_delta),
+                "unit": unit,
+                "decimals": int(decimals),
+            }
+        )
+
+    phase = "StabilitÃ¤t / Kipp-Risiko"
+    if evidence.get("end_unstable") or evidence.get("late_hard_transition"):
+        phase = "Hot-Zone"
+        add("vhor_min_20_25", "vHor-Min 20-25s", "increase", 2.0, " km/h")
+        add("angle_turns_20_25", "Korrekturen 20-25s", "decrease", 1.0, "", 0)
+        add("negative_risk_score", "Risiko-Score", "decrease", 5.0, "")
+    if evidence.get("build_too_flat"):
+        phase = "Aufbau 10-20s"
+        add("gain_10_20", "Zuwachs +10 bis +20s", "increase", 8.0, " km/h")
+    if not metrics:
+        add("angle_turns_20_25", "Korrekturen 20-25s", "decrease", 1.0, "", 0)
+
+    return {
+        "id": "feedback_focus",
+        "phase": phase,
+        "text": text,
+        "target_metrics": _dedupe_target_metrics(metrics),
+    }
+
+
+def _snapshot_focus_uses_feedback(*, focus_text: str, feedback_focus: str) -> bool:
+    focus_norm = normalize_german_text(focus_text)
+    feedback_norm = normalize_german_text(feedback_focus)
+    if not focus_norm or not feedback_norm:
+        return False
+    if _is_semantic_near_duplicate_text(focus_text, feedback_focus):
+        return True
+    feedback_markers = [
+        "kompakt",
+        "arm",
+        "schulter",
+        "bein",
+        "schrittweise",
+        "kleiner testen",
+        "gefuehl",
+        "feedback",
+    ]
+    return any(marker in focus_norm for marker in feedback_markers)
+
+
+def _snapshot_matching_review_goal(*, focus_text: str, review_goals: list[dict[str, Any]]) -> dict[str, Any] | None:
+    focus = str(focus_text or "").strip()
+    if not focus or not review_goals:
+        return None
+    for goal in review_goals:
+        goal_text = str(goal.get("text") or goal.get("display_text") or "").strip()
+        if goal_text and _is_semantic_near_duplicate_text(focus, goal_text):
+            return goal
+
+    focus_topic = _topic_from_text(focus)
+    focus_tokens = _semantic_tokens(focus)
+    best_goal: dict[str, Any] | None = None
+    best_score = 0.0
+    for goal in review_goals:
+        goal_text = str(goal.get("text") or goal.get("display_text") or "").strip()
+        if not goal_text:
+            continue
+        goal_topic = _topic_from_text(goal_text)
+        phase_topic = _topic_from_text(str(goal.get("phase") or ""))
+        goal_tokens = _semantic_tokens(goal_text)
+        overlap = len(focus_tokens & goal_tokens)
+        score = 0.0
+        if focus_topic != "other" and focus_topic == goal_topic:
+            score += 4.0
+        if focus_topic != "other" and focus_topic == phase_topic:
+            score += 2.0
+        if overlap:
+            score += min(3.0, float(overlap))
+            score += min(2.0, float(overlap) / max(1.0, float(len(focus_tokens))) * 4.0)
+        if score > best_score:
+            best_goal = goal
+            best_score = score
+    return best_goal if best_score >= 4.0 else None
+
+
+def _snapshot_goal_is_duplicate(candidate: dict[str, Any], existing: list[dict[str, Any]]) -> bool:
+    text = str(candidate.get("text") or "")
+    metrics = {
+        str(item.get("metric") or "")
+        for item in candidate.get("target_metrics") or []
+        if isinstance(item, dict)
+    }
+    for item in existing:
+        other_text = str(item.get("text") or "")
+        other_metrics = {
+            str(metric.get("metric") or "")
+            for metric in item.get("target_metrics") or []
+            if isinstance(metric, dict)
+        }
+        if text and other_text and _is_semantic_near_duplicate_text(text, other_text):
+            return True
+        if metrics and metrics == other_metrics:
+            return True
+    return False
+
+
+def _dedupe_target_metrics(metrics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in metrics:
+        if not isinstance(raw, dict):
+            continue
+        metric = str(raw.get("metric") or "").strip()
+        direction = str(raw.get("direction") or "").strip()
+        if not metric or not direction:
+            continue
+        key = (metric, direction)
+        if key in seen:
+            continue
+        seen.add(key)
+        raw_decimals = raw.get("decimals")
+        decimals = int(raw_decimals) if raw_decimals is not None else 1
+        out.append(
+            {
+                "metric": metric,
+                "label": str(raw.get("label") or metric),
+                "direction": direction,
+                "min_delta": float(_to_float(raw.get("min_delta")) or 0.0),
+                "unit": str(raw.get("unit") or ""),
+                "decimals": decimals,
+            }
+        )
+    return out
+
+
 def _build_ai_coaching_payload(
     *,
     report: dict[str, Any],
@@ -2680,6 +3011,7 @@ def _build_ai_coaching_payload(
     jumper_summary: dict[str, Any],
     quality_issue_lines: list[str],
     view_mode: str,
+    feedback_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     jump = report.get("jump", {}) if isinstance(report.get("jump"), dict) else {}
     metrics = report.get("metrics", {}) if isinstance(report.get("metrics"), dict) else {}
@@ -2702,6 +3034,11 @@ def _build_ai_coaching_payload(
             "t0_utc": str(jump.get("t0_utc") or "") if AI_COACHING_INCLUDE_IDENTIFIERS else "",
         },
         "performance_profile": _compact_performance_profile_for_ai(performance_profile),
+        "feedback_training_profile": _compact_feedback_training_profile_for_ai(
+            jumper_summary.get("feedback_training_profile")
+            if isinstance(jumper_summary, dict)
+            else None
+        ),
         "metrics": {
             "best_3s_vVert_kmh": _round_float(metrics.get("best_3s_vVert_kmh"), 1),
             "best_3s_start_s": _round_float(metrics.get("best_3s_start_s"), 1),
@@ -2736,6 +3073,7 @@ def _build_ai_coaching_payload(
             "actions": _limit_texts(selected_brief.get("actions"), max_items=4, max_len=420),
         },
         "tip_follow_up": _compact_tip_follow_up_for_ai(tip_follow_up),
+        "jump_feedback": _compact_feedback_context_for_ai(feedback_context),
         "quality": {
             "analysis_blocked": bool(notes.get("analysis_blocked")),
             "quality_flags": [str(item) for item in (report.get("quality_flags") or [])[:8]],
@@ -2765,6 +3103,58 @@ def _compact_primary_diagnosis_for_ai(value: Any) -> dict[str, Any]:
             "vhor_min_after_20": _round_float(evidence.get("vhor_min_after_20"), 1),
             "vhor_drop_after_20_pct": _round_float(evidence.get("vhor_drop_after_20_pct"), 0),
         },
+    }
+
+
+def _compact_feedback_context_for_ai(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not value.get("available"):
+        return {"available": False}
+    evidence = value.get("evidence") if isinstance(value.get("evidence"), dict) else {}
+    lateral = evidence.get("lateral") if isinstance(evidence.get("lateral"), dict) else {}
+    return {
+        "available": True,
+        "subjective_text_excerpt": _truncate_text(str(value.get("text_excerpt") or ""), 500),
+        "intents": [
+            {"key": str(item.get("key") or ""), "label": str(item.get("label") or "")}
+            for item in (value.get("intents") or [])[:6]
+            if isinstance(item, dict)
+        ],
+        "felt_issues": [
+            {"key": str(item.get("key") or ""), "label": str(item.get("label") or "")}
+            for item in (value.get("felt_issues") or [])[:5]
+            if isinstance(item, dict)
+        ],
+        "question_present": bool(value.get("question_present")),
+        "match_lines": _limit_texts(value.get("match_lines"), max_items=4, max_len=260),
+        "coaching_hint": _truncate_text(str(value.get("coaching_hint") or ""), 360),
+        "next_focus_hint": _truncate_text(str(value.get("next_focus_hint") or ""), 280),
+        "confidence": str(value.get("confidence") or ""),
+        "caution": str(value.get("caution") or ""),
+        "evidence": {
+            "objective_signals": _limit_texts(evidence.get("objective_signals"), max_items=6, max_len=120),
+            "end_unstable": bool(evidence.get("end_unstable")),
+            "late_hard_transition": bool(evidence.get("late_hard_transition")),
+            "too_fast_steep": bool(evidence.get("too_fast_steep")),
+            "build_too_flat": bool(evidence.get("build_too_flat")),
+            "hot_zone_label": str(evidence.get("hot_zone_label") or ""),
+            "risk_label": str(evidence.get("risk_label") or ""),
+            "lateral_hot_pattern": str(lateral.get("hot_pattern") or ""),
+            "lateral_hot_vlat_abs_mean_kmh": _round_float(lateral.get("hot_vlat_abs_mean_kmh"), 1),
+            "lateral_hot_heading_rate_rms_dps": _round_float(lateral.get("hot_heading_rate_rms_dps"), 1),
+        },
+    }
+
+
+def _compact_feedback_training_profile_for_ai(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not value.get("available"):
+        return {"available": False, "reason": str((value or {}).get("reason") or "") if isinstance(value, dict) else ""}
+    return {
+        "available": True,
+        "feedback_count": int(value.get("feedback_count") or 0),
+        "recent_feedback_count": int(value.get("recent_feedback_count") or 0),
+        "summary": _truncate_text(str(value.get("summary") or ""), 260),
+        "lines": _limit_texts(value.get("lines"), max_items=4, max_len=260),
+        "top_focus_keys": [str(item) for item in (value.get("top_focus_keys") or [])[:4]],
     }
 
 
@@ -2804,10 +3194,17 @@ def _compact_technical_assessment_for_ai(value: Any) -> dict[str, Any]:
         "best_window_quality": {
             "available": bool(best_window.get("available")),
             "label": str(best_window.get("label") or ""),
+            "source": str(best_window.get("source") or ""),
             "vvert_std_kmh": _round_float(best_window.get("vvert_std_kmh"), 1),
             "angle_std_deg": _round_float(best_window.get("angle_std_deg"), 1),
             "vhor_min_kmh": _round_float(best_window.get("vhor_min_kmh"), 1),
             "vvert_drop_after_kmh": _round_float(best_window.get("vvert_drop_after_kmh"), 1),
+            "drop_after_evaluable": bool(best_window.get("drop_after_evaluable")),
+            "drop_after_reason": str(best_window.get("drop_after_reason") or ""),
+            "drop_after_window_s": _round_float(best_window.get("drop_after_window_s"), 1),
+            "raw_best_start_s": _round_float(best_window.get("raw_best_start_s"), 1),
+            "raw_best_end_s": _round_float(best_window.get("raw_best_end_s"), 1),
+            "rule_based_3s_score": _round_float(best_window.get("rule_based_3s_score"), 1),
         },
         "jerk_quality": {
             "available": bool(jerk.get("available")),
@@ -3255,6 +3652,7 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
     stability_reference = _build_jumper_stability_reference(records)
     stability_reference["performance_profile"] = performance_profile
     tip_effect_profile = _build_tip_effect_profile(records, performance_profile=performance_profile)
+    feedback_training_profile = build_feedback_training_profile(records)
 
     result = {
         "available": True,
@@ -3272,6 +3670,7 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
         "performance_profile": performance_profile,
         "stability_reference": stability_reference,
         "tip_effect_profile": tip_effect_profile,
+        "feedback_training_profile": feedback_training_profile,
     }
     _JUMPER_SUMMARY_CACHE[cache_key] = (signature, result)
     return result
@@ -3873,6 +4272,7 @@ def _build_jumper_record(
         "jump_id": jump.get("jump_id"),
         "file_name": jump.get("file_name"),
         "jump_context": _normalize_jump_context(str(jump.get("jump_context") or "unknown")),
+        "feedback_context": build_feedback_coaching_context(report),
         "t0_utc": jump.get("t0_utc"),
         "best_3s_kmh": _to_float(metrics.get("best_3s_vVert_kmh")),
         "rule_score_kmh": _to_float(metrics.get("rule_based_3s_score")),
@@ -4447,6 +4847,27 @@ def _compact_goal_follow_items(items: list[dict[str, Any]], *, max_items: int = 
     return compacted, hidden_count
 
 
+def _coaching_snapshot_goals_for_follow_up(previous_report: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    snapshot = previous_report.get("coaching_snapshot")
+    if not isinstance(snapshot, dict) or not snapshot.get("available"):
+        return [], {}
+    goals = snapshot.get("goals")
+    if not isinstance(goals, list):
+        return [], snapshot
+    usable_goals: list[dict[str, Any]] = []
+    for goal in goals:
+        if not isinstance(goal, dict):
+            continue
+        target_metrics = goal.get("target_metrics")
+        if not isinstance(target_metrics, list) or not target_metrics:
+            continue
+        text = str(goal.get("text") or goal.get("display_text") or "").strip()
+        if not text:
+            continue
+        usable_goals.append(goal)
+    return usable_goals, snapshot
+
+
 def _tip_follow_quality_note(
     *,
     current_report: dict[str, Any],
@@ -4612,18 +5033,31 @@ def _build_tip_follow_up(
     current_snapshot = _scorecard_metric_snapshot(current_report)
     previous_snapshot = _scorecard_metric_snapshot(previous_report)
     structured_items: list[dict[str, Any]] = []
-    for goal in (previous_coaching_goals or [])[:5]:
-        if not isinstance(goal, dict):
-            continue
-        item = _build_goal_follow_item(
-            goal=goal,
-            prev_snapshot=previous_snapshot,
-            curr_snapshot=current_snapshot,
-            prev_report=previous_report,
-            curr_report=current_report,
-        )
-        if item is not None:
-            structured_items.append(item)
+    snapshot_goals, coaching_snapshot = _coaching_snapshot_goals_for_follow_up(previous_report)
+    snapshot_used = False
+
+    def build_structured_items(goals: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        built_items: list[dict[str, Any]] = []
+        for goal in (goals or [])[:5]:
+            if not isinstance(goal, dict):
+                continue
+            item = _build_goal_follow_item(
+                goal=goal,
+                prev_snapshot=previous_snapshot,
+                curr_snapshot=current_snapshot,
+                prev_report=previous_report,
+                curr_report=current_report,
+            )
+            if item is not None:
+                built_items.append(item)
+        return built_items
+
+    if snapshot_goals:
+        structured_items = build_structured_items(snapshot_goals)
+        snapshot_used = bool(structured_items)
+    if not structured_items:
+        structured_items = build_structured_items(previous_coaching_goals)
+        snapshot_used = False
 
     if structured_items:
         items, hidden_count = _compact_goal_follow_items(structured_items, max_items=2)
@@ -4674,6 +5108,9 @@ def _build_tip_follow_up(
         "previous_file_name": previous_report.get("jump", {}).get("file_name"),
         "previous_t0_utc": previous_report.get("jump", {}).get("t0_utc"),
         "entries": items,
+        "snapshot_used": snapshot_used,
+        "snapshot_source": str(coaching_snapshot.get("source") or "") if coaching_snapshot else "",
+        "snapshot_focus_text": str(coaching_snapshot.get("focus_text") or "") if coaching_snapshot else "",
     }
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.main import (
     _build_ai_coaching_payload,
+    _build_coaching_snapshot,
     _build_fs2_quality_issue_lines,
     _build_jump_brief_summary,
     _build_jump_brief_simple,
@@ -65,6 +66,59 @@ def _minimal_goal_follow_report(
             "accVert_mps2": [2.2 for _ in time_s],
         },
     }
+
+
+def test_ai_payload_includes_compact_feedback_context():
+    report = _minimal_goal_follow_report(
+        jump_id="feedback-payload",
+        file_name="feedback.csv",
+        angle_10=74.0,
+        angle_15=80.0,
+    )
+    feedback_context = {
+        "available": True,
+        "text_excerpt": "Ich wollte Arme enger fuehren und am Ende hat es gewackelt.",
+        "intents": [{"key": "arms_closer", "label": "Arme/Haende enger"}],
+        "felt_issues": [{"key": "end_instability", "label": "spaete Unruhe"}],
+        "match_lines": ["Dein Gefuehl von spaeter Unruhe passt zu den Messdaten."],
+        "coaching_hint": "Dein Gefuehl von spaeter Unruhe passt zu den Messdaten.",
+        "next_focus_hint": "Kompaktere Haltung nur kleiner testen.",
+        "confidence": "medium",
+        "caution": "Feedback ist subjektiver Kontext; Messdaten bleiben die Bewertungsgrundlage.",
+        "evidence": {
+            "objective_signals": ["Hot-Zone kritisch"],
+            "end_unstable": True,
+            "lateral": {"hot_pattern": "schlangenlinie", "hot_vlat_abs_mean_kmh": 9.2},
+        },
+    }
+
+    payload = _build_ai_coaching_payload(
+        report=report,
+        review={"happened": [], "good": [], "not_good": [], "coaching_goals": []},
+        jump_brief={"summary": "Test", "main_issues": [], "strengths": [], "actions": []},
+        jump_brief_simple={"summary": "Test", "main_issues": [], "strengths": [], "actions": []},
+        scorecard_rows=[],
+        tip_follow_up={"available": False},
+        jumper_summary={
+            "performance_profile": {"available": False},
+            "feedback_training_profile": {
+                "available": True,
+                "feedback_count": 2,
+                "recent_feedback_count": 2,
+                "summary": "Aktueller Trainingskontext aus Feedback: Arme/Haende enger.",
+                "lines": ["Aktueller Trainingskontext aus Feedback: Arme/Haende enger."],
+                "top_focus_keys": ["arms_closer"],
+            },
+        },
+        quality_issue_lines=[],
+        view_mode="expert",
+        feedback_context=feedback_context,
+    )
+
+    assert payload["jump_feedback"]["available"] is True
+    assert payload["jump_feedback"]["intents"][0]["key"] == "arms_closer"
+    assert payload["jump_feedback"]["evidence"]["end_unstable"] is True
+    assert payload["feedback_training_profile"]["available"] is True
 
 
 _TEST_MARCO_PROFILE = {
@@ -958,6 +1012,257 @@ def test_tip_follow_up_uses_structured_goal_metrics_before_text_fallback():
     assert follow_up["entries"][0]["goal_text"] == "Im Aufbau nicht zu schnell maximal steil werden."
     assert "Winkel +10s" in follow_up["entries"][0]["detail"]
     assert "Winkel +15s" in follow_up["entries"][0]["detail"]
+
+
+def test_coaching_snapshot_preserves_displayed_feedback_focus_for_follow_up():
+    report = _minimal_goal_follow_report(
+        jump_id="snapshot",
+        file_name="snapshot.csv",
+        angle_10=74.0,
+        angle_15=80.0,
+    )
+    review = {
+        "coaching_goals": [
+            {
+                "id": "review_goal",
+                "phase": "Aufbau 10-20s",
+                "text": "Zuwachs im Segment +10-20s erhoehen.",
+                "target_metrics": [
+                    {
+                        "metric": "gain_10_20",
+                        "label": "Zuwachs +10 bis +20s",
+                        "direction": "increase",
+                        "min_delta": 12.0,
+                        "unit": " km/h",
+                        "decimals": 1,
+                    }
+                ],
+            }
+        ]
+    }
+    feedback_context = {
+        "available": True,
+        "next_focus_hint": "Kompaktere Haltung nur kleiner testen und Linie ruhig halten.",
+        "evidence": {"end_unstable": True},
+    }
+
+    snapshot = _build_coaching_snapshot(
+        report=report,
+        review=review,
+        jump_brief={"actions": ["Regel-Fokus"]},
+        jump_brief_simple={"actions": ["Einfacher Fokus"]},
+        ai_coaching={
+            "available": True,
+            "next_jump_focus": "Kompaktere Haltung nur kleiner testen und Linie ruhig halten.",
+        },
+        feedback_context=feedback_context,
+        view_mode="expert",
+    )
+
+    assert snapshot["available"] is True
+    assert snapshot["ai_used"] is True
+    assert snapshot["feedback_used"] is True
+    assert snapshot["source"] == "ai+feedback"
+    assert snapshot["goals"][0]["text"] == "Kompaktere Haltung nur kleiner testen und Linie ruhig halten."
+    assert snapshot["goals"][0]["target_metrics"][1]["metric"] == "angle_turns_20_25"
+    assert snapshot["goals"][0]["target_metrics"][1]["decimals"] == 0
+
+
+def test_coaching_snapshot_matches_ai_focus_to_corresponding_review_goal_metrics():
+    report = _minimal_goal_follow_report(
+        jump_id="snapshot-match",
+        file_name="snapshot-match.csv",
+        angle_10=74.0,
+        angle_15=80.0,
+    )
+    review = {
+        "coaching_goals": [
+            {
+                "id": "build_gain",
+                "phase": "Aufbau 10-20s",
+                "text": "Zwischen +10s und +20s mehr Druck aufbauen.",
+                "target_metrics": [
+                    {
+                        "metric": "gain_10_20",
+                        "label": "Zuwachs +10 bis +20s",
+                        "direction": "increase",
+                        "min_delta": 12.0,
+                        "unit": " km/h",
+                        "decimals": 1,
+                    }
+                ],
+            },
+            {
+                "id": "hot_efficiency",
+                "phase": "Hot-Zone",
+                "text": "Hot-Zone frueher klein korrigieren und die Linie ruhiger halten.",
+                "target_metrics": [
+                    {
+                        "metric": "vhor_min_20_25",
+                        "label": "vHor-Min 20-25s",
+                        "direction": "increase",
+                        "min_delta": 2.0,
+                        "unit": " km/h",
+                        "decimals": 1,
+                    }
+                ],
+            },
+        ]
+    }
+
+    snapshot = _build_coaching_snapshot(
+        report=report,
+        review=review,
+        jump_brief={"actions": []},
+        jump_brief_simple={"actions": []},
+        ai_coaching={
+            "available": True,
+            "next_jump_focus": "Hot-Zone frueher klein korrigieren und die Linie ruhiger halten.",
+        },
+        feedback_context={"available": False},
+        view_mode="expert",
+    )
+
+    assert snapshot["available"] is True
+    assert snapshot["goals"][0]["text"] == "Hot-Zone frueher klein korrigieren und die Linie ruhiger halten."
+    assert snapshot["goals"][0]["phase"] == "Hot-Zone"
+    assert snapshot["goals"][0]["target_metrics"][0]["metric"] == "vhor_min_20_25"
+    assert snapshot["goals"][0]["target_metrics"][0]["metric"] != "gain_10_20"
+
+
+def test_tip_follow_up_prefers_saved_coaching_snapshot_goal():
+    previous_report = _minimal_goal_follow_report(
+        jump_id="prev",
+        file_name="previous.csv",
+        angle_10=75.0,
+        angle_15=85.0,
+        risk_score=35.0,
+    )
+    previous_report["coaching_snapshot"] = {
+        "available": True,
+        "source": "ai+feedback",
+        "focus_text": "Kompaktere Haltung nur kleiner testen.",
+        "goals": [
+            {
+                "id": "display_focus",
+                "phase": "Stabilitaet / Kipp-Risiko",
+                "text": "Kompaktere Haltung nur kleiner testen.",
+                "target_metrics": [
+                    {
+                        "metric": "negative_risk_score",
+                        "label": "Risiko-Score",
+                        "direction": "decrease",
+                        "min_delta": 5.0,
+                        "unit": "",
+                        "decimals": 1,
+                    }
+                ],
+            }
+        ],
+    }
+    current_report = _minimal_goal_follow_report(
+        jump_id="current",
+        file_name="current.csv",
+        angle_10=80.0,
+        angle_15=88.0,
+        risk_score=20.0,
+    )
+    previous_goals = [
+        {
+            "id": "old_dynamic_goal",
+            "phase": "Aufbau 10-20s",
+            "text": "Im Aufbau flacher bleiben.",
+            "target_metrics": [
+                {
+                    "metric": "angle_10",
+                    "label": "Winkel +10s",
+                    "direction": "decrease",
+                    "min_delta": 1.0,
+                    "unit": " Grad",
+                    "decimals": 1,
+                }
+            ],
+        }
+    ]
+
+    follow_up = _build_tip_follow_up(
+        current_report=current_report,
+        previous_report=previous_report,
+        marco_profile=_TEST_MARCO_PROFILE,
+        previous_coaching_goals=previous_goals,
+    )
+
+    assert follow_up["available"] is True
+    assert follow_up["snapshot_used"] is True
+    assert follow_up["snapshot_source"] == "ai+feedback"
+    assert follow_up["entries"][0]["status_key"] == "umgesetzt"
+    assert follow_up["entries"][0]["goal_text"] == "Kompaktere Haltung nur kleiner testen."
+    assert "Risiko-Score" in follow_up["entries"][0]["detail"]
+    assert "Im Aufbau flacher bleiben" not in follow_up["entries"][0]["goal_text"]
+
+
+def test_tip_follow_up_falls_back_when_saved_snapshot_is_not_evaluable():
+    previous_report = _minimal_goal_follow_report(
+        jump_id="prev",
+        file_name="previous.csv",
+        angle_10=75.0,
+        angle_15=85.0,
+    )
+    previous_report["coaching_snapshot"] = {
+        "available": True,
+        "source": "ai",
+        "focus_text": "Nicht auswertbares altes Ziel.",
+        "goals": [
+            {
+                "id": "broken_snapshot_goal",
+                "phase": "Coaching-Fokus",
+                "text": "Nicht auswertbares altes Ziel.",
+                "target_metrics": [
+                    {
+                        "metric": "unsupported_metric",
+                        "label": "Unbekannt",
+                        "direction": "increase",
+                        "min_delta": 1.0,
+                    }
+                ],
+            }
+        ],
+    }
+    current_report = _minimal_goal_follow_report(
+        jump_id="current",
+        file_name="current.csv",
+        angle_10=72.5,
+        angle_15=82.0,
+    )
+    previous_goals = [
+        {
+            "id": "fallback_goal",
+            "phase": "Aufbau 10-20s",
+            "text": "Im Aufbau flacher bleiben.",
+            "target_metrics": [
+                {
+                    "metric": "angle_10",
+                    "label": "Winkel +10s",
+                    "direction": "decrease",
+                    "min_delta": 1.0,
+                    "unit": " Grad",
+                    "decimals": 1,
+                }
+            ],
+        }
+    ]
+
+    follow_up = _build_tip_follow_up(
+        current_report=current_report,
+        previous_report=previous_report,
+        marco_profile=_TEST_MARCO_PROFILE,
+        previous_coaching_goals=previous_goals,
+    )
+
+    assert follow_up["available"] is True
+    assert follow_up["snapshot_used"] is False
+    assert follow_up["entries"][0]["goal_text"] == "Im Aufbau flacher bleiben."
+    assert "Winkel +10s" in follow_up["entries"][0]["detail"]
 
 
 def test_tip_follow_up_compacts_duplicate_structured_goals_and_flags_quality():

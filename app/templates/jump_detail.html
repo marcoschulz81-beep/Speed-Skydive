@@ -59,6 +59,16 @@
             <span class="meta-note">Aendert Profil/Filter, nicht die Speed-Berechnung.</span>
             {% endif %}
         </div>
+        <div class="feedback-meta">
+            <span class="label">Sprungfeedback</span>
+            <form method="post" action="/jumps/{{ jump_id }}/feedback?view={{ vm }}" class="feedback-form">
+                <textarea name="jump_feedback" rows="3" placeholder="Optional: Fokus, Gefuehl oder Frage zum Sprung">{{ report.feedback.text if report.feedback and report.feedback.available else "" }}</textarea>
+                <button type="submit" class="btn secondary">Feedback speichern</button>
+            </form>
+            {% if vm == "expert" %}
+            <span class="meta-note">Aendert Coaching-Texte und Profilkontext, nicht die Messwerte.</span>
+            {% endif %}
+        </div>
         <div><span class="label">t0 UTC</span><span>{{ report.jump.t0_utc }}</span></div>
         {% if vm == "expert" %}
         <div><span class="label">Samplingrate</span><span>{{ report.jump.sample_rate_hz }} Hz</span></div>
@@ -236,6 +246,9 @@
     <h2>Umsetzung letzter Fokus</h2>
     <p class="muted">{{ tip_follow_up.summary }}</p>
     <p class="muted">Rueckblick auf den vorherigen Fokus, nicht das neue Hauptziel fuer diesen Sprung.</p>
+    {% if tip_follow_up.snapshot_used %}
+    <p class="muted">Referenzbasis: gespeicherter Coaching-Fokus des vorherigen Reports.</p>
+    {% endif %}
     {% if tip_follow_up.quality_note %}
     <p class="muted">{{ tip_follow_up.quality_note }}</p>
     {% endif %}

@@ -196,6 +196,7 @@ def build_jump_review(
     technical_assessment = _technical_coaching_assessment(
         chart_data=chart_data,
         metrics=metrics,
+        notes=notes,
         eval_end_s=eval_end_s,
     )
     if technical_assessment.get("available"):
@@ -1644,10 +1645,11 @@ def _technical_coaching_assessment(
     *,
     chart_data: dict[str, Any],
     metrics: dict[str, Any],
+    notes: dict[str, Any],
     eval_end_s: float | None,
 ) -> dict[str, Any]:
     phases = _technical_phase_model_analysis(chart_data=chart_data, eval_end_s=eval_end_s)
-    window_quality = _best_3s_window_quality_analysis(chart_data=chart_data, metrics=metrics)
+    window_quality = _best_3s_window_quality_analysis(chart_data=chart_data, metrics=metrics, notes=notes)
     jerk_quality = _jerk_quality_analysis(chart_data=chart_data, eval_end_s=eval_end_s)
 
     available = bool(phases) or bool(window_quality.get("available")) or bool(jerk_quality.get("available"))
@@ -1660,15 +1662,19 @@ def _technical_coaching_assessment(
 
     if window_quality.get("available"):
         label = str(window_quality.get("label") or "")
+        window_name = _best_window_quality_display_name(window_quality)
         if label == "stabil":
-            strengths.append("Das beste 3s-Fenster ist technisch ruhig genug und wirkt reproduzierbar.")
+            strengths.append(f"{window_name} ist technisch ruhig genug und wirkt reproduzierbar.")
         elif label in {"unruhig", "kritisch"}:
             quality_causes = _best_window_quality_cause_texts(window_quality)
             cause_text = ", ".join(quality_causes) if quality_causes else "Qualitaet auffaellig"
-            issues.append(
-                "Das beste 3s-Fenster wirkt eher wie ein kurzer Peak als wie ein sauber gehaltenes Speed-Fenster "
-                f"({cause_text})."
-            )
+            if bool(window_quality.get("drop_after_evaluable")) and "Speed-Drop danach" in cause_text:
+                issues.append(
+                    f"{window_name} wirkt eher wie ein kurzer Peak als wie ein sauber gehaltenes Speed-Fenster "
+                    f"({cause_text})."
+                )
+            else:
+                issues.append(f"{window_name} ist technisch auffaellig und nicht sauber genug gehalten ({cause_text}).")
             actions.append(
                 {
                     "key": "best_3s_window_quality",
@@ -1731,7 +1737,7 @@ def _technical_coaching_assessment(
 
     summary_bits: list[str] = []
     if window_quality.get("available"):
-        summary_bits.append(f"3s-Fenster {window_quality.get('label')}")
+        summary_bits.append(f"{_best_window_quality_summary_name(window_quality)} {window_quality.get('label')}")
     if phases:
         bad_phase = next((phase for phase in phases if phase.get("steep_without_gain") or phase.get("oversteep_vhor_cost")), None)
         if bad_phase is not None:
@@ -1850,9 +1856,17 @@ def _phase_measurement(*, chart_data: dict[str, Any], start_s: float, end_s: flo
     }
 
 
-def _best_3s_window_quality_analysis(*, chart_data: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
-    start_s = _num(metrics.get("best_3s_start_s"))
-    end_s = _num(metrics.get("best_3s_end_s"))
+def _best_3s_window_quality_analysis(
+    *,
+    chart_data: dict[str, Any],
+    metrics: dict[str, Any],
+    notes: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    window = _coaching_relevant_3s_window(chart_data=chart_data, metrics=metrics)
+    if not window.get("available"):
+        return {"available": False}
+    start_s = _num(window.get("start_s"))
+    end_s = _num(window.get("end_s"))
     if start_s is None or end_s is None or end_s <= start_s:
         return {"available": False}
     t_vvert, vvert = _window_series(chart_data, "vVert_kmh", start_s=float(start_s), end_s=float(end_s))
@@ -1866,11 +1880,14 @@ def _best_3s_window_quality_analysis(*, chart_data: dict[str, Any], metrics: dic
     angle_std = float(pstdev(angle)) if len(angle) >= 2 else 0.0
     vhor_min = float(min(vhor))
     acc_mean = float(mean(acc)) if acc else 0.0
-    after_end = float(end_s) + 2.0
-    _, vvert_after = _window_series(chart_data, "vVert_kmh", start_s=float(end_s), end_s=after_end)
-    drop_after = 0.0
-    if vvert_after:
-        drop_after = max(0.0, float(max(vvert) - min(vvert_after)))
+    drop_context = _clean_drop_after_window(
+        chart_data=chart_data,
+        metrics=metrics,
+        notes=notes or {},
+        window_vvert=vvert,
+        window_end_s=float(end_s),
+    )
+    drop_after = _num(drop_context.get("drop_kmh"))
 
     score = 0
     if vvert_std > 16.0:
@@ -1887,7 +1904,9 @@ def _best_3s_window_quality_analysis(*, chart_data: dict[str, Any], metrics: dic
         score += 1
     if acc_mean < -0.4:
         score += 1
-    if drop_after > 22.0:
+    if drop_after is not None and drop_after > 35.0:
+        score += 2
+    elif drop_after is not None and drop_after > 22.0:
         score += 1
 
     label = "stabil"
@@ -1905,7 +1924,112 @@ def _best_3s_window_quality_analysis(*, chart_data: dict[str, Any], metrics: dic
         "angle_std_deg": angle_std,
         "vhor_min_kmh": vhor_min,
         "acc_mean_mps2": acc_mean,
-        "vvert_drop_after_kmh": drop_after,
+        "vvert_drop_after_kmh": 0.0 if drop_after is None else float(drop_after),
+        "drop_after_evaluable": bool(drop_context.get("evaluable")),
+        "drop_after_reason": str(drop_context.get("reason") or ""),
+        "drop_after_window_s": _num(drop_context.get("window_s")),
+        "source": str(window.get("source") or "coaching"),
+        "raw_best_start_s": _num(metrics.get("best_3s_start_s")),
+        "raw_best_end_s": _num(metrics.get("best_3s_end_s")),
+        "raw_best_vvert_kmh": _num(metrics.get("best_3s_vVert_kmh")),
+        "rule_based_3s_score": _num(metrics.get("rule_based_3s_score")),
+    }
+
+
+def _coaching_relevant_3s_window(*, chart_data: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
+    perf_start = _num(metrics.get("performance_window_start_s"))
+    perf_end = _num(metrics.get("performance_window_end_s"))
+    rule_score = _num(metrics.get("rule_based_3s_score"))
+    if perf_start is not None and perf_end is not None and perf_end >= perf_start + 3.0:
+        window = _best_3s_window_from_chart(chart_data=chart_data, start_s=float(perf_start), end_s=float(perf_end))
+        if window.get("available"):
+            window["source"] = "rule_window" if rule_score is not None else "performance_window"
+            return window
+
+    raw_start = _num(metrics.get("best_3s_start_s"))
+    raw_end = _num(metrics.get("best_3s_end_s"))
+    raw_speed = _num(metrics.get("best_3s_vVert_kmh"))
+    if raw_start is None or raw_end is None or raw_end <= raw_start:
+        return {"available": False}
+    return {
+        "available": True,
+        "source": "raw_best_fallback",
+        "start_s": float(raw_start),
+        "end_s": float(raw_end),
+        "avg_vvert_kmh": raw_speed,
+    }
+
+
+def _best_3s_window_from_chart(*, chart_data: dict[str, Any], start_s: float, end_s: float) -> dict[str, Any]:
+    t_raw, vvert_raw = _window_series(chart_data, "vVert_kmh", start_s=start_s, end_s=end_s)
+    if len(t_raw) < 5 or len(vvert_raw) < 5:
+        return {"available": False}
+    t_arr = np.asarray(t_raw, dtype=float)
+    vvert_arr = np.asarray(vvert_raw, dtype=float)
+    valid = np.isfinite(t_arr) & np.isfinite(vvert_arr)
+    if valid.sum() < 5:
+        return {"available": False}
+    t_arr = t_arr[valid]
+    vvert_arr = vvert_arr[valid]
+    if float(t_arr[-1] - t_arr[0]) < 3.0:
+        return {"available": False}
+
+    grid_step = 0.1
+    grid = np.arange(float(t_arr[0]), float(t_arr[-1]) + grid_step, grid_step)
+    if len(grid) < 31:
+        return {"available": False}
+    vvert = np.interp(grid, t_arr, vvert_arr)
+    window_size = int(round(3.0 / grid_step))
+    if len(grid) <= window_size:
+        return {"available": False}
+    means = np.convolve(vvert, np.ones(window_size) / window_size, mode="valid")
+    idx = int(np.argmax(means))
+    window_start = float(grid[idx])
+    window_end = float(window_start + 3.0)
+    if window_end > end_s + 0.05:
+        return {"available": False}
+    return {
+        "available": True,
+        "start_s": window_start,
+        "end_s": window_end,
+        "avg_vvert_kmh": float(means[idx]),
+    }
+
+
+def _clean_drop_after_window(
+    *,
+    chart_data: dict[str, Any],
+    metrics: dict[str, Any],
+    notes: dict[str, Any],
+    window_vvert: list[float],
+    window_end_s: float,
+) -> dict[str, Any]:
+    decel_start = _num(notes.get("decel_start_s"))
+    curve_end = _num(notes.get("curve_window_end_s"))
+
+    after_end = float(window_end_s) + 2.0
+    if decel_start is not None:
+        if decel_start <= window_end_s + 0.05:
+            return {"evaluable": False, "drop_kmh": None, "reason": "window_ends_at_decel", "window_s": 0.0}
+        after_end = min(after_end, float(decel_start))
+    if curve_end is not None and curve_end > window_end_s:
+        after_end = min(after_end, float(curve_end))
+    after_window_s = max(0.0, float(after_end - window_end_s))
+    if after_window_s < 1.0:
+        return {
+            "evaluable": False,
+            "drop_kmh": None,
+            "reason": "too_little_clean_after_window",
+            "window_s": after_window_s,
+        }
+    _, vvert_after = _window_series(chart_data, "vVert_kmh", start_s=float(window_end_s), end_s=float(after_end))
+    if len(vvert_after) < 3:
+        return {"evaluable": False, "drop_kmh": None, "reason": "too_few_after_samples", "window_s": after_window_s}
+    return {
+        "evaluable": True,
+        "drop_kmh": max(0.0, float(max(window_vvert) - min(vvert_after))),
+        "reason": "clean_after_window",
+        "window_s": after_window_s,
     }
 
 
@@ -1925,9 +2049,23 @@ def _best_window_quality_cause_texts(window_quality: dict[str, Any]) -> list[str
         causes.append(f"vHor-Min {vhor_min:.1f} km/h")
     if acc_mean is not None and acc_mean < -0.4:
         causes.append(f"negative Beschleunigung {acc_mean:.2f} m/s2")
-    if drop_after is not None and drop_after > 22.0:
+    if bool(window_quality.get("drop_after_evaluable")) and drop_after is not None and drop_after > 22.0:
         causes.append(f"Speed-Drop danach {drop_after:.1f} km/h")
     return causes
+
+
+def _best_window_quality_display_name(window_quality: dict[str, Any]) -> str:
+    source = str(window_quality.get("source") or "")
+    if source in {"rule_window", "performance_window"}:
+        return "Das regel-/coachingrelevante 3s-Fenster"
+    return "Das beste 3s-Fenster"
+
+
+def _best_window_quality_summary_name(window_quality: dict[str, Any]) -> str:
+    source = str(window_quality.get("source") or "")
+    if source in {"rule_window", "performance_window"}:
+        return "regelrelevantes 3s-Fenster"
+    return "3s-Fenster"
 
 
 def _jerk_quality_analysis(*, chart_data: dict[str, Any], eval_end_s: float | None) -> dict[str, Any]:

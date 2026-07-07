@@ -97,6 +97,7 @@ label span {
 
 input[type="text"],
 input[type="file"],
+textarea,
 select {
     width: 100%;
     background: #10171f;
@@ -104,6 +105,17 @@ select {
     color: var(--txt);
     border-radius: 6px;
     padding: 0.55rem 0.65rem;
+}
+
+textarea {
+    min-height: 5rem;
+    resize: vertical;
+    font: inherit;
+}
+
+.full-row,
+.feedback-meta {
+    grid-column: 1 / -1;
 }
 
 button,
@@ -327,6 +339,15 @@ th {
 .context-form .btn {
     min-height: 2.3rem;
     padding: 0.45rem 0.7rem;
+}
+
+.feedback-form {
+    display: grid;
+    gap: 0.5rem;
+}
+
+.feedback-form .btn {
+    justify-self: start;
 }
 
 .meta-note {

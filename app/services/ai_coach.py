@@ -178,6 +178,7 @@ def _compact_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "view_mode",
         "jump",
         "performance_profile",
+        "feedback_training_profile",
         "metrics",
         "scorecard",
         "review",
@@ -185,6 +186,7 @@ def _compact_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "technical_assessment",
         "jump_brief",
         "tip_follow_up",
+        "jump_feedback",
         "quality",
     }
     clean = {key: value for key, value in payload.items() if key in allowed_keys}
@@ -218,7 +220,15 @@ def _instructions_for_view(view_mode: str) -> str:
         "formuliere vorsichtig. Wenn primary_diagnosis.available=true ist, behandle diese Diagnose als Hauptursache "
         "und formuliere keine widerspruechlichen Ziele wie gleichzeitig steiler und flacher werden. "
         "Wenn technical_assessment vorhanden ist, nutze es als zusaetzliche technische Evidenz fuer Phasenmodell, "
-        "3s-Fenster-Qualitaet und Beschleunigungsruhe. "
+        "3s-Fenster-Qualitaet und Beschleunigungsruhe. Nutze einen Speed-Drop nach dem 3s-Fenster nur dann als "
+        "Problem, wenn best_window_quality.drop_after_evaluable=true ist; bei nicht belastbarem Folgefenster nicht "
+        "aus einem Ausstiegs-/Decel-Drop auf instabile Technik schliessen. "
+        "Wenn jump_feedback.available=true ist, nutze es als subjektiven Kontext des Springers. Behandle Feedback nie "
+        "als Messwert und behaupte keine konkrete Koerperhaltung sicher ohne Messbeleg. Formuliere stattdessen, ob "
+        "das Gefuehl oder der Versuch durch Messdaten bestaetigt, teilweise bestaetigt oder nicht klar sichtbar ist. "
+        "Wenn das Feedback eine Technikidee nennt, pruefe die gelieferten Evidenzen und leite daraus einen kleinen, "
+        "sicheren naechsten Schritt ab. Wenn feedback_training_profile vorhanden ist, nutze es nur als wiederkehrenden "
+        "Trainingskontext, nicht als harte Bewertung. "
         "Trenne die Ausgabefelder strikt: summary ist nur das Kurzfazit, main_issue ist nur die Diagnose, "
         "coaching_text erklaert warum der Fehler entsteht und was im Sprung passiert, next_jump_focus ist genau "
         "eine konkrete Aufgabe fuer den naechsten Sprung. coaching_text darf die konkrete Fokus-Anweisung nicht "

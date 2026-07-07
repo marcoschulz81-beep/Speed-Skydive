@@ -18,6 +18,8 @@ Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Foku
 - Hot-Zone-Erkennung und Negativ/Kippen-Heuristik
 - Qualitätsflags + Qualitätsscore
 - Automatische Scorecard + konkrete Technik-Tipps
+- Optionales Sprungfeedback als Freitext beim Upload oder spaeter im Report
+- Gespeicherter Coaching-Fokus fuer den Rueckblick im naechsten Sprung
 - Speicherung pro Springer in SQLite (jumps/samples/metrics)
 - HTML-Report mit Kurven + PDF-Export
 - Vergleichsansicht je Springer
@@ -77,6 +79,32 @@ Die Coaching-Bewertung betrachtet einen Sprung nicht nur ueber die Top-Speed-Zah
 - Rueckblick, ob der letzte Trainingsfokus umgesetzt wurde
 
 Damit werden Springer mit aehnlicher Geschwindigkeit nicht automatisch gleich bewertet. Ein Sprung mit zu fruehem steilem Aufbau bekommt andere Hinweise als ein Sprung, der erst in der Mitte oder am Ende unruhig wird.
+
+### Regel-/Coachingfenster und Top-Speed
+
+Fuer Coaching und Bewertung wird zwischen regelnahem Score und allgemeinem Trainingspeak unterschieden:
+
+- `rule_based_3s_score` bleibt die primaere Speed-Leistung fuer Bewertung, Vergleich und Leistungsprofil.
+- `best_3s_vVert_kmh` bleibt sichtbar, ist aber ein allgemeiner Top-Speed/Trainingspeak und kann spaeter liegen.
+- Die technische 3s-Fenster-Qualitaet bewertet primaer das regel-/coachingrelevante Performance-Fenster.
+- Ein Speed-Drop nach einem 3s-Fenster wird nur als Problem gewertet, wenn er vor `decel_start` liegt und noch ein belastbarer Folgezeitraum vorhanden ist.
+- Ein Drop direkt am Ausstieg/Decel wird nicht mehr als instabile Technik formuliert.
+- Wenn der hoechste Raw-Top-Speed ausserhalb des regelrelevanten Fensters liegt, wird er als spaeter Peak eingeordnet und nicht als Haupt-Score missverstanden.
+
+Damit kann die Software weiterhin echte Faelle erkennen, in denen es den Springer vorzeitig rausreisst, ohne Ausstiegs-/Bremsphasen faelschlich als Technikproblem zu werten.
+
+### Sprungfeedback
+
+Springer koennen optional einen Freitext zum Sprung erfassen, z. B. Fokus, Gefuehl, Frage oder wahrgenommene Instabilitaet. Das Feedback ist bewusst kein Pflichtfeld und keine harte Messgrundlage.
+
+- Feedback kann direkt beim Upload eingetragen werden.
+- Feedback kann spaeter im Report geaendert oder geloescht werden.
+- Die Messwerte und Scores bleiben unveraendert.
+- Die lokale Analyse gleicht Feedback nur mit objektiven Signalen ab.
+- KI-Coaching darf Feedback als subjektiven Kontext nutzen, aber keine Koerperhaltung sicher behaupten, wenn sie nicht gemessen wurde.
+- Das Springerprofil nutzt wiederkehrende Feedback-Themen als Trainingskontext.
+
+Beispiel: Wenn ein Springer schreibt, dass engere Arme versucht wurden und der Sprung am Ende unruhig wurde, kann das Coaching daraus einen kleineren naechsten Schritt ableiten, falls die Messdaten Instabilitaet in der Hot-Zone zeigen.
 
 ### Einfache Ansicht vs. Expertenansicht
 
@@ -166,6 +194,18 @@ pytest
 - Beim naechsten Sprung prueft die Expertenansicht zuerst diese konkreten Ziele.
 - Falls ein alter Datensatz noch keine strukturierten Ziele hat, nutzt die Software weiterhin den bisherigen Phasen-Fallback.
 
+## Coaching-Snapshots und Umsetzung letzter Fokus
+
+Der Rueckblick `Umsetzung letzter Fokus` nutzt ab dieser Version den tatsaechlich gespeicherten Coaching-Fokus des vorherigen Reports.
+
+- Beim Oeffnen eines Expertenreports wird ein Coaching-Snapshot gespeichert.
+- Der Snapshot enthaelt den angezeigten Fokus und passende Zielmetriken.
+- Beim naechsten Report wird zuerst dieser gespeicherte Fokus ausgewertet.
+- Falls ein alter Report noch keinen Snapshot hat oder ein Ziel nicht messbar ist, greift der bestehende Fallback.
+- Die einfache Ansicht ueberschreibt den Experten-Snapshot nicht.
+
+Dadurch bewertet der Rueckblick das, was dem Springer wirklich als naechster Fokus gezeigt wurde, statt Ziele live aus der aktuellen Regelanalyse des alten Sprungs neu zusammenzubauen.
+
 ## KI-Vorbereitung fuer Coaching-Texte
 
 - Die technische Bewertung bleibt deterministisch und nachvollziehbar.
@@ -183,6 +223,8 @@ pytest
 - `jumps`: Metadaten pro Sprung, t0, Exit-Höhe, Gültigkeit, Qualität
 - `samples`: abgeleitete Samplewerte (t_rel, vVert, vHor, Winkel, Flags ...)
 - `metrics`: 3s-Score, Window, Hot-Zone, Risiko, Fixpunkte, Phasen, Tipps
+- `jump_feedback`: optionaler Freitext pro Sprung fuer subjektiven Trainingskontext
+- `coaching_snapshots`: gespeicherter Coaching-Fokus pro Sprung fuer den Rueckblick
 
 ## GitHub-Setup
 
