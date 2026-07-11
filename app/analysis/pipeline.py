@@ -20,6 +20,7 @@ from app.config import (
     PERFORMANCE_WINDOW_VERTICAL_DROP_M,
     REQUIRED_COLUMNS,
     TARGET_ANGLE_BANDS,
+    TECHNICAL_PHASE_SPECS,
 )
 
 
@@ -703,7 +704,7 @@ def _refine_exit_to_ramp_start(
     v_peak = float(vel_d_smooth[peak_idx])
     if not np.isfinite(v_detect) or not np.isfinite(v_peak):
         return detected_idx
-    if v_detect < 45.0 or v_peak < 90.0:
+    if v_detect < 35.0 or v_peak < 90.0:
         return detected_idx
 
     seg = vel_d_smooth[search_start_idx : detected_idx + 1]
@@ -724,7 +725,7 @@ def _refine_exit_to_ramp_start(
         v_start = float(vel_d_smooth[idx])
         gain_to_detect = v_detect - v_start
         gain_to_peak = v_peak - v_start
-        if gain_to_detect < 30.0 or gain_to_peak < 45.0:
+        if gain_to_detect < 24.0 or gain_to_peak < 45.0:
             continue
 
         # Require clear early acceleration in the first ~2s after ramp start.
@@ -974,7 +975,33 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
-def _phase_stats(df: pd.DataFrame, name: str, start_s: float, end_s: float) -> dict[str, Any]:
+def _phase_stats(df: pd.DataFrame, spec: dict[str, Any], end_limit_s: float | None = None) -> dict[str, Any]:
+    name = str(spec["name"])
+    start_s = float(spec["start_s"])
+    end_s = float(spec["end_s"])
+    if end_limit_s is not None:
+        end_s = min(end_s, float(end_limit_s))
+    target_low = float(spec["angle_min"])
+    target_high = float(spec["angle_max"])
+    target_label = f"{target_low:.0f}-{target_high:.0f} Grad"
+    if end_s <= start_s + 0.75:
+        return {
+            "name": name,
+            "start_s": round(start_s, 2),
+            "end_s": round(end_s, 2),
+            "duration_s": round(max(0.0, end_s - start_s), 2),
+            "avg_vVert_kmh": None,
+            "avg_vHor_kmh": None,
+            "avg_angle_deg": None,
+            "angle_start_deg": None,
+            "angle_end_deg": None,
+            "angle_delta_deg": None,
+            "max_vVert_kmh": None,
+            "target_angle_label": target_label,
+            "target_status": "nicht belastbar",
+            "comment": "Nicht genug Daten in dieser Phase.",
+        }
+
     seg = df[(df["t_rel_s"] >= start_s) & (df["t_rel_s"] <= end_s)]
     if seg.empty:
         return {
@@ -985,13 +1012,24 @@ def _phase_stats(df: pd.DataFrame, name: str, start_s: float, end_s: float) -> d
             "avg_vVert_kmh": None,
             "avg_vHor_kmh": None,
             "avg_angle_deg": None,
+            "angle_start_deg": None,
+            "angle_end_deg": None,
+            "angle_delta_deg": None,
             "max_vVert_kmh": None,
+            "target_angle_label": target_label,
+            "target_status": "nicht belastbar",
             "comment": "Nicht genug Daten in dieser Phase.",
         }
     avg_vvert = float(seg["vVert_kmh"].mean())
     avg_vhor = float(seg["vHor_kmh"].mean())
     avg_angle = float(seg["angle_deg"].mean())
     max_vvert = float(seg["vVert_kmh"].max())
+    start_vvert = float(seg["vVert_kmh"].iloc[0])
+    end_vvert = float(seg["vVert_kmh"].iloc[-1])
+    start_angle = float(seg["angle_deg"].iloc[0])
+    end_angle = float(seg["angle_deg"].iloc[-1])
+    min_angle = float(seg["angle_deg"].min())
+    max_angle = float(seg["angle_deg"].max())
     return {
         "name": name,
         "start_s": round(start_s, 2),
@@ -1000,31 +1038,114 @@ def _phase_stats(df: pd.DataFrame, name: str, start_s: float, end_s: float) -> d
         "avg_vVert_kmh": round(avg_vvert, 2),
         "avg_vHor_kmh": round(avg_vhor, 2),
         "avg_angle_deg": round(avg_angle, 2),
+        "angle_start_deg": round(start_angle, 2),
+        "angle_end_deg": round(end_angle, 2),
+        "angle_delta_deg": round(end_angle - start_angle, 2),
+        "start_vVert_kmh": round(start_vvert, 2),
+        "end_vVert_kmh": round(end_vvert, 2),
+        "vVert_gain_kmh": round(end_vvert - start_vvert, 2),
+        "min_angle_deg": round(min_angle, 2),
+        "max_angle_deg": round(max_angle, 2),
         "max_vVert_kmh": round(max_vvert, 2),
-        "comment": _phase_comment(name, avg_vvert, avg_vhor, avg_angle),
+        "target_angle_label": target_label,
+        "target_status": _technical_phase_status(
+            avg_angle=avg_angle,
+            min_angle=min_angle,
+            max_angle=max_angle,
+            target_low=target_low,
+            target_high=target_high,
+        ),
+        "comment": _technical_phase_comment(
+            name=name,
+            avg_vvert=avg_vvert,
+            avg_vhor=avg_vhor,
+            avg_angle=avg_angle,
+            min_angle=min_angle,
+            max_angle=max_angle,
+            target_low=target_low,
+            target_high=target_high,
+        ),
     }
 
 
-def _phase_comment(name: str, avg_vvert: float, avg_vhor: float, avg_angle: float) -> str:
-    if name == "Startphase":
-        if avg_vvert < 95:
-            return "Aufbau in den ersten Sekunden eher langsam."
-        if avg_vvert > 230:
-            return "Sehr dynamischer früher Aufbau."
-        return "Sauberer früher Speedaufbau."
-    if name == "Beschleunigungsphase":
-        if avg_angle < 72:
-            return "Winkel in der Aufbauphase etwas zu flach."
-        if avg_angle > 88 and avg_vhor < 30:
-            return "Sehr steil bei geringer horizontaler Stabilisierung."
-        return "Aufbauphase insgesamt kontrolliert."
-    if name == "Phase maximale Geschwindigkeit":
-        if avg_vhor < 22:
-            return "Peak mit sehr niedriger horizontaler Reserve."
-        return "Peak-Phase erreicht."
-    if avg_vvert > 380:
-        return "Speed am Ende noch hoch - frühes Management für Breakoff planen."
-    return "Endphase kontrolliert."
+def _technical_phase_status(
+    *,
+    avg_angle: float | None,
+    min_angle: float | None,
+    max_angle: float | None,
+    target_low: float,
+    target_high: float,
+) -> str:
+    if avg_angle is None:
+        return "unbekannt"
+    avg = float(avg_angle)
+    low = float(target_low)
+    high = float(target_high)
+    max_val = None if max_angle is None else float(max_angle)
+    min_val = None if min_angle is None else float(min_angle)
+    if avg < low - 1.5:
+        return "zu flach"
+    if avg > high + 1.0:
+        return "zu steil"
+    if max_val is not None and max_val > high + 2.0:
+        return "kurz zu steil"
+    if min_val is not None and min_val < low - 3.0 and avg < low + 0.8:
+        return "eher flach"
+    return "im Zielbereich"
+
+
+def _technical_phase_comment(
+    *,
+    name: str,
+    avg_vvert: float | None,
+    avg_vhor: float | None,
+    avg_angle: float | None,
+    min_angle: float | None,
+    max_angle: float | None,
+    target_low: float,
+    target_high: float,
+) -> str:
+    if avg_angle is None:
+        return "Phase nicht belastbar."
+    status = _technical_phase_status(
+        avg_angle=avg_angle,
+        min_angle=min_angle,
+        max_angle=max_angle,
+        target_low=target_low,
+        target_high=target_high,
+    )
+    vhor = None if avg_vhor is None else float(avg_vhor)
+    vvert = None if avg_vvert is None else float(avg_vvert)
+
+    if status == "kurz zu steil":
+        max_val = None if max_angle is None else float(max_angle)
+        target_text = f"{float(target_low):.0f}-{float(target_high):.0f} Grad"
+        if max_val is not None and vhor is not None and vhor < 28.0:
+            return (
+                f"Durchschnitt liegt im Zielbereich; Max Winkel {max_val:.1f} Grad liegt bei knapper "
+                f"horizontaler Reserve kurz ueber dem Ziel {target_text}."
+            )
+        if max_val is not None:
+            return (
+                f"Durchschnitt liegt im Zielbereich; Max Winkel {max_val:.1f} Grad liegt kurz "
+                f"ueber dem Ziel {target_text}."
+            )
+        return "Durchschnitt liegt im Zielbereich; einzelne Messpunkte liegen kurz ueber dem Zielwinkel."
+    if status == "zu steil":
+        if vhor is not None and vhor < 28.0:
+            return "Zu steil bei knapper horizontaler Reserve; Risiko fuer Nachkorrekturen."
+        return "Winkel liegt ueber dem Technikmodell; nur sinnvoll, wenn die Linie ruhig bleibt."
+    if status in {"zu flach", "eher flach"}:
+        if name == "Max-Speed Fenster" and status == "eher flach":
+            return "Durchschnitt liegt im Zielwinkel, aber einzelne Abschnitte fallen darunter; Stabilitaet des 3s-Fensters separat pruefen."
+        if name == "Dive-Aufbau":
+            return "Aufbau bleibt flach; Druck kommt wahrscheinlich spaeter."
+        return "Winkel liegt unter dem Technikmodell; Speed-Aufbau kann spaeter fehlen."
+    if name == "Max-Speed Fenster":
+        if vvert is not None and vhor is not None and vvert >= 390.0 and vhor >= 25.0:
+            return "Max-Speed-Fenster ist technisch nutzbar: hoch und noch mit horizontaler Reserve."
+        return "Max-Speed-Fenster liegt im Zielwinkel; Stabilitaet des 3s-Fensters separat pruefen."
+    return "Phase liegt im technischen Zielbereich."
 
 
 def _detect_hot_zone(df: pd.DataFrame, best_window: WindowResult | None) -> tuple[float | None, float | None, str, str]:
@@ -1086,6 +1207,7 @@ def _negative_risk(df: pd.DataFrame) -> tuple[float, dict[str, Any]]:
     vhor = post["vHor_kmh"].to_numpy()
     angle = post["angle_deg"].to_numpy()
     vvert = post["vVert_kmh"].to_numpy()
+    time_s = post["t_rel_s"].to_numpy()
 
     rolling_max = pd.Series(vhor).rolling(12, min_periods=1).max().to_numpy()
     dip_ratio = np.where(rolling_max > 1e-6, (rolling_max - vhor) / rolling_max, 0.0)
@@ -1113,18 +1235,49 @@ def _negative_risk(df: pd.DataFrame) -> tuple[float, dict[str, Any]]:
         score += 20
     if vvert_unrest > 12:
         score += 10
-    score = min(score, 100.0)
 
+    details = (
+        f"vHor-Dip {dip_value*100:.0f}%, vHor-Min {float(vhor[dip_idx]):.1f} km/h, "
+        f"Rebound {rebound*100:.0f}%, Winkel-Max {angle_near_vertical:.1f} deg."
+    )
+
+    late_mask = (time_s >= 18.0) & (time_s <= 28.0)
+    if bool(np.any(late_mask)):
+        late_indices = np.where(late_mask)[0]
+        late_min_idx = int(late_indices[int(np.argmin(vhor[late_mask]))])
+        min_t = float(time_s[late_min_idx])
+        min_vhor = float(vhor[late_min_idx])
+        pre_mask = (time_s >= max(8.0, min_t - 8.0)) & (time_s <= min_t)
+        pre_max = float(np.max(vhor[pre_mask])) if bool(np.any(pre_mask)) else min_vhor
+        future_mask = (time_s > min_t) & (time_s <= min(28.0, min_t + 7.0))
+        future_max = float(np.max(vhor[future_mask])) if bool(np.any(future_mask)) else min_vhor
+        late_dip = (pre_max - min_vhor) / pre_max if pre_max > 1e-6 else 0.0
+        late_rebound = (future_max - min_vhor) / min_vhor if min_vhor > 1e-6 else 0.0
+        near_mask = (time_s >= min_t - 1.5) & (time_s <= min_t + 1.5)
+        late_angle_max = float(np.max(angle[near_mask])) if bool(np.any(near_mask)) else float(angle[late_min_idx])
+        late_score = 0.0
+        if late_dip > 0.35:
+            late_score += 30
+        if min_vhor < 30.0:
+            late_score += 25
+        if late_rebound > 0.25:
+            late_score += 25
+        if late_angle_max > 86.0:
+            late_score += 20
+        if late_score >= min(score, 100.0):
+            score = late_score
+            details = (
+                f"vHor-Dip {late_dip*100:.0f}%, vHor-Min {min_vhor:.1f} km/h bei +{min_t:.1f}s, "
+                f"Rebound {late_rebound*100:.0f}%, Winkel-Max {late_angle_max:.1f} deg."
+            )
+
+    score = min(score, 100.0)
     label = "niedrig"
     if score >= 65:
         label = "hoch"
     elif score >= 35:
         label = "mittel"
 
-    details = (
-        f"vHor-Dip {dip_value*100:.0f}%, vHor-Min {float(vhor[dip_idx]):.1f} km/h, "
-        f"Rebound {rebound*100:.0f}%, Winkel-Max {angle_near_vertical:.1f} deg."
-    )
     return score, {"label": label, "details": details}
 
 
@@ -1231,6 +1384,7 @@ def _build_scorecard(
     negative_label: str,
     best_window: WindowResult,
     exit_profile: dict[str, Any],
+    phases: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     fp10 = next((p for p in fixpoints if p["t_rel_s"] == 10.0), None)
     fp20 = next((p for p in fixpoints if p["t_rel_s"] == 20.0), None)
@@ -1270,6 +1424,11 @@ def _build_scorecard(
         "three_second_speed_kmh": round(best_window.avg_vvert_kmh, 2),
         "winkel": angle_state,
         "kipp_risiko": negative_label,
+        "technical_phase_statuses": {
+            str(row.get("name") or ""): str(row.get("target_status") or "")
+            for row in (phases or [])
+            if isinstance(row, dict) and str(row.get("name") or "").strip()
+        },
     }
 
 
@@ -1423,16 +1582,11 @@ def analyze_flysight_csv(
 
     fixpoints = _fixpoints(post)
 
-    start_end = float(min(5.0, max(2.0, best_training.start_s * 0.25)))
-    accel_end = float(max(start_end + 1.5, best_training.start_s - 1.5))
-    max_end = float(best_training.end_s)
-    tail_end = float(analysis_post["t_rel_s"].max())
-
+    phase_end_limit = float(analysis_post["t_rel_s"].max())
     phases = [
-        _phase_stats(analysis_post, "Startphase", 0.0, start_end),
-        _phase_stats(analysis_post, "Beschleunigungsphase", start_end, accel_end),
-        _phase_stats(analysis_post, "Phase maximale Geschwindigkeit", best_training.start_s, max_end),
-        _phase_stats(analysis_post, "Endphase", max_end, tail_end),
+        _phase_stats(analysis_post, phase_spec, end_limit_s=phase_end_limit)
+        for phase_spec in TECHNICAL_PHASE_SPECS
+        if float(phase_spec["start_s"]) <= phase_end_limit
     ]
 
     hot_start, hot_end, hot_label, hot_reason = _detect_hot_zone(analysis_post, best_training)
@@ -1445,6 +1599,7 @@ def analyze_flysight_csv(
         neg_details["label"],
         best_training,
         exit_profile,
+        phases=phases,
     )
     tips = _generate_tips(fixpoints, hot_label, neg_details, scorecard)
 

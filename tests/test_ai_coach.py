@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from app.services.ai_coach import clear_ai_coaching_cache, generate_ai_coaching_texts
+from app.services.ai_coach import clear_ai_coaching_cache, generate_ai_coaching_texts, _limit_text
 
 
 class _FakeResponses:
@@ -84,8 +84,126 @@ def test_ai_coaching_accepts_valid_json_schema_response():
     assert request["reasoning"] == {"effort": "low"}
     assert request["max_output_tokens"] == 1800
     assert "coaching_text erklaert" in request["instructions"]
-    assert "next_jump_focus ist genau eine konkrete Aufgabe" in request["instructions"]
+    assert "next_jump_focus ist der KI-Coaching-Fokus" in request["instructions"]
+    assert "regelbasierten Tipps aus jump_brief.actions" in request["instructions"]
     assert "Ein reines Ergebnisziel" in request["instructions"]
+
+
+def test_ai_coaching_preserves_long_expert_coaching_text_past_old_limit():
+    clear_ai_coaching_cache()
+    long_explanation = " ".join(
+        [
+            (
+                "Die Messdaten zeigen einen spaeten harten Winkelaufbau mit knapper "
+                "Vorwaertsreserve und einem unruhigen 3s-Fenster."
+            )
+            for _ in range(10)
+        ]
+    )
+    assert len(long_explanation) > 900
+    response_payload = {
+        "summary": "Der Sprung ist verwertbar.",
+        "main_issue": "Der groesste Hebel liegt in der spaeten schnellen Phase.",
+        "coaching_text": long_explanation,
+        "next_jump_focus": "Ab +15s schrittweise aufbauen und die Linie ruhig halten.",
+        "confidence_note": "Datenbasis ist ausreichend.",
+    }
+    fake_client = _FakeClient(json.dumps(response_payload))
+
+    result = generate_ai_coaching_texts(
+        {"schema_version": 1},
+        view_mode="expert",
+        enabled=True,
+        model="gpt-5-mini",
+        timeout_s=1.0,
+        api_key="test-key",
+        client_factory=lambda _key, _timeout: fake_client,
+    )
+
+    assert result["available"] is True
+    assert result["coaching_text"] == long_explanation
+
+
+def test_ai_coaching_long_text_limit_ends_on_clean_boundary():
+    clear_ai_coaching_cache()
+    very_long_explanation = " ".join(
+        [
+            f"Satz {idx} beschreibt die Ursache und Wirkung im Sprungverlauf."
+            for idx in range(80)
+        ]
+    )
+    assert len(very_long_explanation) > 1800
+    response_payload = {
+        "summary": "Der Sprung ist verwertbar.",
+        "main_issue": "Der groesste Hebel liegt in der spaeten schnellen Phase.",
+        "coaching_text": very_long_explanation,
+        "next_jump_focus": "Ab +15s schrittweise aufbauen und die Linie ruhig halten.",
+        "confidence_note": "Datenbasis ist ausreichend.",
+    }
+    fake_client = _FakeClient(json.dumps(response_payload))
+
+    result = generate_ai_coaching_texts(
+        {"schema_version": 1},
+        view_mode="expert",
+        enabled=True,
+        model="gpt-5-mini",
+        timeout_s=1.0,
+        api_key="test-key",
+        client_factory=lambda _key, _timeout: fake_client,
+    )
+
+    assert result["available"] is True
+    assert len(result["coaching_text"]) <= 1800
+    assert result["coaching_text"].endswith(".")
+    assert not result["coaching_text"].endswith(" .")
+
+
+def test_ai_text_limit_does_not_finish_on_dangling_connector():
+    text = (
+        "Prioritaet: Aufbau ruhig halten und die Linie vor dem "
+        "3s-Fenster stabilisieren."
+    )
+    limited = _limit_text(text, len("Prioritaet: Aufbau ruhig halten und die Linie vor dem"))
+
+    assert limited == "Prioritaet: Aufbau ruhig halten und die Linie."
+    assert "vor." not in limited
+    assert "dem." not in limited
+
+
+def test_ai_coaching_expert_focus_keeps_reported_focus_complete():
+    clear_ai_coaching_cache()
+    focus = (
+        "Prioritaet: Aufbau im Segment +10 bis +15s frueher beginnen, dabei Winkel nicht "
+        "erzwingen und horizontale Reserve schuetzen. Konkret: leichter, frueher Druckaufbau "
+        "zwischen +10s und +15s mit Fokus auf stabiler vHor (Guardrail: nicht unter deine "
+        "bisherigen vHor-Min-Werte gehen) und deutlich kleinere, fruehere Korrekturen vor +20s, "
+        "sodass das Zielzuwachsfenster (+10 bis +20s) gesteigert wird und die Linie vor dem "
+        "3s-Fenster ruhiger bleibt."
+    )
+    assert len(focus) > 420
+    response_payload = {
+        "summary": "Der Sprung ist verwertbar.",
+        "main_issue": "Der groesste Hebel liegt im Aufbau.",
+        "coaching_text": "Der Aufbau und die horizontale Reserve haengen zusammen.",
+        "next_jump_focus": focus,
+        "confidence_note": "Datenbasis ist ausreichend.",
+    }
+    fake_client = _FakeClient(json.dumps(response_payload))
+
+    result = generate_ai_coaching_texts(
+        {"schema_version": 1},
+        view_mode="expert",
+        enabled=True,
+        model="gpt-5-mini",
+        timeout_s=1.0,
+        api_key="test-key",
+        client_factory=lambda _key, _timeout: fake_client,
+    )
+
+    assert result["available"] is True
+    assert result["next_jump_focus"] == focus
+    assert result["next_jump_focus"].endswith("3s-Fenster ruhiger bleibt.")
+    assert "vor dem." not in result["next_jump_focus"]
 
 
 def test_ai_coaching_separates_duplicate_coaching_and_focus_texts():
@@ -162,7 +280,9 @@ def test_ai_coaching_replaces_metric_only_focus_with_actionable_tip():
     )
 
     assert result["available"] is True
-    assert result["next_jump_focus"] == actionable_focus
+    assert "Aufbau-Tipps gehoeren zusammen" in result["next_jump_focus"]
+    assert "frueher Druck" in result["next_jump_focus"]
+    assert "Stabilitaets-Grenze" in result["next_jump_focus"]
     assert result["next_jump_focus"] != metric_only_focus
 
 
@@ -207,7 +327,7 @@ def test_ai_coaching_simple_view_removes_internal_technical_jargon():
     clear_ai_coaching_cache()
     response_payload = {
         "summary": "Das technische Modell zeigt ein ruhiges bestes 3s-Window.",
-        "main_issue": "Technische Bewertung zeigt harte Korrekturen.",
+        "main_issue": "Technische Bewertung zeigt harte Korrekturen und Vorwaertsbewegung geht verloren.",
         "coaching_text": (
             "Die technische Analyse zeigt vHor-Abfall und vVert-Verlust. "
             "Das 3s-Fenster ist unruhig trotz ruhigem Jerk-Wert. "
@@ -224,7 +344,8 @@ def test_ai_coaching_simple_view_removes_internal_technical_jargon():
             "Die Messwerte zeigen sich das in steilem Winkel. "
             "Hot-Zone mit Max-Winkel und niedrige Werte der waagerechten Geschwindigkeit. "
             "Danach kommt ein Speed-Drop. Den harte Korrekturen-RMS reduzieren. "
-            "Fenster mit sehr niedrige Werte der waagerechten Geschwindigkeit."
+            "Fenster mit sehr niedrige Werte der waagerechten Geschwindigkeit. "
+            "Sobald die Vorwaertsbewegung hoch wird, wird die Linie unruhig."
         ),
         "next_jump_focus": "Technische Hinweise zeigen: im Peak kleiner korrigieren.",
         "confidence_note": "Technikmodell ausreichend belastbar.",
@@ -269,6 +390,10 @@ def test_ai_coaching_simple_view_removes_internal_technical_jargon():
     assert "3s-Window" not in text_blob
     assert "vHor" not in text_blob
     assert "vVert" not in text_blob
+    assert "Vorwaertsbewegung" not in text_blob
+    assert "Vorwärtsbewegung" not in text_blob
+    assert "Vorwaertsreserve" not in text_blob
+    assert "Vorwärtsreserve" not in text_blob
     assert "Technikdaten" not in text_blob
     assert "waagereine Geschwindigkeit" not in text_blob
     assert "waagerechte Geschwindigkeit-Minimum" not in text_blob
@@ -293,6 +418,8 @@ def test_ai_coaching_simple_view_removes_internal_technical_jargon():
     assert "harte Korrekturen-RMS" not in text_blob
     assert "Den harte Korrekturen" not in text_blob
     assert "3s-Fenster" in text_blob
+    assert "waagerechte Geschwindigkeit" in text_blob
+    assert "horizontale Reserve" in text_blob
 
 
 def test_ai_coaching_simple_prompt_blocks_internal_terms():
@@ -320,6 +447,8 @@ def test_ai_coaching_simple_prompt_blocks_internal_terms():
     assert "Nutze keine internen Begriffe" in instructions
     assert "vHor" in instructions
     assert "Jerk" in instructions
+    assert "waagerechte Geschwindigkeit" in instructions
+    assert "Vorwaertsbewegung" in instructions
 
 
 def test_ai_coaching_replaces_suspicious_new_timing_precision_in_focus():
@@ -359,7 +488,8 @@ def test_ai_coaching_replaces_suspicious_new_timing_precision_in_focus():
     )
 
     assert result["available"] is True
-    assert result["next_jump_focus"] == deterministic_focus
+    assert "Der Fokus liegt auf dem Aufbau" in result["next_jump_focus"]
+    assert "spaete Gegenkorrekturen" in result["next_jump_focus"]
     assert "0.4-0.8" not in result["next_jump_focus"]
 
 
@@ -394,7 +524,7 @@ def test_ai_coaching_replaces_summary_when_it_conflicts_with_focus():
 
     assert result["available"] is True
     assert result["summary"] == deterministic_summary
-    assert result["next_jump_focus"] == deterministic_focus
+    assert result["next_jump_focus"] == "Ab +10s frueher Druck aufbauen und die Linie ruhiger halten."
 
 
 def test_ai_coaching_daily_limit_blocks_new_uncached_requests():
@@ -454,6 +584,29 @@ def test_ai_coaching_does_not_expose_client_exception_text():
     assert result["available"] is False
     assert "secret" not in result["reason"]
     assert "test-key" not in result["reason"]
+    assert result["error_type"] == "RuntimeError"
+    assert "Clientfehler" in result["reason"]
+
+
+def test_ai_coaching_reports_timeout_category_without_exception_text():
+    clear_ai_coaching_cache()
+
+    def failing_factory(_key, _timeout):
+        raise TimeoutError("secret timeout detail")
+
+    result = generate_ai_coaching_texts(
+        {"schema_version": 1},
+        view_mode="expert",
+        enabled=True,
+        model="gpt-5-mini",
+        timeout_s=1.0,
+        api_key="test-key",
+        client_factory=failing_factory,
+    )
+
+    assert result["available"] is False
+    assert "Timeout" in result["reason"]
+    assert "secret" not in result["reason"]
 
 
 def test_ai_coaching_rejects_invalid_response_and_falls_back():

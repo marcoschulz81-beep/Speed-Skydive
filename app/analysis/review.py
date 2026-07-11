@@ -6,17 +6,10 @@ from typing import Any
 
 import numpy as np
 
+from app.config import TECHNICAL_PHASE_SPECS
 from app.text_utils import normalize_german_text
 
 from app.analysis.lateral import analyze_lateral_dynamics
-
-_TECHNICAL_PHASE_SPECS: list[dict[str, Any]] = [
-    {"name": "Exit / Stabilisierung", "start_s": 0.0, "end_s": 3.0, "angle_min": 0.0, "angle_max": 40.0},
-    {"name": "Dive-Aufbau", "start_s": 3.0, "end_s": 8.0, "angle_min": 60.0, "angle_max": 70.0},
-    {"name": "Hauptbeschleunigung", "start_s": 8.0, "end_s": 15.0, "angle_min": 75.0, "angle_max": 83.0},
-    {"name": "Hot-Zone Aufbau", "start_s": 15.0, "end_s": 22.0, "angle_min": 82.0, "angle_max": 86.0},
-    {"name": "Max-Speed Fenster", "start_s": 20.0, "end_s": 28.0, "angle_min": 83.0, "angle_max": 87.0},
-]
 
 
 def build_jump_review(
@@ -141,7 +134,7 @@ def build_jump_review(
         happened.append(f"Individuelles Bewertungsfenster: +0.0s bis +{eval_end_s:.1f}s.")
     if coaching_end_s is not None:
         happened.append(
-            f"Coaching-Detail bis +{coaching_end_s:.1f}s (normierte Segmente: Exit, Aufbau, Hauptaufbau, Hot-Zone)."
+            f"Coaching-Detail bis +{coaching_end_s:.1f}s (Phasen: Exit, Dive-Aufbau, Hauptbeschleunigung, Hot-Zone, Max-Speed)."
         )
     if personal_profile.get("is_personalized") and capability_text:
         happened.append(f"Personalisierter Modus: {capability_text}")
@@ -198,6 +191,11 @@ def build_jump_review(
         metrics=metrics,
         notes=notes,
         eval_end_s=eval_end_s,
+    )
+    technical_phase_statuses = _technical_phase_status_map(technical_assessment)
+    build_angle_status = _build_angle_status_from_phases(
+        scorecard=scorecard,
+        phase_statuses=technical_phase_statuses,
     )
     if technical_assessment.get("available"):
         summary_line = str(technical_assessment.get("summary_line") or "").strip()
@@ -477,6 +475,7 @@ def build_jump_review(
             )
     angle_chain = _angle_progression_stability_analysis(
         chart_data=chart_data,
+        metrics=metrics,
         focus_end_s=coaching_end_s,
         eval_end_s=eval_end_s,
         profile=personal_profile,
@@ -511,8 +510,96 @@ def build_jump_review(
             angle_focus_text = f"{focus_low:.1f} bis {focus_high:.1f} Grad"
         else:
             angle_focus_text = angle_band_text
+        timing_deviation = _personal_timing_deviation_analysis(
+            chart_data=chart_data,
+            metrics=metrics,
+            eval_end_s=eval_end_s,
+            profile=personal_profile,
+        )
 
-        if angle_chain.get("too_fast_steep_not_hold"):
+        if angle_chain.get("early_horizontal_reserve_collapse"):
+            vhor_min_t = _num(angle_chain.get("vhor_min_time_s"))
+            vhor_min = _num(angle_chain.get("vhor_min_after_20_kmh"))
+            best_start = _num(angle_chain.get("best_3s_start_s"))
+            best_end = _num(angle_chain.get("best_3s_end_s"))
+            rebound_pct = _num(angle_chain.get("vhor_rebound_to_best_end_pct"))
+            angle_at_min = _num(angle_chain.get("angle_at_vhor_min_deg"))
+            detail_parts: list[str] = []
+            if vhor_min_t is not None and vhor_min is not None:
+                detail_parts.append(
+                    f"die horizontale Reserve faellt schon bei +{vhor_min_t:.1f}s auf {vhor_min:.1f} km/h"
+                )
+            if best_start is not None and best_end is not None:
+                detail_parts.append(f"das beste 3s-Fenster beginnt erst bei +{best_start:.1f}s bis +{best_end:.1f}s")
+            if rebound_pct is not None and rebound_pct >= 20.0:
+                detail_parts.append(f"danach steigt vHor wieder um {rebound_pct:.0f}%")
+            if angle_at_min is not None:
+                detail_parts.append(f"der Winkel liegt dort bei {angle_at_min:.1f} Grad")
+            if detail_parts:
+                not_good.append("Die horizontale Reserve wird zu frueh verbraucht: " + ", ".join(detail_parts) + ".")
+            else:
+                not_good.append(
+                    "Die horizontale Reserve wird vor dem besten 3s-Fenster zu frueh verbraucht und danach wieder aufgebaut."
+                )
+            if timing_deviation.get("early_angle_85") and timing_deviation.get("lines"):
+                not_good.append(str(timing_deviation["lines"][0]))
+            _add_action(
+                actions_by_key,
+                key="early_horizontal_reserve_collapse",
+                score=10,
+                text=(
+                    "Hot-Zone ruhiger halten: die horizontale Reserve nicht vor dem 3s-Fenster aufbrauchen, "
+                    "Winkel-Peak um +20s vermeiden und nur kleine fruehe Korrekturen setzen."
+                ),
+            )
+            if technical_assessment.get("available"):
+                issue = (
+                    "Hot-Zone: Die horizontale Reserve wird vor dem 3s-Fenster zu frueh verbraucht; "
+                    "der spaetere vHor-Anstieg wirkt wie Recovery statt wie sauber gehaltene Linie."
+                )
+                issues = [str(item).strip() for item in (technical_assessment.get("issues") or []) if str(item).strip()]
+                if issue not in issues:
+                    issues.insert(0, issue)
+                technical_assessment["issues"] = _unique_keep_order(issues)[:3]
+                action = {
+                    "key": "technical_early_horizontal_reserve_collapse",
+                    "score": 9,
+                    "text": (
+                        "Vor dem 3s-Fenster horizontale Reserve laenger halten: nicht bis zum vHor-Minimum ueberziehen, "
+                        "Winkel-Peak frueher abfangen und Korrekturen kleiner setzen."
+                    ),
+                }
+                actions_existing = [
+                    item
+                    for item in (technical_assessment.get("actions") or [])
+                    if isinstance(item, dict)
+                ]
+                if not any(str(item.get("key") or "") == action["key"] for item in actions_existing):
+                    actions_existing.insert(0, action)
+                technical_assessment["actions"] = actions_existing[:3]
+                summary_line = str(technical_assessment.get("summary_line") or "").strip()
+                reserve_summary = "horizontale Reserve frueh verbraucht"
+                if reserve_summary not in summary_line:
+                    if summary_line.startswith("Technikmodell:") and summary_line.endswith("."):
+                        summary_line = summary_line[:-1] + f", {reserve_summary}."
+                    elif summary_line:
+                        summary_line = f"{summary_line} Technikmodell: {reserve_summary}."
+                    else:
+                        summary_line = f"Technikmodell: {reserve_summary}."
+                    technical_assessment["summary_line"] = summary_line
+        elif timing_deviation.get("late_angle_82") and timing_deviation.get("late_best_window"):
+            for line in timing_deviation.get("lines") or []:
+                not_good.append(str(line))
+            _add_action(
+                actions_by_key,
+                key="personal_timing_late_build",
+                score=8,
+                text=(
+                    "Den Winkelaufbau frueher und kleiner staffeln: 82 Grad rechtzeitig vor dem 3s-Fenster erreichen, "
+                    "ohne am Ende hart nachzudruecken."
+                ),
+            )
+        elif angle_chain.get("too_fast_steep_not_hold"):
             if None not in {angle_10, angle_15, angle_20, angle_peak, angle_end, peak_t, rollback_deg}:
                 not_good.append(
                     "Du gehst im Aufbau zu schnell steil "
@@ -774,7 +861,11 @@ def build_jump_review(
         instability_hits += 1
     if curve_smoothness["label"] in {"leicht_unruhig", "unruhig"}:
         instability_hits += 1
-    if bool(angle_chain.get("rollback_with_instability")) or bool(angle_chain.get("too_fast_steep_not_hold")):
+    if (
+        bool(angle_chain.get("rollback_with_instability"))
+        or bool(angle_chain.get("too_fast_steep_not_hold"))
+        or bool(angle_chain.get("early_horizontal_reserve_collapse"))
+    ):
         instability_hits += 1
     lateral_event_probe = lateral_behavior.get("speed_cost_event", {}) if isinstance(lateral_behavior, dict) else {}
     if isinstance(lateral_event_probe, dict) and lateral_event_probe.get("available") and lateral_event_probe.get("likely_speed_cost"):
@@ -830,7 +921,7 @@ def build_jump_review(
         good.append(f"Die Anfangsgeschwindigkeit wird gut mitgenommen ({start_vvert:.1f} km/h bei +10s).")
     if window_supports_20 and gain_10_20 is not None and 90 <= gain_10_20 <= 200:
         good.append(f"Zwischen +10s und +20s steigt der Speed sauber an (+{gain_10_20:.1f} km/h).")
-    if window_supports_20 and scorecard.get("phase_10_20") == "optimal":
+    if window_supports_20 and build_angle_status == "optimal":
         good.append("Zwischen +10s und +20s passt der Winkel gut zum Speed-Aufbau.")
         target_angle_low = _num(personal_profile.get("angle_20_target_low"))
         target_angle_high = _num(personal_profile.get("angle_20_target_high"))
@@ -877,7 +968,7 @@ def build_jump_review(
     if curve_smoothness["label"] == "sauber":
         good.append("Der Kurvenverlauf ist ruhig und gleichmäßig.")
 
-    if window_supports_20 and scorecard.get("phase_10_20") == "zu flach":
+    if window_supports_20 and build_angle_status == "zu flach":
         target_angle_low = _num(personal_profile.get("angle_20_target_low"))
         target_angle_high = _num(personal_profile.get("angle_20_target_high"))
         if personal_profile.get("is_personalized"):
@@ -912,7 +1003,7 @@ def build_jump_review(
                 score=8,
                 text=("Nicht direkt maximal steil gehen: " f"{target_text}"),
             )
-    elif window_supports_20 and scorecard.get("phase_10_20") == "zu steil":
+    elif window_supports_20 and build_angle_status == "zu steil":
         target_angle_low = _num(personal_profile.get("angle_20_target_low"))
         target_angle_high = _num(personal_profile.get("angle_20_target_high"))
         if personal_profile.get("is_personalized"):
@@ -1074,7 +1165,8 @@ def build_jump_review(
                 target_gain = target_gain_low + (target_gain_high - target_gain_low) * 0.4
         if target_gain is None:
             target_gain = 90.0
-        target_gain = max(90.0, min(180.0, float(target_gain)))
+        next_step_target = float(gain_10_20) + 25.0
+        target_gain = max(90.0, min(float(target_gain), next_step_target))
         _add_action(
             actions_by_key,
             key="build_speed_low",
@@ -1434,6 +1526,11 @@ def _build_primary_diagnosis(
     vhor_at_20 = _num(angle_chain.get("vhor_at_20_kmh"))
     vhor_min_after_20 = _num(angle_chain.get("vhor_min_after_20_kmh"))
     vhor_drop_pct = _num(angle_chain.get("vhor_drop_after_20_pct"))
+    vhor_min_time = _num(angle_chain.get("vhor_min_time_s"))
+    best_3s_start = _num(angle_chain.get("best_3s_start_s"))
+    best_3s_end = _num(angle_chain.get("best_3s_end_s"))
+    rebound_to_best_end = _num(angle_chain.get("vhor_rebound_to_best_end_pct"))
+    angle_at_vhor_min = _num(angle_chain.get("angle_at_vhor_min_deg"))
     target_low = _num(personal_profile.get("angle_20_target_low"))
     target_high = _num(personal_profile.get("angle_20_target_high"))
     vhor_floor = _num(personal_profile.get("vhor_min_20_25_floor"))
@@ -1443,6 +1540,58 @@ def _build_primary_diagnosis(
             if str(goal.get("id") or "") == goal_id:
                 return str(goal.get("text") or "")
         return ""
+
+    if bool(angle_chain.get("early_horizontal_reserve_collapse")):
+        vhor_target = f"{vhor_floor:.1f} km/h" if vhor_floor is not None else "ca. 30 km/h"
+        evidence = {
+            "vhor_min_time_s": vhor_min_time,
+            "vhor_min_after_20": vhor_min_after_20,
+            "best_3s_start_s": best_3s_start,
+            "best_3s_end_s": best_3s_end,
+            "vhor_rebound_to_best_end_pct": rebound_to_best_end,
+            "angle_at_vhor_min": angle_at_vhor_min,
+            "angle_peak": angle_peak,
+            "angle_peak_s": peak_t,
+            "forward_reversal_near_vhor_min": bool(angle_chain.get("forward_reversal_near_vhor_min")),
+            "forward_loss_to_best_end_m": _num(angle_chain.get("forward_loss_to_best_end_m")),
+        }
+        action = _goal_text("early_horizontal_reserve_collapse")
+        if not action:
+            action = (
+                "Hot-Zone ruhiger halten: die horizontale Reserve nicht vor dem 3s-Fenster aufbrauchen, "
+                f"vHor moeglichst ueber {vhor_target} halten und nur kleine fruehe Korrekturen setzen."
+            )
+        window_text = ""
+        if best_3s_start is not None and best_3s_end is not None:
+            window_text = f" vor dem besten 3s-Fenster (+{best_3s_start:.1f}s bis +{best_3s_end:.1f}s)"
+        min_text = ""
+        if vhor_min_time is not None and vhor_min_after_20 is not None:
+            min_text = f" bei +{vhor_min_time:.1f}s auf {vhor_min_after_20:.1f} km/h"
+        rebound_text = ""
+        if rebound_to_best_end is not None:
+            rebound_text = f" und steigt danach wieder um {rebound_to_best_end:.0f}%"
+        return {
+            "available": True,
+            "pattern": "early_horizontal_reserve_collapse",
+            "severity": "high",
+            "phase": "hot_zone",
+            "title": "Horizontale Reserve zu frueh verloren",
+            "summary": (
+                f"Die waagerechte Geschwindigkeit faellt{window_text}{min_text}{rebound_text}; "
+                "das spricht fuer eine Recovery statt fuer eine sauber durchgetragene schnelle Linie."
+            ),
+            "main_issue": (
+                "Das Minimum der horizontalen Reserve liegt zu frueh. "
+                "Der spaetere Anstieg der waagerechten Geschwindigkeit ist deshalb kein Stabilitaetsplus, "
+                "sondern ein Hinweis auf verlorene Linie und Nachkorrektur."
+            ),
+            "next_focus": (
+                "Ab etwa +18s die horizontale Reserve laenger tragen: Winkel-Peak nicht ueberziehen, "
+                "vor dem 3s-Fenster nicht auf das vHor-Minimum fallen und Korrekturen frueher kleiner setzen."
+            ),
+            "action": action,
+            "evidence": evidence,
+        }
 
     if bool(angle_chain.get("late_hard_steepening_vhor_collapse")):
         if target_low is not None and target_high is not None and target_high > target_low:
@@ -1641,6 +1790,55 @@ def _effective_eval_window_end_s(*, notes: dict[str, Any], chart_data: dict[str,
     return end_s if end_s >= 8.0 else None
 
 
+def _technical_phase_status_map(technical_assessment: dict[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for row in technical_assessment.get("phases") or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        status = _normalize_phase_angle_status(row.get("angle_status") or row.get("target_status"))
+        if name and status:
+            out[name] = status
+    return out
+
+
+def _normalize_phase_angle_status(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized = normalize_german_text(raw).replace("_", " ").replace("-", " ")
+    status_map = {
+        "too flat": "zu flach",
+        "too steep": "zu steil",
+        "in band": "im Zielbereich",
+        "in zielbereich": "im Zielbereich",
+        "im zielbereich": "im Zielbereich",
+        "optimal": "im Zielbereich",
+        "zu flach": "zu flach",
+        "eher flach": "eher flach",
+        "zu steil": "zu steil",
+        "kurz zu steil": "kurz zu steil",
+        "nicht belastbar": "nicht belastbar",
+    }
+    return status_map.get(normalized, raw)
+
+
+def _build_angle_status_from_phases(*, scorecard: dict[str, Any], phase_statuses: dict[str, str]) -> str:
+    statuses = [
+        _normalize_phase_angle_status(phase_statuses.get(name))
+        for name in ["Hauptbeschleunigung", "Hot-Zone Aufbau"]
+    ]
+    statuses = [status for status in statuses if status]
+    if any(status in {"zu steil", "kurz zu steil"} for status in statuses):
+        return "zu steil"
+    if any(status in {"zu flach", "eher flach"} for status in statuses):
+        return "zu flach"
+    if statuses and all(status in {"im Zielbereich", "optimal"} for status in statuses):
+        return "optimal"
+    legacy = str(scorecard.get("phase_10_20") or "")
+    return legacy or "unbekannt"
+
+
 def _technical_coaching_assessment(
     *,
     chart_data: dict[str, Any],
@@ -1770,7 +1968,7 @@ def _technical_phase_model_analysis(
         return []
     eval_end = float(min(max_time, eval_end_s if eval_end_s is not None else max_time))
     out: list[dict[str, Any]] = []
-    for spec in _TECHNICAL_PHASE_SPECS:
+    for spec in TECHNICAL_PHASE_SPECS:
         start_s = float(spec["start_s"])
         end_s = min(float(spec["end_s"]), eval_end)
         if end_s <= start_s + 0.75:
@@ -2613,6 +2811,7 @@ def _action_phase_rank(*, key: str, text: str) -> int:
             "segment_20_25",
             "vhor_mid",
             "vhor_tail",
+            "horizontal_reserve",
             "vhor_price_20_25",
             "efficiency_20_25",
             "lateral_",
@@ -2642,6 +2841,7 @@ def _action_phase_rank(*, key: str, text: str) -> int:
             "segment_20_25",
             "vhor_mid",
             "vhor_tail",
+            "horizontal_reserve",
             "vhor_price_20_25",
             "efficiency_20_25",
             "lateral_",
@@ -2828,6 +3028,8 @@ def _action_goal_family(
     text_l = normalize_german_text(text)
     metric_names = {str(item.get("metric") or "") for item in target_metrics}
 
+    if key_l == "early_horizontal_reserve_collapse":
+        return "hot_zone_control"
     if key_l == "late_hard_steepening_vhor_collapse":
         return "build_to_peak_transition"
     if "v10" in metric_names or "carry_ratio" in metric_names:
@@ -2846,6 +3048,7 @@ def _action_goal_family(
         for token in [
             "segment_20_25",
             "vhor",
+            "reserve",
             "efficiency",
             "peak",
             "hold",
@@ -2869,13 +3072,13 @@ def _action_goal_family(
 
 def _phase_label_for_rank(rank: int) -> str:
     if rank == 0:
-        return "Exit"
+        return "Exit / Stabilisierung"
     if rank == 1:
-        return "Aufbau 10-20s"
+        return "Hauptbeschleunigung"
     if rank == 2:
-        return "Hot-Zone"
+        return "Hot-Zone Aufbau"
     if rank == 3:
-        return "Stabilität / Kipp-Risiko"
+        return "Max-Speed Fenster"
     return "Allgemein"
 
 
@@ -2949,6 +3152,7 @@ def _goal_metrics_for_action(*, key: str, text: str, phase_rank: int) -> list[di
             "hot",
             "peak",
             "vhor",
+            "reserve",
             "hold",
             "segment_20_25",
             "corridor",
@@ -2993,6 +3197,10 @@ def _action_timeline_rank(*, key: str, text: str) -> int:
     key_l = normalize_german_text(key)
     text_l = normalize_german_text(text)
 
+    if "early_horizontal_reserve_collapse" in key_l:
+        return 2
+    if "late_hard_steepening_vhor_collapse" in key_l:
+        return 3
     if any(token in key_l for token in ["exit", "start_speed_low", "early_acc", "early_vvert", "carryover"]):
         return 0
     if any(token in key_l for token in ["phase_10_15", "top5_build_0_15"]):
@@ -3304,6 +3512,31 @@ def _extract_personal_tip_profile(stability_reference: dict[str, Any] | None) ->
         elif text:
             out["asymmetry_text"] = text
 
+    timing = stability_reference.get("timing_reference", {})
+    timing_maturity = str(timing.get("maturity") or "active").strip().lower() if isinstance(timing, dict) else ""
+    if isinstance(timing, dict) and bool(timing.get("available")) and timing_maturity == "active":
+        out["timing_reference_available"] = True
+        out["timing_confidence"] = str(timing.get("confidence") or "").strip()
+        out["timing_basis_count"] = _num(timing.get("basis_count"))
+        anchors = timing.get("anchors", {})
+        if isinstance(anchors, dict):
+            for key in [
+                "angle_75_time_s",
+                "angle_82_time_s",
+                "angle_85_time_s",
+                "best_3s_start_s",
+                "best_3s_end_s",
+                "vvert_peak_time_s",
+                "decel_start_s",
+            ]:
+                raw_anchor = anchors.get(key)
+                if not isinstance(raw_anchor, dict):
+                    continue
+                prefix = f"timing_{key}"
+                out[f"{prefix}_low"] = _num(raw_anchor.get("low"))
+                out[f"{prefix}_high"] = _num(raw_anchor.get("high"))
+                out[f"{prefix}_median"] = _num(raw_anchor.get("median"))
+
     out["is_personalized"] = any(
         out.get(key) is not None
         for key in [
@@ -3396,9 +3629,92 @@ def _angle_target_for_steep(angle_20: float | None, *, profile: dict[str, Any] |
     return "Im nächsten Sprung etwas flacher bleiben, aber nur in kleinen Schritten (1 bis 2 Grad)."
 
 
+def _first_angle_crossing_for_review(
+    chart_data: dict[str, Any],
+    threshold_deg: float,
+    *,
+    end_s: float | None,
+) -> float | None:
+    t, angle = _window_series(chart_data, "angle_deg", start_s=0.0, end_s=end_s)
+    if not t or not angle or len(t) != len(angle):
+        return None
+    threshold = float(threshold_deg)
+    if angle[0] >= threshold:
+        return float(t[0])
+    prev_t = float(t[0])
+    prev_angle = float(angle[0])
+    for raw_t, raw_angle in zip(t[1:], angle[1:]):
+        current_t = float(raw_t)
+        current_angle = float(raw_angle)
+        if prev_angle < threshold <= current_angle:
+            delta = current_angle - prev_angle
+            if abs(delta) <= 1e-9:
+                return current_t
+            ratio = max(0.0, min(1.0, (threshold - prev_angle) / delta))
+            return float(prev_t + ((current_t - prev_t) * ratio))
+        prev_t = current_t
+        prev_angle = current_angle
+    return None
+
+
+def _personal_timing_deviation_analysis(
+    *,
+    chart_data: dict[str, Any],
+    metrics: dict[str, Any],
+    eval_end_s: float | None,
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    if not bool(profile.get("timing_reference_available")):
+        return {"available": False}
+
+    angle_82 = _first_angle_crossing_for_review(chart_data, 82.0, end_s=eval_end_s)
+    angle_85 = _first_angle_crossing_for_review(chart_data, 85.0, end_s=eval_end_s)
+    best_start = _num(metrics.get("best_3s_start_s"))
+
+    ref_82_low = _num(profile.get("timing_angle_82_time_s_low"))
+    ref_82_high = _num(profile.get("timing_angle_82_time_s_high"))
+    ref_85_low = _num(profile.get("timing_angle_85_time_s_low"))
+    ref_85_high = _num(profile.get("timing_angle_85_time_s_high"))
+    ref_best_low = _num(profile.get("timing_best_3s_start_s_low"))
+    ref_best_high = _num(profile.get("timing_best_3s_start_s_high"))
+
+    late_82 = bool(angle_82 is not None and ref_82_high is not None and angle_82 > ref_82_high + 1.0)
+    early_85 = bool(angle_85 is not None and ref_85_low is not None and angle_85 < ref_85_low - 1.0)
+    late_best = bool(best_start is not None and ref_best_high is not None and best_start > ref_best_high + 1.2)
+
+    lines: list[str] = []
+    if late_82 and ref_82_low is not None and ref_82_high is not None:
+        lines.append(
+            f"Persoenliches Timing: 82 Grad kommen erst bei +{angle_82:.1f}s "
+            f"(stabiler Bereich ca. +{ref_82_low:.1f} bis +{ref_82_high:.1f}s)."
+        )
+    if early_85 and ref_85_low is not None and ref_85_high is not None:
+        lines.append(
+            f"Persoenliches Timing: 85 Grad kommen schon bei +{angle_85:.1f}s "
+            f"(stabiler Bereich ca. +{ref_85_low:.1f} bis +{ref_85_high:.1f}s)."
+        )
+    if late_best and ref_best_low is not None and ref_best_high is not None:
+        lines.append(
+            f"Das beste 3s-Fenster startet spaeter als in deinen kontrollierten Spruengen "
+            f"(jetzt +{best_start:.1f}s, Referenz ca. +{ref_best_low:.1f} bis +{ref_best_high:.1f}s)."
+        )
+
+    return {
+        "available": bool(lines),
+        "angle_82_time_s": angle_82,
+        "angle_85_time_s": angle_85,
+        "best_3s_start_s": best_start,
+        "late_angle_82": late_82,
+        "early_angle_85": early_85,
+        "late_best_window": late_best,
+        "lines": lines,
+    }
+
+
 def _angle_progression_stability_analysis(
     *,
     chart_data: dict[str, Any],
+    metrics: dict[str, Any] | None = None,
     focus_end_s: float | None,
     eval_end_s: float | None,
     profile: dict[str, Any] | None,
@@ -3457,7 +3773,17 @@ def _angle_progression_stability_analysis(
 
     vhor_at_20 = None
     vhor_min_after_20 = None
+    vhor_min_time_s = None
     vhor_drop_after_20_pct = None
+    vhor_at_best_start = None
+    vhor_at_best_end = None
+    vhor_rebound_to_best_start_pct = None
+    vhor_rebound_to_best_end_pct = None
+    angle_at_vhor_min = None
+    angle_peak_near_vhor_min = None
+    forward_reversal_near_vhor_min = False
+    forward_peak_s = None
+    forward_loss_to_best_end_m = None
     t_vhor, vhor = _window_series(chart_data, "vHor_kmh", start_s=0.0, end_s=end_s)
     if len(t_vhor) >= 10 and len(t_vhor) == len(vhor):
         vhor_s = _moving_average(vhor, window=5)
@@ -3473,6 +3799,68 @@ def _angle_progression_stability_analysis(
             vhor_min_after_20 = min(after_20_values)
         if vhor_at_20 is not None and vhor_min_after_20 is not None and vhor_at_20 > 1e-6:
             vhor_drop_after_20_pct = max(0.0, (vhor_at_20 - vhor_min_after_20) / vhor_at_20 * 100.0)
+
+        best_start = _num((metrics or {}).get("best_3s_start_s"))
+        best_end = _num((metrics or {}).get("best_3s_end_s"))
+        if best_start is not None and best_end is not None and best_end > best_start:
+            best_start = float(best_start)
+            best_end = min(float(best_end), float(end_s))
+            search_start = max(18.0, best_start - 7.0)
+            search_end = min(float(end_s), max(best_start, best_end))
+            candidate_indices = [
+                i
+                for i, raw_t in enumerate(t_vhor_arr)
+                if search_start <= float(raw_t) <= search_end
+            ]
+            if candidate_indices:
+                min_idx = min(candidate_indices, key=lambda idx: float(vhor_arr[idx]))
+                vhor_min_after_20 = float(vhor_arr[min_idx])
+                vhor_min_time_s = float(t_vhor_arr[min_idx])
+                vhor_at_best_start = _interp(t_vhor_arr, vhor_arr, best_start)
+                vhor_at_best_end = _interp(t_vhor_arr, vhor_arr, best_end)
+                if vhor_min_after_20 > 1e-6:
+                    if vhor_at_best_start is not None:
+                        vhor_rebound_to_best_start_pct = max(
+                            0.0,
+                            (float(vhor_at_best_start) - vhor_min_after_20) / vhor_min_after_20 * 100.0,
+                        )
+                    if vhor_at_best_end is not None:
+                        vhor_rebound_to_best_end_pct = max(
+                            0.0,
+                            (float(vhor_at_best_end) - vhor_min_after_20) / vhor_min_after_20 * 100.0,
+                        )
+
+                angle_at_vhor_min = _interp(t_arr, angle_arr, vhor_min_time_s)
+                near_mask = np.asarray(
+                    [
+                        abs(float(raw_t) - vhor_min_time_s) <= 1.2
+                        for raw_t in t_arr
+                    ],
+                    dtype=bool,
+                )
+                if near_mask.any():
+                    angle_peak_near_vhor_min = float(np.max(angle_arr[near_mask]))
+
+                t_fwd, forward_m = _window_series(
+                    chart_data,
+                    "forward_m",
+                    start_s=max(0.0, best_start - 8.0),
+                    end_s=best_end,
+                )
+                if len(t_fwd) >= 5 and len(t_fwd) == len(forward_m):
+                    fwd_arr = np.asarray(forward_m, dtype=float)
+                    t_fwd_arr = np.asarray(t_fwd, dtype=float)
+                    fwd_idx = int(np.argmax(fwd_arr))
+                    forward_peak_s = float(t_fwd_arr[fwd_idx])
+                    fwd_at_best_end = _interp(t_fwd_arr, fwd_arr, best_end)
+                    if fwd_at_best_end is not None:
+                        forward_loss_to_best_end_m = max(0.0, float(fwd_arr[fwd_idx]) - float(fwd_at_best_end))
+                    forward_reversal_near_vhor_min = bool(
+                        forward_loss_to_best_end_m is not None
+                        and forward_loss_to_best_end_m >= 8.0
+                        and forward_peak_s <= best_start + 0.5
+                        and abs(forward_peak_s - vhor_min_time_s) <= 2.5
+                    )
 
     phase_10_15_high = None if profile is None else _num(profile.get("phase_10_15_angle_high"))
     if phase_10_15_high is None and profile is not None:
@@ -3497,9 +3885,36 @@ def _angle_progression_stability_analysis(
         steep_too_fast = True
 
     vhor_floor = None if profile is None else _num(profile.get("vhor_min_20_25_floor"))
+    reserve_floor = 30.0 if vhor_floor is None else max(25.0, min(45.0, float(vhor_floor)))
     angle_gain_20_peak = None
     if angle_20 is not None:
         angle_gain_20_peak = max(0.0, angle_peak - angle_20)
+    best_start_for_reserve = _num((metrics or {}).get("best_3s_start_s"))
+    best_end_for_reserve = _num((metrics or {}).get("best_3s_end_s"))
+    min_before_best_window = bool(
+        vhor_min_time_s is not None
+        and best_start_for_reserve is not None
+        and float(vhor_min_time_s) <= float(best_start_for_reserve) - 0.7
+    )
+    reserve_rebound_pct = (
+        vhor_rebound_to_best_end_pct
+        if vhor_rebound_to_best_end_pct is not None
+        else vhor_rebound_to_best_start_pct
+    )
+    steep_at_reserve_min = bool(
+        (angle_at_vhor_min is not None and angle_at_vhor_min >= 85.5)
+        or (angle_peak_near_vhor_min is not None and angle_peak_near_vhor_min >= 86.0)
+    )
+    early_horizontal_reserve_collapse = bool(
+        min_before_best_window
+        and vhor_min_after_20 is not None
+        and vhor_min_after_20 <= reserve_floor
+        and reserve_rebound_pct is not None
+        and reserve_rebound_pct >= 25.0
+        and (steep_at_reserve_min or forward_reversal_near_vhor_min)
+        and best_end_for_reserve is not None
+        and float(best_end_for_reserve) > float(best_start_for_reserve or 0.0)
+    )
     late_hard_steepening_vhor_collapse = (
         angle_20 is not None
         and angle_peak >= max(85.5, (risk_above + 0.2) if risk_above is not None else 85.5)
@@ -3538,13 +3953,27 @@ def _angle_progression_stability_analysis(
         "angle_gain_20_peak": angle_gain_20_peak,
         "vhor_at_20_kmh": vhor_at_20,
         "vhor_min_after_20_kmh": vhor_min_after_20,
+        "vhor_min_time_s": vhor_min_time_s,
         "vhor_drop_after_20_pct": vhor_drop_after_20_pct,
+        "vhor_at_best_start_kmh": vhor_at_best_start,
+        "vhor_at_best_end_kmh": vhor_at_best_end,
+        "vhor_rebound_to_best_start_pct": vhor_rebound_to_best_start_pct,
+        "vhor_rebound_to_best_end_pct": vhor_rebound_to_best_end_pct,
+        "angle_at_vhor_min_deg": angle_at_vhor_min,
+        "angle_peak_near_vhor_min_deg": angle_peak_near_vhor_min,
+        "best_3s_start_s": _num((metrics or {}).get("best_3s_start_s")),
+        "best_3s_end_s": _num((metrics or {}).get("best_3s_end_s")),
+        "forward_reversal_near_vhor_min": bool(forward_reversal_near_vhor_min),
+        "forward_peak_s": forward_peak_s,
+        "forward_loss_to_best_end_m": forward_loss_to_best_end_m,
+        "early_horizontal_reserve_collapse": bool(early_horizontal_reserve_collapse),
         "late_hard_steepening_vhor_collapse": bool(late_hard_steepening_vhor_collapse),
         "too_fast_steep_not_hold": bool(too_fast_steep_not_hold),
         "rollback_with_instability": bool(
             rollback_with_instability
             and not too_fast_steep_not_hold
             and not late_hard_steepening_vhor_collapse
+            and not early_horizontal_reserve_collapse
         ),
     }
 

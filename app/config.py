@@ -29,11 +29,59 @@ MIN_NUM_SV = 6
 
 DEFAULT_BREAKOFF_ALTITUDE_AGL_M = 1700.0
 
+TECHNICAL_PHASE_SPECS = [
+    {
+        "name": "Exit / Stabilisierung",
+        "start_s": 0.0,
+        "end_s": 3.0,
+        "angle_min": 0.0,
+        "angle_max": 40.0,
+        "label": "ruhiger Exit",
+    },
+    {
+        "name": "Dive-Aufbau",
+        "start_s": 3.0,
+        "end_s": 8.0,
+        "angle_min": 60.0,
+        "angle_max": 70.0,
+        "label": "kontrollierter Aufbau",
+    },
+    {
+        "name": "Hauptbeschleunigung",
+        "start_s": 8.0,
+        "end_s": 15.0,
+        "angle_min": 75.0,
+        "angle_max": 83.0,
+        "label": "starker Speed-Aufbau",
+    },
+    {
+        "name": "Hot-Zone Aufbau",
+        "start_s": 15.0,
+        "end_s": 22.0,
+        "angle_min": 82.0,
+        "angle_max": 86.0,
+        "label": "stabile schnelle Linie",
+    },
+    {
+        "name": "Max-Speed Fenster",
+        "start_s": 20.0,
+        "end_s": 28.0,
+        "angle_min": 83.0,
+        "angle_max": 87.0,
+        "label": "reproduzierbares 3s-Fenster",
+    },
+]
+
 TARGET_ANGLE_BANDS = [
-    {"start_s": 0.0, "end_s": 3.0, "min_deg": 0.0, "max_deg": 60.0, "label": "neutraler Exit"},
-    {"start_s": 3.0, "end_s": 8.0, "min_deg": 60.0, "max_deg": 70.0, "label": "Aufbauwinkel"},
-    {"start_s": 8.0, "end_s": 20.0, "min_deg": 80.0, "max_deg": 85.0, "label": "Hauptaufbau"},
-    {"start_s": 20.0, "end_s": 999.0, "min_deg": 83.0, "max_deg": 86.0, "label": "Peak-Haltebereich"},
+    {
+        "start_s": phase["start_s"],
+        "end_s": phase["end_s"],
+        "min_deg": phase["angle_min"],
+        "max_deg": phase["angle_max"],
+        "label": phase["label"],
+        "name": phase["name"],
+    }
+    for phase in TECHNICAL_PHASE_SPECS
 ]
 
 

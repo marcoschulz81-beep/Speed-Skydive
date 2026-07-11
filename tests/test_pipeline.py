@@ -6,7 +6,50 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 
-from app.analysis.pipeline import AnalysisError, analyze_flysight_csv
+from app.analysis.pipeline import (
+    AnalysisError,
+    _negative_risk,
+    _refine_exit_to_ramp_start,
+    analyze_flysight_csv,
+)
+
+
+def test_negative_risk_detects_early_hot_zone_vhor_collapse_with_rebound():
+    time_s = np.arange(0.0, 30.5, 0.5)
+    vhor = []
+    angle = []
+    vvert = []
+    for t in time_s:
+        vvert.append(230.0 + min(float(t), 25.0) * 8.0)
+        if t <= 18.0:
+            vhor.append(92.0 - float(t) * 3.0)
+        elif t <= 21.0:
+            vhor.append(38.0 - (float(t) - 18.0) * 5.2)
+        elif t <= 26.0:
+            vhor.append(22.4 + (float(t) - 21.0) * 5.0)
+        else:
+            vhor.append(47.4)
+        if t <= 21.0:
+            angle.append(70.0 + float(t) * 0.82)
+        elif t <= 25.0:
+            angle.append(87.2 - (float(t) - 21.0) * 0.75)
+        else:
+            angle.append(84.2)
+
+    score, details = _negative_risk(
+        pd.DataFrame(
+            {
+                "t_rel_s": time_s,
+                "vHor_kmh": vhor,
+                "angle_deg": angle,
+                "vVert_kmh": vvert,
+            }
+        )
+    )
+
+    assert score >= 65.0
+    assert details["label"] == "hoch"
+    assert "+21.0s" in details["details"]
 
 
 def _build_synthetic_csv() -> bytes:
@@ -304,7 +347,18 @@ def test_pipeline_outputs_core_metrics():
     assert metrics["best_3s_vVert_kmh"] > 430
     assert len(fixpoints) == 5
     assert all(point["vVert_kmh"] is not None for point in fixpoints[:3])
-    assert len(phases) == 4
+    assert len(phases) == 5
+    assert [phase["name"] for phase in phases] == [
+        "Exit / Stabilisierung",
+        "Dive-Aufbau",
+        "Hauptbeschleunigung",
+        "Hot-Zone Aufbau",
+        "Max-Speed Fenster",
+    ]
+    assert all("target_angle_label" in phase for phase in phases)
+    assert all("angle_start_deg" in phase for phase in phases)
+    assert all("angle_end_deg" in phase for phase in phases)
+    assert all("angle_delta_deg" in phase for phase in phases)
     assert metrics["hot_zone_start_s"] is not None
     assert metrics["negative_risk_score"] >= 0
     assert notes["curve_window_start_s"] == 0.0
@@ -609,6 +663,38 @@ def test_t0_is_shifted_to_ramp_start_when_detection_lands_too_late():
     assert 122.0 <= rel_t0 <= 125.5
     assert first_point < 70.0
     assert notes.get("t0_reason")
+
+
+def test_t0_refine_shifts_medium_late_detection_to_ramp_start():
+    sample_rate_hz = 5.0
+    t_abs_s = np.arange(0.0, 70.0, 0.2)
+    vel_d = np.zeros_like(t_abs_s)
+    for i, t in enumerate(t_abs_s):
+        if t < 20.0:
+            vel_d[i] = 0.2
+        elif t < 24.8:
+            vel_d[i] = 5.44 + (t - 20.0) * 7.4
+        elif t < 45.0:
+            vel_d[i] = 40.96 + (t - 24.8) * 3.86
+        elif t < 53.0:
+            vel_d[i] = 119.0 - (t - 45.0) * 8.0
+        else:
+            vel_d[i] = max(0.0, 55.0 - (t - 53.0) * 1.2)
+
+    detected_idx = int(np.argmin(np.abs(t_abs_s - 24.8)))
+    peak_idx = int(np.argmax(vel_d))
+    refined_idx = _refine_exit_to_ramp_start(
+        vel_d_smooth=vel_d,
+        t_abs_s=t_abs_s,
+        peak_idx=peak_idx,
+        detected_idx=detected_idx,
+        search_start_idx=0,
+        sample_rate_hz=sample_rate_hz,
+    )
+
+    assert vel_d[detected_idx] < 45.0
+    assert 4.0 <= t_abs_s[detected_idx] - t_abs_s[refined_idx] <= 4.6
+    assert 10.0 <= vel_d[refined_idx] <= 14.0
 
 
 def test_rejects_non_jump_recording_without_freefall_event():

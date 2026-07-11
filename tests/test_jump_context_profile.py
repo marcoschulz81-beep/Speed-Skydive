@@ -125,7 +125,7 @@ def test_tip_effect_profile_uses_performance_band_for_focus_boosts():
     profile = _build_tip_effect_profile(records, performance_profile=performance_profile)
 
     assert profile["available"] is True
-    assert profile["phase_boosts"].get(2, 0) >= 1
+    assert profile["phase_boosts"].get(3, 0) >= 1
     assert profile["phase_boosts"].get(3, 0) >= 1
     assert "Leistungsprofil" in profile["summary_line"]
 

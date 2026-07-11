@@ -31,6 +31,7 @@ from app.config import (
     BASE_DIR,
     COACH_VIEW_ENABLED,
     RAW_UPLOAD_DIR,
+    TECHNICAL_PHASE_SPECS,
 )
 from app.database import init_db
 from app.services.ai_coach import AI_COACHING_SCHEMA_VERSION, generate_ai_coaching_texts
@@ -64,48 +65,6 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), na
 _MARCO_PROFILE_CACHE: dict[int, tuple[str, dict[str, Any] | None]] = {}
 _JUMPER_SUMMARY_CACHE: dict[str, tuple[str, dict[str, Any]]] = {}
 _PLOTLY_JS_CACHE: str | None = None
-_TECHNICAL_PHASE_SPECS: list[dict[str, Any]] = [
-    {
-        "name": "Exit / Stabilisierung",
-        "start_s": 0.0,
-        "end_s": 3.0,
-        "angle_min": 0.0,
-        "angle_max": 40.0,
-        "label": "ruhiger Exit",
-    },
-    {
-        "name": "Dive-Aufbau",
-        "start_s": 3.0,
-        "end_s": 8.0,
-        "angle_min": 60.0,
-        "angle_max": 70.0,
-        "label": "kontrollierter Aufbau",
-    },
-    {
-        "name": "Hauptbeschleunigung",
-        "start_s": 8.0,
-        "end_s": 15.0,
-        "angle_min": 75.0,
-        "angle_max": 83.0,
-        "label": "starker Speed-Aufbau",
-    },
-    {
-        "name": "Hot-Zone Aufbau",
-        "start_s": 15.0,
-        "end_s": 22.0,
-        "angle_min": 82.0,
-        "angle_max": 86.0,
-        "label": "stabile schnelle Linie",
-    },
-    {
-        "name": "Max-Speed Fenster",
-        "start_s": 20.0,
-        "end_s": 28.0,
-        "angle_min": 83.0,
-        "angle_max": 87.0,
-        "label": "reproduzierbares 3s-Fenster",
-    },
-]
 _SEMANTIC_DEDUPE_STOPWORDS: set[str] = {
     "der",
     "die",
@@ -157,6 +116,16 @@ _VIEW_MODE_EXPERT = "expert"
 _INDEX_RECENT_JUMPS_LIMIT = 10
 _TRUTHY_QUERY_VALUES = {"1", "true", "yes", "open"}
 _JUMP_CONTEXT_DEFAULT = "training"
+_TIMING_REFERENCE_MIN_USABLE_JUMPS = 5
+_TIMING_REFERENCE_MIN_BEST_KMH = 430.0
+_TIMING_REFERENCE_MIN_TOP3_AVG_KMH = 415.0
+_TIMING_REFERENCE_MIN_BASIS_JUMPS = 3
+_TIMING_REFERENCE_MAX_ANCHOR_SPREAD_S = 2.0
+_TIMING_REFERENCE_MATURITY_LABELS = {
+    "off": "nicht bewertet",
+    "soft": "noch nicht belastbar",
+    "active": "belastbar",
+}
 _JUMP_CONTEXT_LABELS = {
     "unknown": "Unbekannt",
     "training": "Training",
@@ -191,7 +160,9 @@ _SIMPLE_GLOSSARY_ITEMS: list[tuple[str, str]] = [
     ("Beschleunigung", "Wie schnell deine Geschwindigkeit zunimmt."),
     ("flacher gehen", "Winkel etwas weniger steil machen, um den Flug zu beruhigen."),
     ("Richtungswechsel", "Wenn die Flugrichtung oft hin und her springt."),
-    ("Vorwärtsrichtung", "Der Anteil deiner Bewegung, der sauber nach vorne zeigt."),
+    ("waagerechte Geschwindigkeit", "Der horizontale Anteil deiner GPS-Geschwindigkeit ueber Grund; nicht die Koerperausrichtung."),
+    ("horizontale Reserve", "Wie viel waagerechte Geschwindigkeit noch bleibt, wenn der Sprung sehr steil und schnell wird."),
+    ("Vorwärtsrichtung", "Der horizontale Anteil deiner GPS-Bewegung ueber Grund; nicht die Koerperausrichtung."),
 ]
 _SIMPLE_GLOSSARY_LOOKUP: dict[str, str] = {
     normalize_german_text(key): tip for key, tip in _SIMPLE_GLOSSARY_ITEMS
@@ -633,6 +604,7 @@ def jump_detail(
             "jump_brief": jump_brief,
             "jump_brief_simple": jump_brief_simple,
             "speed_potential": speed_potential,
+            "jumper_summary": jumper_summary,
             "best_reference": best_reference,
             "best_history_reference": best_history_reference,
             "top_reference_jumps": top_reference_jumps,
@@ -1041,7 +1013,7 @@ def _parse_optional_float(raw: str) -> float | None:
         raise ValueError(f"Ungültiger Zahlenwert: {raw}") from exc
 
 
-def _build_scorecard_rows(
+def _build_legacy_scorecard_rows(
     report: dict[str, Any],
     *,
     marco_profile: dict[str, Any] | None = None,
@@ -1255,6 +1227,474 @@ def _build_scorecard_rows(
     return rows
 
 
+def _build_scorecard_rows(
+    report: dict[str, Any],
+    *,
+    marco_profile: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    legacy_rows = _build_legacy_scorecard_rows(report, marco_profile=marco_profile)
+    phase_rows = _phase_rows_for_report(report)
+    technical_rows = _build_technical_phase_scorecard_rows(
+        report=report,
+        phase_rows=phase_rows,
+        legacy_rows=legacy_rows,
+    )
+    return technical_rows if technical_rows else legacy_rows
+
+
+def _build_technical_phase_scorecard_rows(
+    *,
+    report: dict[str, Any],
+    phase_rows: list[dict[str, Any]],
+    legacy_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_name = {str(row.get("name") or ""): row for row in phase_rows}
+    legacy_scores = {
+        "exit": _legacy_score_for_phase(legacy_rows, "exit"),
+        "build": _legacy_score_for_phase(legacy_rows, "aufbau"),
+        "hot": _legacy_score_for_phase(legacy_rows, "hot"),
+        "stability": _legacy_score_for_phase(legacy_rows, "stabil"),
+    }
+    legacy_reasons = {
+        "exit": _legacy_reason_lines_for_phase(legacy_rows, "exit"),
+        "build": _legacy_reason_lines_for_phase(legacy_rows, "aufbau"),
+        "hot": _legacy_reason_lines_for_phase(legacy_rows, "hot"),
+        "stability": _legacy_reason_lines_for_phase(legacy_rows, "stabil"),
+    }
+
+    chart = report.get("chart_data", {}) if isinstance(report.get("chart_data"), dict) else {}
+    metrics = report.get("metrics", {}) if isinstance(report.get("metrics"), dict) else {}
+    scorecard = report.get("scorecard", {}) if isinstance(report.get("scorecard"), dict) else {}
+    reserve_context = _early_horizontal_reserve_context(chart=chart, metrics=metrics)
+    out: list[dict[str, Any]] = []
+
+    for spec in TECHNICAL_PHASE_SPECS:
+        name = str(spec["name"])
+        row = by_name.get(name)
+        if row is None:
+            continue
+
+        start_s = _to_float(row.get("start_s"))
+        end_s = _to_float(row.get("end_s"))
+        target_status = str(row.get("target_status") or "")
+        angle_score = _technical_phase_status_score(target_status)
+        gain = None
+        vhor_min = None
+        turns = None
+        dur_400 = None
+        if start_s is not None and end_s is not None:
+            gain = _window_delta(
+                time_s=chart.get("time_s", []),
+                values=chart.get("vVert_kmh", []),
+                start_s=float(start_s),
+                end_s=float(end_s),
+            )
+            vhor_min = _window_min(
+                time_s=chart.get("time_s", []),
+                values=chart.get("vHor_kmh", []),
+                start_s=float(start_s),
+                end_s=float(end_s),
+            )
+            turns = _window_turn_count(
+                time_s=chart.get("time_s", []),
+                values=chart.get("angle_deg", []),
+                start_s=float(start_s),
+                end_s=float(end_s),
+                eps=0.35,
+            )
+            dur_400 = _duration_above_threshold(
+                time_s=chart.get("time_s", []),
+                values=chart.get("vVert_kmh", []),
+                threshold=400.0,
+                start_s=float(start_s),
+                end_s=float(end_s),
+            )
+
+        score = _technical_phase_score(
+            phase_name=name,
+            angle_score=angle_score,
+            legacy_scores=legacy_scores,
+            gain_kmh=gain,
+            vhor_min_kmh=vhor_min,
+            turns=turns,
+            dur_400_s=dur_400,
+            negative_risk_score=_to_float(metrics.get("negative_risk_score")),
+            risk_label=str(scorecard.get("kipp_risiko") or ""),
+            early_reserve_collapse=bool(reserve_context.get("collapse")),
+        )
+        reason_lines = _technical_phase_score_reason_lines(
+            row=row,
+            phase_name=name,
+            gain_kmh=gain,
+            vhor_min_kmh=vhor_min,
+            turns=turns,
+            dur_400_s=dur_400,
+            reserve_context=reserve_context,
+            legacy_reason_lines=_phase_relevant_legacy_reason_lines(
+                phase_name=name,
+                legacy_reasons=legacy_reasons,
+            ),
+        )
+        out.append(
+            {
+                "name": name,
+                "status": _score_status_label(score),
+                "score": score,
+                "reason": _join_reason_lines(reason_lines),
+                "reason_lines": reason_lines,
+                "target_status": target_status,
+                "target_angle_label": row.get("target_angle_label"),
+                "start_s": row.get("start_s"),
+                "end_s": row.get("end_s"),
+                "avg_angle_deg": row.get("avg_angle_deg"),
+                "angle_start_deg": row.get("angle_start_deg"),
+                "angle_end_deg": row.get("angle_end_deg"),
+                "angle_delta_deg": row.get("angle_delta_deg"),
+                "avg_vVert_kmh": row.get("avg_vVert_kmh"),
+                "avg_vHor_kmh": row.get("avg_vHor_kmh"),
+                "min_angle_deg": row.get("min_angle_deg"),
+                "max_angle_deg": row.get("max_angle_deg"),
+            }
+        )
+
+    return out
+
+
+def _legacy_score_for_phase(rows: list[dict[str, Any]], token: str) -> int | None:
+    token_norm = normalize_german_text(token)
+    for row in rows:
+        name = normalize_german_text(str(row.get("name") or ""))
+        if token_norm in name:
+            try:
+                return int(row.get("score", 0))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _legacy_reason_lines_for_phase(rows: list[dict[str, Any]], token: str) -> list[str]:
+    token_norm = normalize_german_text(token)
+    for row in rows:
+        name = normalize_german_text(str(row.get("name") or ""))
+        if token_norm not in name:
+            continue
+        raw_lines = row.get("reason_lines")
+        if isinstance(raw_lines, list):
+            return [str(item).strip() for item in raw_lines if str(item).strip()]
+        reason = str(row.get("reason") or "").strip()
+        return [reason] if reason else []
+    return []
+
+
+def _technical_phase_status_score(status: str) -> int | None:
+    status_norm = normalize_german_text(status)
+    if not status_norm or "unbekannt" in status_norm:
+        return None
+    if "nicht belastbar" in status_norm:
+        return 58
+    if "im zielbereich" in status_norm:
+        return 88
+    if "eher flach" in status_norm or "kurz zu steil" in status_norm:
+        return 70
+    if "zu flach" in status_norm or "zu steil" in status_norm:
+        return 50
+    return 68
+
+
+def _technical_phase_score(
+    *,
+    phase_name: str,
+    angle_score: int | None,
+    legacy_scores: dict[str, int | None],
+    gain_kmh: float | None,
+    vhor_min_kmh: float | None,
+    turns: float | None,
+    dur_400_s: float | None,
+    negative_risk_score: float | None,
+    risk_label: str,
+    early_reserve_collapse: bool = False,
+) -> int:
+    parts: list[tuple[int | None, float]] = []
+    if phase_name == "Exit / Stabilisierung":
+        parts = [(angle_score, 0.35), (legacy_scores.get("exit"), 0.65)]
+    elif phase_name == "Dive-Aufbau":
+        parts = [
+            (angle_score, 0.45),
+            (legacy_scores.get("build"), 0.25),
+            (_phase_gain_score(gain_kmh, phase_name=phase_name), 0.30),
+        ]
+    elif phase_name == "Hauptbeschleunigung":
+        parts = [
+            (angle_score, 0.45),
+            (legacy_scores.get("build"), 0.35),
+            (_phase_gain_score(gain_kmh, phase_name=phase_name), 0.20),
+        ]
+    elif phase_name == "Hot-Zone Aufbau":
+        parts = [
+            (angle_score, 0.35),
+            (legacy_scores.get("hot"), 0.30),
+            (_phase_vhor_score(vhor_min_kmh), 0.20),
+            (_phase_gain_score(gain_kmh, phase_name=phase_name), 0.15),
+        ]
+    elif phase_name == "Max-Speed Fenster":
+        risk_score = None if negative_risk_score is None else _clamp_score(100.0 - float(negative_risk_score))
+        if risk_label == "hoch":
+            risk_score = min(45, risk_score if risk_score is not None else 45)
+        elif risk_label == "mittel":
+            risk_score = min(65, risk_score if risk_score is not None else 65)
+        parts = [
+            (angle_score, 0.25),
+            (legacy_scores.get("hot"), 0.20),
+            (legacy_scores.get("stability"), 0.20),
+            (_phase_vhor_score(vhor_min_kmh), 0.15),
+            (_phase_turn_score(turns), 0.10),
+            (_phase_hold_score(dur_400_s), 0.10),
+            (risk_score, 0.10),
+        ]
+
+    values = [(float(score), float(weight)) for score, weight in parts if score is not None and weight > 0]
+    if not values:
+        score = 60
+    else:
+        total_weight = sum(weight for _, weight in values)
+        if total_weight <= 0:
+            score = 60
+        else:
+            score = _clamp_score(sum(score * weight for score, weight in values) / total_weight)
+
+    if early_reserve_collapse:
+        if phase_name == "Hot-Zone Aufbau":
+            score = min(score, 62)
+        elif phase_name == "Max-Speed Fenster":
+            score = min(score, 64)
+    return score
+
+
+def _phase_gain_score(gain_kmh: float | None, *, phase_name: str) -> int | None:
+    if gain_kmh is None:
+        return None
+    gain = float(gain_kmh)
+    min_expected = {
+        "Dive-Aufbau": 45.0,
+        "Hauptbeschleunigung": 55.0,
+        "Hot-Zone Aufbau": 20.0,
+        "Max-Speed Fenster": 0.0,
+    }.get(phase_name, 20.0)
+    strong_expected = min_expected * 1.6
+    if gain >= strong_expected:
+        return 90
+    if gain >= min_expected:
+        return 76
+    if gain >= 0.0:
+        return 60
+    return 42
+
+
+def _phase_vhor_score(vhor_min_kmh: float | None) -> int | None:
+    if vhor_min_kmh is None:
+        return None
+    value = float(vhor_min_kmh)
+    if value >= 40.0:
+        return 92
+    if value >= 30.0:
+        return 80
+    if value >= 25.0:
+        return 66
+    return 44
+
+
+def _phase_turn_score(turns: float | None) -> int | None:
+    if turns is None:
+        return None
+    value = float(turns)
+    if value <= 1.0:
+        return 90
+    if value <= 3.0:
+        return 76
+    if value <= 5.0:
+        return 62
+    return 44
+
+
+def _phase_hold_score(dur_400_s: float | None) -> int | None:
+    if dur_400_s is None:
+        return None
+    value = float(dur_400_s)
+    if value >= 3.0:
+        return 90
+    if value >= 1.5:
+        return 76
+    if value > 0.0:
+        return 62
+    return 48
+
+
+def _technical_phase_score_reason_lines(
+    *,
+    row: dict[str, Any],
+    phase_name: str,
+    gain_kmh: float | None,
+    vhor_min_kmh: float | None,
+    turns: float | None,
+    dur_400_s: float | None,
+    reserve_context: dict[str, Any] | None,
+    legacy_reason_lines: list[str],
+) -> list[str]:
+    start_s = _to_float(row.get("start_s"))
+    end_s = _to_float(row.get("end_s"))
+    window_label = "-" if start_s is None or end_s is None else f"+{start_s:.1f}s bis +{end_s:.1f}s"
+    status = str(row.get("target_status") or "unbekannt")
+    target = str(row.get("target_angle_label") or "-")
+    lines = [f"{window_label}, Zielwinkel {target}."]
+    avg_angle = _to_float(row.get("avg_angle_deg"))
+    angle_start = _to_float(row.get("angle_start_deg"))
+    angle_end = _to_float(row.get("angle_end_deg"))
+    angle_delta = _to_float(row.get("angle_delta_deg"))
+    min_angle = _to_float(row.get("min_angle_deg"))
+    max_angle = _to_float(row.get("max_angle_deg"))
+    avg_vvert = _to_float(row.get("avg_vVert_kmh"))
+    avg_vhor = _to_float(row.get("avg_vHor_kmh"))
+    if avg_angle is not None or avg_vvert is not None or avg_vhor is not None:
+        lines.append(
+            f"Istwerte: Avg Winkel {_fmt1(avg_angle)} Grad, Avg vVert {_fmt1(avg_vvert)} km/h, "
+            f"Avg vHor {_fmt1(avg_vhor)} km/h."
+        )
+    lines.append(
+        _technical_phase_status_reason(
+            status=status,
+            avg_angle=avg_angle,
+            min_angle=min_angle,
+            max_angle=max_angle,
+            target=target,
+        )
+    )
+    angle_progression_line = _scorecard_angle_progression_line(
+        status=status,
+        start_angle=angle_start,
+        end_angle=angle_end,
+        delta_angle=angle_delta,
+    )
+    if angle_progression_line:
+        lines.append(angle_progression_line)
+    reserve_line = ""
+    if phase_name in {"Hot-Zone Aufbau", "Max-Speed Fenster"}:
+        reserve_line = _early_horizontal_reserve_reason_line(reserve_context)
+        if reserve_line:
+            lines.append(reserve_line)
+    comment = str(row.get("comment") or "").strip()
+    if reserve_line and phase_name == "Max-Speed Fenster" and "technisch nutzbar" in normalize_german_text(comment):
+        comment = (
+            "Das spaetere 3s-Fenster ist nutzbar, aber erst nach vorherigem Verlust der horizontalen Reserve."
+        )
+    elif reserve_line and comment == "Phase liegt im technischen Zielbereich.":
+        comment = "Der Winkel-Durchschnitt passt, aber die horizontale Reserve bricht vorher zu frueh weg."
+    if (
+        status == "kurz zu steil"
+        and "durchschnitt liegt im zielbereich" in normalize_german_text(comment)
+        and "max winkel" in normalize_german_text(comment)
+    ):
+        comment = ""
+    if comment:
+        lines.append(comment)
+    if phase_name in {"Dive-Aufbau", "Hauptbeschleunigung", "Hot-Zone Aufbau"}:
+        lines.append(f"vVert-Zuwachs im Fenster {_fmt1(gain_kmh)} km/h.")
+    if phase_name in {"Hot-Zone Aufbau", "Max-Speed Fenster"}:
+        lines.append(f"vHor-Min im Fenster {_fmt1(vhor_min_kmh)} km/h.")
+    if phase_name == "Max-Speed Fenster":
+        lines.append(f">400-km/h-Dauer im Fenster {_fmt1(dur_400_s)}s, Winkel-Korrekturen {_fmt1(turns)}.")
+
+    return lines
+
+
+def _scorecard_angle_progression_line(
+    *,
+    status: str,
+    start_angle: float | None,
+    end_angle: float | None,
+    delta_angle: float | None,
+) -> str:
+    status_norm = normalize_german_text(str(status or ""))
+    if not any(marker in status_norm for marker in ["zu steil", "zu flach", "eher flach", "kurz zu steil"]):
+        return ""
+    text = _format_angle_progression(
+        start_angle=start_angle,
+        end_angle=end_angle,
+        delta_angle=delta_angle,
+    )
+    if text == "-":
+        return ""
+    return f"Winkelverlauf: {text}."
+
+
+def _technical_phase_status_reason(
+    *,
+    status: str,
+    avg_angle: float | None,
+    min_angle: float | None,
+    max_angle: float | None,
+    target: str,
+) -> str:
+    status_text = str(status or "unbekannt")
+    target_text = str(target or "-")
+    if status_text == "zu flach" and avg_angle is not None:
+        return f"Bewertung: zu flach, weil der Avg Winkel {_fmt1(avg_angle)} Grad unter dem Ziel {target_text} liegt."
+    if status_text == "zu steil" and avg_angle is not None:
+        return f"Bewertung: zu steil, weil der Avg Winkel {_fmt1(avg_angle)} Grad ueber dem Ziel {target_text} liegt."
+    if status_text == "eher flach":
+        if avg_angle is not None and min_angle is not None:
+            return (
+                f"Bewertung: eher flach, weil der Avg Winkel {_fmt1(avg_angle)} Grad zum Zielband "
+                f"{target_text} passt, der Min Winkel {_fmt1(min_angle)} Grad aber darunter liegt."
+            )
+        if min_angle is not None:
+            return (
+                f"Bewertung: eher flach, weil der Durchschnitt zwar passt, "
+                f"aber der Min Winkel {_fmt1(min_angle)} Grad unter dem Ziel {target_text} liegt."
+            )
+        return "Bewertung: eher flach, weil einzelne Abschnitte unter dem Zielwinkel liegen."
+    if status_text == "kurz zu steil":
+        if avg_angle is not None and max_angle is not None:
+            return (
+                f"Bewertung: kurz zu steil, weil der Avg Winkel {_fmt1(avg_angle)} Grad zum Zielband "
+                f"{target_text} passt, der Max Winkel {_fmt1(max_angle)} Grad aber kurz darueber liegt."
+            )
+        if max_angle is not None:
+            return (
+                f"Bewertung: kurz zu steil, weil der Max Winkel {_fmt1(max_angle)} Grad "
+                f"ueber dem Ziel {target_text} liegt."
+            )
+        return "Bewertung: kurz zu steil, weil einzelne Abschnitte ueber dem Zielwinkel liegen."
+    if status_text == "im Zielbereich":
+        return f"Bewertung: im Zielbereich, weil der Avg Winkel {_fmt1(avg_angle)} Grad zum Ziel {target_text} passt."
+    if status_text == "nicht belastbar":
+        return "Bewertung: nicht belastbar, weil in dieser Phase nicht genug verwertbare Daten vorliegen."
+    return f"Bewertung: {status_text}."
+
+
+def _scorecard_row_has_angle_issue(row: dict[str, Any]) -> bool:
+    status = normalize_german_text(str(row.get("target_status") or ""))
+    return any(
+        marker in status
+        for marker in ["zu steil", "zu flach", "eher flach", "kurz zu steil"]
+    )
+
+
+def _phase_relevant_legacy_reason_lines(
+    *,
+    phase_name: str,
+    legacy_reasons: dict[str, list[str]],
+) -> list[str]:
+    if phase_name == "Exit / Stabilisierung":
+        return legacy_reasons.get("exit", [])
+    if phase_name in {"Dive-Aufbau", "Hauptbeschleunigung"}:
+        return legacy_reasons.get("build", [])
+    if phase_name == "Hot-Zone Aufbau":
+        return legacy_reasons.get("hot", [])
+    if phase_name == "Max-Speed Fenster":
+        return (legacy_reasons.get("hot", [])[:1] + legacy_reasons.get("stability", [])[:2])[:3]
+    return []
+
+
 def _build_phase_rows_with_reference(
     *,
     report: dict[str, Any],
@@ -1280,6 +1720,7 @@ def _build_phase_rows_with_reference(
             item["avg_vVert_display"] = "nicht belastbar (Datenlücke)"
             item["avg_vHor_display"] = "nicht belastbar (Datenlücke)"
             item["avg_angle_display"] = "nicht belastbar (Datenlücke)"
+            item["angle_progression_display"] = "nicht belastbar (Datenluecke)"
             out.append(item)
             continue
         item["avg_vVert_display"] = _format_value_with_reference(
@@ -1303,6 +1744,11 @@ def _build_phase_rows_with_reference(
             tolerance=0.3,
             decimals=2,
         )
+        item["angle_progression_display"] = _format_angle_progression(
+            start_angle=row.get("angle_start_deg"),
+            end_angle=row.get("angle_end_deg"),
+            delta_angle=row.get("angle_delta_deg"),
+        )
         out.append(item)
     return out
 
@@ -1322,11 +1768,37 @@ def _build_normalized_phase_rows(report: dict[str, Any]) -> list[dict[str, Any]]
         return []
 
     technical_rows: list[dict[str, Any]] = []
-    for spec in _TECHNICAL_PHASE_SPECS:
+    for spec in TECHNICAL_PHASE_SPECS:
         name = str(spec["name"])
         start_s = float(spec["start_s"])
         end_s = min(float(spec["end_s"]), float(eval_end))
+        target_low = float(spec["angle_min"])
+        target_high = float(spec["angle_max"])
+        target_label = f"{target_low:.0f}-{target_high:.0f} Grad"
         if end_s <= start_s + 0.75:
+            display_end_s = max(start_s, end_s)
+            technical_rows.append(
+                {
+                    "name": name,
+                    "start_s": round(start_s, 2),
+                    "end_s": round(display_end_s, 2),
+                    "duration_s": round(max(0.0, display_end_s - start_s), 2),
+                    "avg_vVert_kmh": None,
+                    "avg_vHor_kmh": None,
+                    "avg_angle_deg": None,
+                    "angle_start_deg": None,
+                    "angle_end_deg": None,
+                    "angle_delta_deg": None,
+                    "min_angle_deg": None,
+                    "max_angle_deg": None,
+                    "max_vVert_kmh": None,
+                    "vVert_gain_kmh": None,
+                    "coverage_ratio": 0.0,
+                    "target_angle_label": target_label,
+                    "target_status": "nicht belastbar",
+                    "comment": "Bewertungsfenster endet vor oder direkt zu Beginn dieser Phase.",
+                }
+            )
             continue
 
         coverage = _window_coverage_ratio(
@@ -1364,15 +1836,29 @@ def _build_normalized_phase_rows(report: dict[str, Any]) -> list[dict[str, Any]]
             start_s=start_s,
             end_s=end_s,
         )
+        angle_start = _series_value_at(
+            time_s=chart.get("time_s", []),
+            values=chart.get("angle_deg", []),
+            target_s=start_s,
+        )
+        angle_end = _series_value_at(
+            time_s=chart.get("time_s", []),
+            values=chart.get("angle_deg", []),
+            target_s=end_s,
+        )
+        angle_delta = None if angle_start is None or angle_end is None else float(angle_end - angle_start)
         max_vvert = _window_max(
             time_s=chart.get("time_s", []),
             values=chart.get("vVert_kmh", []),
             start_s=start_s,
             end_s=end_s,
         )
-        target_low = float(spec["angle_min"])
-        target_high = float(spec["angle_max"])
-        target_label = f"{target_low:.0f}-{target_high:.0f} Grad"
+        vvert_gain = _window_delta(
+            time_s=chart.get("time_s", []),
+            values=chart.get("vVert_kmh", []),
+            start_s=start_s,
+            end_s=end_s,
+        )
 
         if coverage < 0.75:
             technical_rows.append(
@@ -1384,9 +1870,13 @@ def _build_normalized_phase_rows(report: dict[str, Any]) -> list[dict[str, Any]]
                     "avg_vVert_kmh": None,
                     "avg_vHor_kmh": None,
                     "avg_angle_deg": None,
+                    "angle_start_deg": None,
+                    "angle_end_deg": None,
+                    "angle_delta_deg": None,
                     "min_angle_deg": None,
                     "max_angle_deg": None,
                     "max_vVert_kmh": None,
+                    "vVert_gain_kmh": None,
                     "coverage_ratio": round(coverage, 2),
                     "target_angle_label": target_label,
                     "target_status": "nicht belastbar",
@@ -1404,9 +1894,13 @@ def _build_normalized_phase_rows(report: dict[str, Any]) -> list[dict[str, Any]]
                 "avg_vVert_kmh": None if avg_vvert is None else round(avg_vvert, 2),
                 "avg_vHor_kmh": None if avg_vhor is None else round(avg_vhor, 2),
                 "avg_angle_deg": None if avg_angle is None else round(avg_angle, 2),
+                "angle_start_deg": None if angle_start is None else round(angle_start, 2),
+                "angle_end_deg": None if angle_end is None else round(angle_end, 2),
+                "angle_delta_deg": None if angle_delta is None else round(angle_delta, 2),
                 "min_angle_deg": None if min_angle is None else round(min_angle, 2),
                 "max_angle_deg": None if max_angle is None else round(max_angle, 2),
                 "max_vVert_kmh": None if max_vvert is None else round(max_vvert, 2),
+                "vVert_gain_kmh": None if vvert_gain is None else round(vvert_gain, 2),
                 "coverage_ratio": round(coverage, 2),
                 "target_angle_label": target_label,
                 "target_status": _technical_phase_status(
@@ -1421,6 +1915,7 @@ def _build_normalized_phase_rows(report: dict[str, Any]) -> list[dict[str, Any]]
                     avg_vvert=avg_vvert,
                     avg_vhor=avg_vhor,
                     avg_angle=avg_angle,
+                    min_angle=min_angle,
                     max_angle=max_angle,
                     target_low=target_low,
                     target_high=target_high,
@@ -1601,6 +2096,7 @@ def _technical_phase_comment(
     avg_vvert: float | None,
     avg_vhor: float | None,
     avg_angle: float | None,
+    min_angle: float | None,
     max_angle: float | None,
     target_low: float,
     target_high: float,
@@ -1609,7 +2105,7 @@ def _technical_phase_comment(
         return "Phase nicht belastbar."
     status = _technical_phase_status(
         avg_angle=avg_angle,
-        min_angle=None,
+        min_angle=min_angle,
         max_angle=max_angle,
         target_low=target_low,
         target_high=target_high,
@@ -1617,11 +2113,27 @@ def _technical_phase_comment(
     vhor = None if avg_vhor is None else float(avg_vhor)
     vvert = None if avg_vvert is None else float(avg_vvert)
 
-    if status in {"zu steil", "kurz zu steil"}:
+    if status == "kurz zu steil":
+        max_val = None if max_angle is None else float(max_angle)
+        target_text = f"{float(target_low):.0f}-{float(target_high):.0f} Grad"
+        if max_val is not None and vhor is not None and vhor < 28.0:
+            return (
+                f"Durchschnitt liegt im Zielbereich; Max Winkel {max_val:.1f} Grad liegt bei knapper "
+                f"horizontaler Reserve kurz ueber dem Ziel {target_text}."
+            )
+        if max_val is not None:
+            return (
+                f"Durchschnitt liegt im Zielbereich; Max Winkel {max_val:.1f} Grad liegt kurz "
+                f"ueber dem Ziel {target_text}."
+            )
+        return "Durchschnitt liegt im Zielbereich; einzelne Messpunkte liegen kurz ueber dem Zielwinkel."
+    if status == "zu steil":
         if vhor is not None and vhor < 28.0:
             return "Zu steil bei knapper horizontaler Reserve; Risiko fuer Nachkorrekturen."
         return "Winkel liegt ueber dem Technikmodell; nur sinnvoll, wenn die Linie ruhig bleibt."
     if status in {"zu flach", "eher flach"}:
+        if name == "Max-Speed Fenster" and status == "eher flach":
+            return "Durchschnitt liegt im Zielwinkel, aber einzelne Abschnitte fallen darunter; Stabilitaet des 3s-Fensters separat pruefen."
         if name == "Dive-Aufbau":
             return "Aufbau bleibt flach; Druck kommt wahrscheinlich spaeter."
         return "Winkel liegt unter dem Technikmodell; Speed-Aufbau kann spaeter fehlen."
@@ -1716,12 +2228,58 @@ def _annotate_scorecard_with_reference(
 
     current = _scorecard_metric_snapshot(report)
     reference = _scorecard_metric_snapshot(reference_report)
+    current_phases = {
+        str(row.get("name") or "").strip(): row
+        for row in _phase_rows_for_report(report)
+        if str(row.get("name") or "").strip()
+    }
+    reference_phases = {
+        str(row.get("name") or "").strip(): row
+        for row in _phase_rows_for_report(reference_report)
+        if str(row.get("name") or "").strip()
+    }
     out: list[dict[str, Any]] = []
 
     for row in rows:
         name = str(row.get("name") or "").strip()
         benchmark_lines: list[str] = []
-        if name == "Exit":
+        phase_row = current_phases.get(name)
+        ref_phase_row = reference_phases.get(name)
+        if phase_row is not None and ref_phase_row is not None:
+            line = _metric_compare_line(
+                label="Avg vVert",
+                current=phase_row.get("avg_vVert_kmh"),
+                reference=ref_phase_row.get("avg_vVert_kmh"),
+                unit="km/h",
+                decimals=1,
+                higher_is_better=None,
+                tolerance=0.5,
+            )
+            if line:
+                benchmark_lines.append(line)
+            line = _metric_compare_line(
+                label="Avg vHor",
+                current=phase_row.get("avg_vHor_kmh"),
+                reference=ref_phase_row.get("avg_vHor_kmh"),
+                unit="km/h",
+                decimals=1,
+                higher_is_better=None,
+                tolerance=0.5,
+            )
+            if line:
+                benchmark_lines.append(line)
+            line = _metric_compare_line(
+                label="Avg Winkel",
+                current=phase_row.get("avg_angle_deg"),
+                reference=ref_phase_row.get("avg_angle_deg"),
+                unit="Grad",
+                decimals=1,
+                higher_is_better=None,
+                tolerance=0.3,
+            )
+            if line:
+                benchmark_lines.append(line)
+        elif name == "Exit":
             line = _metric_compare_line(
                 label="vVert +10s",
                 current=current.get("v10"),
@@ -1866,9 +2424,20 @@ def _scorecard_metric_snapshot(report: dict[str, Any]) -> dict[str, float | None
         curve_end = _to_float(notes.get("curve_window_end_s"))
         eval_end = 25.0 if curve_end is None else float(curve_end)
 
-    build_start_s, build_end_s = _tau_to_time(tau0=0.15, tau1=0.70, eval_end_s=eval_end)
-    build_angle_start_s, build_angle_end_s = _tau_to_time(tau0=0.45, tau1=0.70, eval_end_s=eval_end)
-    hot_start_s, hot_end_s = _tau_to_time(tau0=0.70, tau1=0.90, eval_end_s=eval_end)
+    build_start_s = 3.0
+    build_end_s = min(15.0, float(eval_end))
+    if build_end_s <= build_start_s + 0.75:
+        build_start_s, build_end_s = _tau_to_time(tau0=0.15, tau1=0.70, eval_end_s=eval_end)
+
+    build_angle_start_s = 8.0
+    build_angle_end_s = min(22.0, float(eval_end))
+    if build_angle_end_s <= build_angle_start_s + 0.75:
+        build_angle_start_s, build_angle_end_s = _tau_to_time(tau0=0.45, tau1=0.70, eval_end_s=eval_end)
+
+    hot_start_s = 20.0
+    hot_end_s = min(28.0, float(eval_end))
+    if hot_end_s <= hot_start_s + 0.75:
+        hot_start_s, hot_end_s = _tau_to_time(tau0=0.70, tau1=0.90, eval_end_s=eval_end)
 
     build_coverage = _window_coverage_ratio(
         time_s=chart.get("time_s", []),
@@ -2142,7 +2711,7 @@ def _add_reference_score_context(
             lines.append(f"Referenzscore: vVert +10s {_fmt1(v10)} km/h statt Referenz {_fmt1(v10_ref)} km/h.")
         if carry is not None and carry_ref is not None:
             lines.append(f"Referenzscore: Druck-Mitnahme {_fmt2(carry)} statt Referenz {_fmt2(carry_ref)}.")
-    elif phase_name == "Aufbau 10-20s":
+    elif phase_name in {"Aufbau 10-20s", "Dive-Aufbau", "Hauptbeschleunigung"}:
         gain = _to_float(snapshot.get("gain_10_20"))
         gain_ref = _to_float(marco_profile.get("gain_10_20_ref"))
         angle = _to_float(snapshot.get("angle_20"))
@@ -2283,6 +2852,8 @@ def _format_value_with_reference(
         return current_text
     ref_text = f"{ref:.{decimals}f}"
     delta = current - ref
+    if higher_is_better is None:
+        return f"{current_text} (Ref {ref_text} | Delta {delta:+.{decimals}f})"
     if _is_near_best(
         current=current,
         reference=ref,
@@ -2290,9 +2861,18 @@ def _format_value_with_reference(
         tolerance=tolerance,
     ):
         return f"{current_text} (Ref {ref_text} | bestes Ergebnis bisher)"
-    if higher_is_better is None:
-        return f"{current_text} (Ref {ref_text} | Delta {delta:+.{decimals}f})"
     return f"{current_text} (Ref {ref_text} | {delta:+.{decimals}f})"
+
+
+def _format_angle_progression(*, start_angle: Any, end_angle: Any, delta_angle: Any) -> str:
+    start = _to_float(start_angle)
+    end = _to_float(end_angle)
+    delta = _to_float(delta_angle)
+    if start is None or end is None:
+        return "-"
+    if delta is None:
+        delta = end - start
+    return f"{start:.1f} -> {end:.1f} Grad ({delta:+.1f})"
 
 
 def _metric_compare_line(
@@ -2314,6 +2894,11 @@ def _metric_compare_line(
     cur_text = f"{cur:.{decimals}f}"
     ref_text = f"{ref:.{decimals}f}"
     delta = cur - ref
+    if higher_is_better is None:
+        return (
+            f"{label}: {cur_text}{unit_text} "
+            f"(Ref {ref_text}{unit_text} | Delta {delta:+.{decimals}f}{unit_text})"
+        )
     if _is_near_best(
         current=cur,
         reference=ref,
@@ -2321,11 +2906,6 @@ def _metric_compare_line(
         tolerance=tolerance,
     ):
         return f"{label}: {cur_text}{unit_text} (Ref {ref_text}{unit_text} | bestes Ergebnis bisher)"
-    if higher_is_better is None:
-        return (
-            f"{label}: {cur_text}{unit_text} "
-            f"(Ref {ref_text}{unit_text} | Delta {delta:+.{decimals}f}{unit_text})"
-        )
     return f"{label}: {cur_text}{unit_text} (Ref {ref_text}{unit_text} | {delta:+.{decimals}f}{unit_text})"
 
 
@@ -2414,7 +2994,11 @@ def _build_jump_brief_summary(
         ),
     )
     strong_rows = sorted(
-        [row for row in scorecard_rows if int(row.get("score", 0)) >= 70],
+        [
+            row
+            for row in scorecard_rows
+            if int(row.get("score", 0)) >= 70 and not _scorecard_row_has_angle_issue(row)
+        ],
         key=lambda row: int(row.get("score", 0)),
         reverse=True,
     )
@@ -2436,14 +3020,11 @@ def _build_jump_brief_summary(
         summary = f"Die größten Baustellen liegen bei {focus_names}.{speed_text}".strip()
 
     review_not_good = _sort_texts_by_timeline(review.get("not_good", [])[:4])
-    main_issue_candidates = (
-        [
-            f"{row.get('name')}: {_primary_issue_line_from_row(row)}"
-            for row in weak_rows_timeline[:3]
-            if _primary_issue_line_from_row(row)
-        ]
-        + review_not_good
-    )
+    main_issue_candidates = review_not_good + [
+        f"{row.get('name')}: {_primary_issue_line_from_row(row)}"
+        for row in weak_rows_timeline[:3]
+        if _primary_issue_line_from_row(row)
+    ]
     main_issues = _compact_main_issues(main_issue_candidates, max_items=4)
     if has_primary_diagnosis:
         primary_issue = str(
@@ -2505,13 +3086,11 @@ def _build_jump_brief_summary(
             actions = [feedback_focus]
     if not actions:
         actions = ["Ablauf stabil wiederholen und nur kleine Korrekturen setzen."]
-    if not has_primary_diagnosis:
-        action_focus_names = _focus_names_from_issue_texts(actions)
-        if action_focus_names:
-            focus_names = ", ".join(action_focus_names[:2])
-            speed_text = f" Top-Speed: {best_3s_kmh:.1f} km/h." if best_3s_kmh is not None else ""
-            summary = f"Die größten Baustellen liegen bei {focus_names}.{speed_text}".strip()
-
+    actions = _harmonize_action_texts(
+        actions,
+        max_items=5,
+        preserve_first=has_primary_diagnosis,
+    )
     return {
         "summary": summary,
         "basis_lines": basis_lines,
@@ -2606,17 +3185,21 @@ def _build_jump_brief_simple(
         ),
     )
     strong_rows = sorted(
-        [row for row in scorecard_rows if int(row.get("score", 0)) >= 70],
+        [
+            row
+            for row in scorecard_rows
+            if int(row.get("score", 0)) >= 70 and not _scorecard_row_has_angle_issue(row)
+        ],
         key=lambda row: int(row.get("score", 0)),
         reverse=True,
     )
 
-    action_focus_names = _focus_names_from_issue_texts(
-        [str(item) for item in (jump_brief.get("actions") or []) if item]
+    issue_focus_names = _focus_names_from_issue_texts(
+        [str(item) for item in (jump_brief.get("main_issues") or []) if item]
     )
     weak_labels = _unique_texts(
-        [_simple_phase_label(name) for name in action_focus_names[:2]]
-        if action_focus_names
+        [_simple_phase_label(name) for name in issue_focus_names[:2]]
+        if issue_focus_names
         else [_simple_phase_label(str(row.get("name", ""))) for row in weak_rows[:2]]
     )
     if weak_labels:
@@ -2627,12 +3210,16 @@ def _build_jump_brief_simple(
     else:
         summary = "Stabiler Sprung mit guter Linie. Jetzt vor allem ruhig wiederholen."
 
-    fallback = [
-        _simplify_coaching_line(item)
-        for item in (jump_brief.get("main_issues") or [])
-        if item and not _hide_in_simple_view(item)
-    ]
-    main_issues = _unique_texts([item for item in fallback if item])[:2]
+    fallback = []
+    for item in (jump_brief.get("main_issues") or []):
+        if not item or _hide_in_simple_view(item):
+            continue
+        simplified = _simple_issue_from_brief_text(item) or _simplify_coaching_line(item)
+        if _is_malformed_simple_line(simplified):
+            continue
+        fallback.append(simplified)
+    row_issues = [_simple_issue_for_scorecard_row(row) for row in weak_rows[:2]]
+    main_issues = _unique_texts([item for item in fallback + row_issues if item])[:2]
     if not main_issues:
         main_issues = _unique_texts(
             [
@@ -2677,12 +3264,18 @@ def _build_jump_brief_simple(
             for row in weak_rows
         ]
     )
+    if issue_focus_names:
+        issue_actions = [
+            _simple_action_for_phase(phase_name=str(name), score=50)
+            for name in issue_focus_names[:2]
+        ]
+        actions = _unique_texts(issue_actions + actions)
     if not actions:
         actions = ["Diesen Ablauf im nächsten Sprung ruhig und sauber wiederholen."]
     feedback_focus = _feedback_context_line(feedback_context, key="next_focus_hint")
     if feedback_focus:
         actions = _unique_texts([feedback_focus] + actions)
-    actions = actions[:3]
+    actions = _harmonize_action_texts(actions, max_items=3)
 
     basis_line = ""
     for item in jump_brief.get("basis_lines") or []:
@@ -2875,14 +3468,14 @@ def _feedback_snapshot_goal(feedback_context: dict[str, Any] | None) -> dict[str
             }
         )
 
-    phase = "StabilitÃ¤t / Kipp-Risiko"
+    phase = "Max-Speed Fenster"
     if evidence.get("end_unstable") or evidence.get("late_hard_transition"):
-        phase = "Hot-Zone"
+        phase = "Hot-Zone Aufbau"
         add("vhor_min_20_25", "vHor-Min 20-25s", "increase", 2.0, " km/h")
         add("angle_turns_20_25", "Korrekturen 20-25s", "decrease", 1.0, "", 0)
         add("negative_risk_score", "Risiko-Score", "decrease", 5.0, "")
     if evidence.get("build_too_flat"):
-        phase = "Aufbau 10-20s"
+        phase = "Hauptbeschleunigung"
         add("gain_10_20", "Zuwachs +10 bis +20s", "increase", 8.0, " km/h")
     if not metrics:
         add("angle_turns_20_25", "Korrekturen 20-25s", "decrease", 1.0, "", 0)
@@ -3034,6 +3627,11 @@ def _build_ai_coaching_payload(
             "t0_utc": str(jump.get("t0_utc") or "") if AI_COACHING_INCLUDE_IDENTIFIERS else "",
         },
         "performance_profile": _compact_performance_profile_for_ai(performance_profile),
+        "personal_timing": _compact_timing_reference_for_ai(
+            jumper_summary.get("timing_reference")
+            if isinstance(jumper_summary, dict)
+            else None
+        ),
         "feedback_training_profile": _compact_feedback_training_profile_for_ai(
             jumper_summary.get("feedback_training_profile")
             if isinstance(jumper_summary, dict)
@@ -3056,8 +3654,9 @@ def _build_ai_coaching_payload(
                 "status": str(row.get("status") or ""),
                 "reason": _truncate_text(str(row.get("reason") or ""), 260),
             }
-            for row in scorecard_rows[:4]
+            for row in scorecard_rows[:5]
         ],
+        "technical_phases": _compact_phase_rows_for_ai(_phase_rows_for_report(report)),
         "review": {
             "happened": _limit_texts(review.get("happened"), max_items=6, max_len=260),
             "good": _limit_texts(review.get("good"), max_items=4, max_len=220),
@@ -3102,6 +3701,12 @@ def _compact_primary_diagnosis_for_ai(value: Any) -> dict[str, Any]:
             "vhor_20": _round_float(evidence.get("vhor_20"), 1),
             "vhor_min_after_20": _round_float(evidence.get("vhor_min_after_20"), 1),
             "vhor_drop_after_20_pct": _round_float(evidence.get("vhor_drop_after_20_pct"), 0),
+            "vhor_min_time_s": _round_float(evidence.get("vhor_min_time_s"), 1),
+            "best_3s_start_s": _round_float(evidence.get("best_3s_start_s"), 1),
+            "best_3s_end_s": _round_float(evidence.get("best_3s_end_s"), 1),
+            "vhor_rebound_to_best_end_pct": _round_float(evidence.get("vhor_rebound_to_best_end_pct"), 0),
+            "angle_at_vhor_min": _round_float(evidence.get("angle_at_vhor_min"), 1),
+            "forward_loss_to_best_end_m": _round_float(evidence.get("forward_loss_to_best_end_m"), 1),
         },
     }
 
@@ -3158,6 +3763,35 @@ def _compact_feedback_training_profile_for_ai(value: Any) -> dict[str, Any]:
     }
 
 
+def _compact_phase_rows_for_ai(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for raw in rows[:5]:
+        if not isinstance(raw, dict):
+            continue
+        out.append(_compact_technical_phase_for_ai(raw))
+    return out
+
+
+def _compact_technical_phase_for_ai(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": str(raw.get("name") or ""),
+        "start_s": _round_float(raw.get("start_s"), 1),
+        "end_s": _round_float(raw.get("end_s"), 1),
+        "target_angle": str(raw.get("target_angle_label") or ""),
+        "angle_status": str(raw.get("target_status") or raw.get("angle_status") or ""),
+        "avg_angle_deg": _round_float(raw.get("avg_angle_deg"), 1),
+        "angle_start_deg": _round_float(raw.get("angle_start_deg"), 1),
+        "angle_end_deg": _round_float(raw.get("angle_end_deg"), 1),
+        "angle_delta_deg": _round_float(raw.get("angle_delta_deg"), 1),
+        "avg_vVert_kmh": _round_float(raw.get("avg_vVert_kmh"), 1),
+        "avg_vHor_kmh": _round_float(raw.get("avg_vHor_kmh"), 1),
+        "max_angle_deg": _round_float(raw.get("max_angle_deg"), 1),
+        "min_vhor_kmh": _round_float(raw.get("min_vhor_kmh"), 1),
+        "vvert_gain_kmh": _round_float(raw.get("vvert_gain_kmh", raw.get("vVert_gain_kmh")), 1),
+        "comment": _truncate_text(str(raw.get("comment") or ""), 180),
+    }
+
+
 def _compact_technical_assessment_for_ai(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or not value.get("available"):
         return {"available": False}
@@ -3165,9 +3799,12 @@ def _compact_technical_assessment_for_ai(value: Any) -> dict[str, Any]:
     best_window = value.get("best_window_quality") if isinstance(value.get("best_window_quality"), dict) else {}
     jerk = value.get("jerk_quality") if isinstance(value.get("jerk_quality"), dict) else {}
     phase_rows: list[dict[str, Any]] = []
+    all_phase_rows: list[dict[str, Any]] = []
     for raw in value.get("phases") or []:
         if not isinstance(raw, dict):
             continue
+        if len(all_phase_rows) < 5:
+            all_phase_rows.append(_compact_technical_phase_for_ai(raw))
         if not (raw.get("steep_without_gain") or raw.get("oversteep_vhor_cost")):
             continue
         phase_rows.append(
@@ -3211,6 +3848,7 @@ def _compact_technical_assessment_for_ai(value: Any) -> dict[str, Any]:
             "label": str(jerk.get("label") or ""),
             "jerk_rms_mps3": _round_float(jerk.get("jerk_rms_mps3"), 1),
         },
+        "phases": all_phase_rows,
         "phase_issues": phase_rows,
         "issues": _limit_texts(value.get("issues"), max_items=3, max_len=240),
         "actions": [
@@ -3233,6 +3871,48 @@ def _compact_performance_profile_for_ai(profile: dict[str, Any]) -> dict[str, An
         "confidence_label": str(profile.get("confidence_label") or ""),
         "valid_jump_count": int(profile.get("valid_jump_count") or 0),
         "top_available_avg_kmh": _round_float(profile.get("top_available_avg_kmh"), 1),
+    }
+
+
+def _compact_timing_reference_for_ai(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not value.get("available") or str(value.get("maturity") or "active") != "active":
+        return {
+            "available": False,
+            "reason": str((value or {}).get("reason") or "") if isinstance(value, dict) else "",
+            "maturity": str((value or {}).get("maturity") or "off") if isinstance(value, dict) else "off",
+        }
+    anchors = value.get("anchors") if isinstance(value.get("anchors"), dict) else {}
+    compact_anchors: dict[str, dict[str, Any]] = {}
+    for key in [
+        "angle_75_time_s",
+        "angle_82_time_s",
+        "angle_85_time_s",
+        "best_3s_start_s",
+        "best_3s_end_s",
+        "vvert_peak_time_s",
+        "decel_start_s",
+    ]:
+        raw = anchors.get(key) if isinstance(anchors, dict) else None
+        if not isinstance(raw, dict):
+            continue
+        compact_anchors[key] = {
+            "label": str(raw.get("label") or key),
+            "low_s": _round_float(raw.get("low"), 1),
+            "high_s": _round_float(raw.get("high"), 1),
+            "median_s": _round_float(raw.get("median"), 1),
+        }
+    return {
+        "available": True,
+        "maturity": "active",
+        "confidence": str(value.get("confidence") or ""),
+        "basis_count": int(value.get("basis_count") or 0),
+        "usable_count": int(value.get("usable_count") or 0),
+        "source": str(value.get("source") or ""),
+        "best_reference_kmh": _round_float(value.get("best_reference_kmh"), 1),
+        "top3_avg_kmh": _round_float(value.get("top3_avg_kmh"), 1),
+        "max_timing_spread_s": _round_float(value.get("max_timing_spread_s"), 1),
+        "summary_lines": _limit_texts(value.get("summary_lines"), max_items=3, max_len=220),
+        "anchors": compact_anchors,
     }
 
 
@@ -3357,7 +4037,15 @@ def _simple_phase_label(phase_name: str) -> str:
     lowered = normalize_german_text(phase_name.strip())
     if "exit" in lowered:
         return "Startphase"
-    if "aufbau" in lowered:
+    if "dive" in lowered:
+        return "Dive-Aufbau"
+    if "hauptbeschleunigung" in lowered:
+        return "Hauptbeschleunigung"
+    if "max-speed" in lowered or "max speed" in lowered:
+        return "Max-Speed-Fenster"
+    if "hot" in lowered and "aufbau" in lowered:
+        return "Hot-Zone-Aufbau"
+    if "aufbau" in lowered and "hot" not in lowered:
         return "Aufbauphase"
     if "hot" in lowered:
         return "schnelle Phase"
@@ -3372,6 +4060,22 @@ def _simple_issue_for_phase(*, phase_name: str, score: int) -> str:
         if score < 55:
             return "Der Start war zu unruhig. Du verlierst direkt nach dem Absprung zu viel Druck."
         return "Der Start war okay, aber der Druck wurde nicht stabil genug mitgenommen."
+    if "dive" in lowered:
+        if score < 55:
+            return "Der Dive-Aufbau passt noch nicht zum Zielwinkel. Der Druck kommt dadurch zu unruhig."
+        return "Der Dive-Aufbau braucht noch einen ruhigeren Zielwinkel."
+    if "hauptbeschleunigung" in lowered:
+        if score < 55:
+            return "In der Hauptbeschleunigung fehlt ein sauberer Speed-Aufbau im Zielwinkel."
+        return "Die Hauptbeschleunigung ist da, aber noch nicht gleichmaessig genug."
+    if "hot" in lowered and "aufbau" in lowered:
+        if score < 55:
+            return "Im Hot-Zone-Aufbau fehlt der ruhige Uebergang in den Zielwinkel."
+        return "Der Hot-Zone-Aufbau ist noch nicht ruhig genug."
+    if "max-speed" in lowered or "max speed" in lowered:
+        if score < 55:
+            return "Im Max-Speed-Fenster geht zu viel Stabilitaet oder vHor verloren."
+        return "Das Max-Speed-Fenster ist noch nicht ruhig genug gehalten."
     if "aufbau" in lowered:
         if score < 55:
             return "Im Mittelteil bricht der Aufbau zu früh ab. Die Beschleunigung bleibt nicht konstant."
@@ -3387,10 +4091,35 @@ def _simple_issue_for_phase(*, phase_name: str, score: int) -> str:
     return "Der Flug war nicht durchgehend ruhig und stabil."
 
 
+def _simple_issue_for_scorecard_row(row: dict[str, Any]) -> str:
+    phase_name = str(row.get("name") or "")
+    status = normalize_german_text(str(row.get("target_status") or ""))
+    avg_angle = _to_float(row.get("avg_angle_deg"))
+    target = str(row.get("target_angle_label") or "").strip()
+    label = _simple_phase_label(phase_name)
+    if "zu steil" in status and avg_angle is not None and target:
+        return f"{label}: Der mittlere Winkel liegt mit {_fmt1(avg_angle)} Grad ueber dem Ziel {target}."
+    if "zu flach" in status and avg_angle is not None and target:
+        return f"{label}: Der mittlere Winkel liegt mit {_fmt1(avg_angle)} Grad unter dem Ziel {target}."
+    if "eher flach" in status and target:
+        return f"{label}: Der Durchschnitt passt knapp, aber einzelne Abschnitte fallen unter das Ziel {target}."
+    if "kurz zu steil" in status and target:
+        return f"{label}: Der Durchschnitt passt, aber einzelne Abschnitte werden zu steil fuer das Ziel {target}."
+    return _simple_issue_for_phase(phase_name=phase_name, score=int(row.get("score", 0) or 0))
+
+
 def _simple_strength_for_phase(*, phase_name: str, score: int) -> str:
     lowered = normalize_german_text(phase_name.strip())
     if "exit" in lowered:
         return "Der Start war kontrolliert."
+    if "dive" in lowered:
+        return "Der Dive-Aufbau war kontrolliert."
+    if "hauptbeschleunigung" in lowered:
+        return "Die Hauptbeschleunigung lag gut im Zielbereich."
+    if "max-speed" in lowered or "max speed" in lowered:
+        return "Das Max-Speed-Fenster war gut nutzbar."
+    if "hot" in lowered and "aufbau" in lowered:
+        return "Der Hot-Zone-Aufbau war kontrolliert."
     if "aufbau" in lowered:
         return "Der Aufbau in die Beschleunigung war sauber."
     if "hot" in lowered:
@@ -3407,7 +4136,12 @@ def _simple_action_for_phase(*, phase_name: str, score: int) -> str:
             "Startphase: Nach dem Absprung 2-3 Sekunden ruhig Druck halten "
             "und nur kleine Korrekturen machen."
         )
-    if "aufbau" in lowered:
+    if "dive" in lowered or "hauptbeschleunigung" in lowered:
+        return (
+            "Aufbauphase: Zwischen +10s und +20s gleichmäßig weiter beschleunigen, "
+            "ohne hektische Richtungswechsel."
+        )
+    if "aufbau" in lowered and "hot" not in lowered:
         return (
             "Aufbauphase: Zwischen +10s und +20s gleichmäßig weiter beschleunigen, "
             "ohne hektische Richtungswechsel."
@@ -3443,15 +4177,53 @@ def _simplify_coaching_line(text: str) -> str:
     replacements = [
         (r"\bhot-zone\b", "schnelle Phase"),
         (r"\bhot phase\b", "schnelle Phase"),
-        (r"im relevanten bereich vorwärtsgerichtet", "nach vorne ausgerichtet"),
-        (r"vorwärtsbewegung", "Vorwärtsrichtung"),
-        (r"\bvhor\b", "Vorwärtsrichtung"),
+        (r"im relevanten bereich vorwärtsgerichtet", "waagerecht stabil"),
+        (r"vorwärtsbewegung", "waagerechte Geschwindigkeit"),
+        (r"vorwaertsbewegung", "waagerechte Geschwindigkeit"),
+        (r"\bvhor\b", "waagerechte Geschwindigkeit"),
         (r"\bvvert\b", "Geschwindigkeit nach unten"),
     ]
     for pattern, repl in replacements:
         line = re.sub(pattern, repl, line, flags=re.IGNORECASE)
+    line = re.sub(r"\bin der schnelle Phase\b", "in der schnellen Phase", line, flags=re.IGNORECASE)
     line = re.sub(r"\s+", " ", line).strip(" .;,-")
     return line
+
+
+def _simple_issue_from_brief_text(text: str) -> str:
+    raw = str(text or "")
+    lowered = normalize_german_text(str(text or ""))
+    if not lowered:
+        return ""
+    label = _simple_phase_label(raw.split(":", 1)[0]) if ":" in raw else "Diese Phase"
+    if "bewertung:" in lowered and "avg winkel" in lowered and "unter dem ziel" in lowered:
+        return f"{label}: Der Winkel liegt im Durchschnitt unter dem Zielbereich."
+    if "bewertung:" in lowered and "avg winkel" in lowered and "ueber dem ziel" in lowered:
+        return f"{label}: Der Winkel liegt im Durchschnitt ueber dem Zielbereich."
+    if ("+10 bis +15" in lowered or "10 bis 15" in lowered) and "zuwachs" in lowered:
+        return "Zwischen +10s und +15s kommt noch zu wenig zusaetzlicher Speed."
+    if "hot-zone" in lowered and (
+        "ineffizient" in lowered or "hoehenverlust" in lowered or "hohenverlust" in lowered
+    ):
+        return "In der Hot-Zone geht viel Hoehe verloren, aber es kommt nur wenig zusaetzlicher Speed dazu."
+    if "hot-zone" in lowered and "vhor" in lowered and "verloren" in lowered:
+        return "In der Hot-Zone faellt die waagerechte Geschwindigkeit zu stark ab."
+    return ""
+
+
+def _is_malformed_simple_line(text: str) -> bool:
+    lowered = normalize_german_text(str(text or "").strip())
+    if not lowered:
+        return True
+    malformed_markers = [
+        "bis ,",
+        "zielwinkel 60",
+        "geschwindigkeit nach unten-zuwachs",
+        "istwerte avg",
+        "avg waagerechte geschwindigkeit",
+        "avg vorwaertsrichtung",
+    ]
+    return any(marker in lowered for marker in malformed_markers)
 
 
 def _hide_in_simple_view(text: str) -> bool:
@@ -3651,6 +4423,8 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
     performance_profile = _build_performance_profile(records)
     stability_reference = _build_jumper_stability_reference(records)
     stability_reference["performance_profile"] = performance_profile
+    timing_reference = _build_jumper_timing_reference(records)
+    stability_reference["timing_reference"] = timing_reference
     tip_effect_profile = _build_tip_effect_profile(records, performance_profile=performance_profile)
     feedback_training_profile = build_feedback_training_profile(records)
 
@@ -3668,12 +4442,322 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
         "earlier_better_points": earlier_better_points,
         "focus_actions": focus_actions,
         "performance_profile": performance_profile,
+        "timing_reference": timing_reference,
         "stability_reference": stability_reference,
         "tip_effect_profile": tip_effect_profile,
         "feedback_training_profile": feedback_training_profile,
     }
     _JUMPER_SUMMARY_CACHE[cache_key] = (signature, result)
     return result
+
+
+def _empty_jumper_timing_reference(
+    reason: str,
+    *,
+    maturity: str = "off",
+    usable_count: int = 0,
+    basis_count: int = 0,
+    source: str = "",
+    best_reference_kmh: float | None = None,
+    top3_avg_kmh: float | None = None,
+    max_timing_spread_s: float | None = None,
+    maturity_reasons: list[str] | None = None,
+) -> dict[str, Any]:
+    maturity_key = str(maturity or "off").strip().lower()
+    if maturity_key not in _TIMING_REFERENCE_MATURITY_LABELS:
+        maturity_key = "off"
+    return {
+        "available": False,
+        "reason": reason,
+        "confidence": "unavailable",
+        "basis_count": int(basis_count),
+        "usable_count": int(usable_count),
+        "source": source,
+        "maturity": maturity_key,
+        "maturity_label": _TIMING_REFERENCE_MATURITY_LABELS[maturity_key],
+        "maturity_reasons": list(maturity_reasons or []),
+        "best_reference_kmh": _round_float(best_reference_kmh, 1),
+        "top3_avg_kmh": _round_float(top3_avg_kmh, 1),
+        "max_timing_spread_s": _round_float(max_timing_spread_s, 1),
+        "anchors": {},
+        "summary_lines": [],
+    }
+
+
+def _timing_anchor_spread_s(anchors: dict[str, dict[str, Any]], key: str) -> float | None:
+    raw = anchors.get(key)
+    if not isinstance(raw, dict):
+        return None
+    low = _to_float(raw.get("low"))
+    high = _to_float(raw.get("high"))
+    if low is None or high is None:
+        return None
+    return max(0.0, float(high) - float(low))
+
+
+def _timing_reference_maturity(
+    *,
+    usable_rows: list[dict[str, Any]],
+    basis_rows: list[dict[str, Any]],
+    anchors: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    speed_values = [
+        float(value)
+        for row in usable_rows
+        for value in [_to_float(row.get("best_3s_kmh"))]
+        if value is not None
+    ]
+    best_reference = max(speed_values) if speed_values else None
+    top3_avg = _top_avg(speed_values, 3) if speed_values else None
+    angle_82_spread = _timing_anchor_spread_s(anchors, "angle_82_time_s")
+    best_start_spread = _timing_anchor_spread_s(anchors, "best_3s_start_s")
+    spread_values = [value for value in [angle_82_spread, best_start_spread] if value is not None]
+    max_spread = max(spread_values) if spread_values else None
+
+    if len(usable_rows) < _TIMING_REFERENCE_MIN_USABLE_JUMPS:
+        return {
+            "state": "off",
+            "reason": (
+                "Mindestens "
+                f"{_TIMING_REFERENCE_MIN_USABLE_JUMPS} verwertbare Spruenge noetig; "
+                f"aktuell {len(usable_rows)}."
+            ),
+            "reasons": ["Zu wenige verwertbare Spruenge."],
+            "best_reference_kmh": best_reference,
+            "top3_avg_kmh": top3_avg,
+            "max_timing_spread_s": max_spread,
+        }
+
+    reasons: list[str] = []
+    if len(basis_rows) < _TIMING_REFERENCE_MIN_BASIS_JUMPS:
+        reasons.append(
+            f"Nur {len(basis_rows)} kontrollierte Basis-Spruenge; "
+            f"mindestens {_TIMING_REFERENCE_MIN_BASIS_JUMPS} noetig."
+        )
+    if best_reference is None or best_reference < _TIMING_REFERENCE_MIN_BEST_KMH:
+        reasons.append(
+            f"Beste Referenz unter {_TIMING_REFERENCE_MIN_BEST_KMH:.0f} km/h."
+        )
+    if top3_avg is None or top3_avg < _TIMING_REFERENCE_MIN_TOP3_AVG_KMH:
+        reasons.append(
+            f"Top-3-Schnitt unter {_TIMING_REFERENCE_MIN_TOP3_AVG_KMH:.0f} km/h."
+        )
+    if angle_82_spread is None:
+        reasons.append("82-Grad-Timing noch nicht stabil genug erfasst.")
+    elif angle_82_spread > _TIMING_REFERENCE_MAX_ANCHOR_SPREAD_S:
+        reasons.append(
+            "82-Grad-Timing streut zu stark "
+            f"({angle_82_spread:.1f}s > {_TIMING_REFERENCE_MAX_ANCHOR_SPREAD_S:.1f}s)."
+        )
+    if best_start_spread is None:
+        reasons.append("Start des besten 3s-Fensters noch nicht stabil genug erfasst.")
+    elif best_start_spread > _TIMING_REFERENCE_MAX_ANCHOR_SPREAD_S:
+        reasons.append(
+            "Start des besten 3s-Fensters streut zu stark "
+            f"({best_start_spread:.1f}s > {_TIMING_REFERENCE_MAX_ANCHOR_SPREAD_S:.1f}s)."
+        )
+
+    if reasons:
+        return {
+            "state": "soft",
+            "reason": "Persoenliches Timing noch nicht belastbar: " + " ".join(reasons),
+            "reasons": reasons,
+            "best_reference_kmh": best_reference,
+            "top3_avg_kmh": top3_avg,
+            "max_timing_spread_s": max_spread,
+        }
+    return {
+        "state": "active",
+        "reason": None,
+        "reasons": [],
+        "best_reference_kmh": best_reference,
+        "top3_avg_kmh": top3_avg,
+        "max_timing_spread_s": max_spread,
+    }
+
+
+def _build_jumper_timing_reference(records: list[dict[str, Any]]) -> dict[str, Any]:
+    if not records:
+        return _empty_jumper_timing_reference("Keine Spruenge vorhanden.")
+
+    usable = [
+        row
+        for row in records
+        if not bool(row.get("analysis_blocked"))
+        and _to_float(row.get("best_3s_start_s")) is not None
+        and _to_float(row.get("best_3s_end_s")) is not None
+        and (
+            _to_float(row.get("build_coverage")) is None
+            or float(_to_float(row.get("build_coverage")) or 0.0) >= 0.70
+        )
+        and (
+            _to_float(row.get("hot_coverage")) is None
+            or float(_to_float(row.get("hot_coverage")) or 0.0) >= 0.70
+        )
+    ]
+    if len(usable) < _TIMING_REFERENCE_MIN_USABLE_JUMPS:
+        return _empty_jumper_timing_reference(
+            (
+                "Zu wenige verwertbare Spruenge fuer eine persoenliche Timing-Referenz "
+                f"(mindestens {_TIMING_REFERENCE_MIN_USABLE_JUMPS} noetig)."
+            ),
+            maturity="off",
+            usable_count=len(usable),
+        )
+
+    stable_rows = [
+        row
+        for row in usable
+        if _is_stable_geometry(row)
+        and int(row.get("stability_score") or 0) >= 62
+        and int(row.get("hot_score") or 0) >= 58
+        and int(row.get("build_score") or 0) >= 58
+    ]
+    if len(stable_rows) >= 2:
+        basis_rows = stable_rows
+        source = "stable_control"
+    else:
+        ranked = sorted(
+            usable,
+            key=lambda row: (
+                _control_reference_score(row),
+                float(_to_float(row.get("best_3s_kmh")) or 0.0),
+            ),
+            reverse=True,
+        )
+        take_count = min(len(ranked), max(2, min(8, (len(ranked) + 1) // 2)))
+        basis_rows = ranked[:take_count]
+        source = "best_available"
+
+    anchor_specs = [
+        ("angle_60_time_s", "60 Grad"),
+        ("angle_75_time_s", "75 Grad"),
+        ("angle_82_time_s", "82 Grad"),
+        ("angle_85_time_s", "85 Grad"),
+        ("best_3s_start_s", "Start bestes 3s-Fenster"),
+        ("best_3s_end_s", "Ende bestes 3s-Fenster"),
+        ("vvert_peak_time_s", "vVert-Peak"),
+        ("decel_start_s", "Decel/Recovery"),
+    ]
+    anchors: dict[str, dict[str, Any]] = {}
+    for key, label in anchor_specs:
+        stats = _metric_stats(basis_rows, key)
+        if stats is None:
+            continue
+        anchors[key] = {
+            "label": label,
+            "low": stats["low"],
+            "high": stats["high"],
+            "median": stats["median"],
+        }
+
+    if not anchors.get("best_3s_start_s"):
+        return _empty_jumper_timing_reference(
+            "Timing vorhanden, aber kein belastbarer Startbereich fuer das 3s-Fenster.",
+            maturity="soft",
+            usable_count=len(usable),
+            basis_count=len(basis_rows),
+            source=source,
+        )
+
+    maturity = _timing_reference_maturity(
+        usable_rows=usable,
+        basis_rows=basis_rows,
+        anchors=anchors,
+    )
+    if maturity.get("state") != "active":
+        return _empty_jumper_timing_reference(
+            str(maturity.get("reason") or "Persoenliches Timing noch nicht belastbar."),
+            maturity=str(maturity.get("state") or "soft"),
+            usable_count=len(usable),
+            basis_count=len(basis_rows),
+            source=source,
+            best_reference_kmh=_to_float(maturity.get("best_reference_kmh")),
+            top3_avg_kmh=_to_float(maturity.get("top3_avg_kmh")),
+            max_timing_spread_s=_to_float(maturity.get("max_timing_spread_s")),
+            maturity_reasons=[
+                str(item)
+                for item in (maturity.get("reasons") or [])
+                if str(item or "").strip()
+            ],
+        )
+
+    basis_count = len(basis_rows)
+    if basis_count >= 6 and source == "stable_control":
+        confidence = "stable"
+    elif basis_count >= 3:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    summary_lines = _build_jumper_timing_summary_lines(anchors)
+    if not summary_lines:
+        summary_lines = [
+            "Persoenliches Timing vorhanden, aber noch ohne engen gemeinsamen Korridor."
+        ]
+
+    return {
+        "available": True,
+        "reason": None,
+        "confidence": confidence,
+        "basis_count": basis_count,
+        "usable_count": len(usable),
+        "source": source,
+        "maturity": "active",
+        "maturity_label": _TIMING_REFERENCE_MATURITY_LABELS["active"],
+        "maturity_reasons": [],
+        "best_reference_kmh": _round_float(maturity.get("best_reference_kmh"), 1),
+        "top3_avg_kmh": _round_float(maturity.get("top3_avg_kmh"), 1),
+        "max_timing_spread_s": _round_float(maturity.get("max_timing_spread_s"), 1),
+        "anchors": anchors,
+        "summary_lines": summary_lines,
+    }
+
+
+def _fmt_timing_band(stats: dict[str, Any]) -> str:
+    low = _to_float(stats.get("low"))
+    high = _to_float(stats.get("high"))
+    if low is None or high is None:
+        return "-"
+    return f"+{_fmt_band(float(low), float(high), 1)}s"
+
+
+def _build_jumper_timing_summary_lines(anchors: dict[str, dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    best_start = anchors.get("best_3s_start_s")
+    best_end = anchors.get("best_3s_end_s")
+    angle_82 = anchors.get("angle_82_time_s")
+    angle_85 = anchors.get("angle_85_time_s")
+    vpeak = anchors.get("vvert_peak_time_s")
+    decel = anchors.get("decel_start_s")
+
+    if angle_82 is not None and best_start is not None:
+        lines.append(
+            f"Persoenliches Timing: 82 Grad meist bei {_fmt_timing_band(angle_82)}; "
+            f"bestes 3s-Fenster startet meist {_fmt_timing_band(best_start)}."
+        )
+    elif best_start is not None:
+        lines.append(
+            f"Bestes 3s-Fenster startet in stabileren Spruengen meist {_fmt_timing_band(best_start)}."
+        )
+
+    if angle_85 is not None:
+        lines.append(
+            f"Oberer Winkelbereich: 85 Grad wird meist um {_fmt_timing_band(angle_85)} erreicht."
+        )
+
+    if decel is not None:
+        lines.append(
+            f"Reserve: Decel/Recovery beginnt meist {_fmt_timing_band(decel)}; "
+            "faellt vHor vorher ab, ist das ein frueher Stabilitaetshinweis."
+        )
+    elif vpeak is not None and best_end is not None:
+        lines.append(
+            f"Peak-Timing: vVert-Peak meist {_fmt_timing_band(vpeak)}, "
+            f"3s-Fenster endet meist {_fmt_timing_band(best_end)}."
+        )
+
+    return lines[:3]
 
 
 def _build_jumpers_overview(jumpers: list[str]) -> list[dict[str, Any]]:
@@ -4166,6 +5250,25 @@ def _control_reference_score(row: dict[str, Any]) -> float:
     return float(sum(values) / len(values))
 
 
+def _score_value_from_map(score_map: dict[str, int], *names: str) -> int | None:
+    for name in names:
+        if name in score_map:
+            return score_map[name]
+    normalized = {normalize_german_text(key): value for key, value in score_map.items()}
+    for name in names:
+        value = normalized.get(normalize_german_text(name))
+        if value is not None:
+            return value
+    return None
+
+
+def _average_optional_scores(values: list[int | None]) -> int | None:
+    numeric = [int(value) for value in values if value is not None]
+    if not numeric:
+        return None
+    return int(round(sum(numeric) / len(numeric)))
+
+
 def _is_stable_geometry(row: dict[str, Any]) -> bool:
     vhor_min = _to_float(row.get("vhor_min_20_25"))
     turns = _to_float(row.get("angle_turns_20_25"))
@@ -4220,6 +5323,63 @@ def _fmt_band(low: float, high: float, decimals: int) -> str:
     return f"{low:.{decimals}f} bis {high:.{decimals}f}"
 
 
+def _chart_time_value_pairs(
+    chart: dict[str, Any],
+    value_key: str,
+    *,
+    end_s: float | None = None,
+) -> list[tuple[float, float]]:
+    time_values = chart.get("time_s", []) if isinstance(chart, dict) else []
+    metric_values = chart.get(value_key, []) if isinstance(chart, dict) else []
+    pairs: list[tuple[float, float]] = []
+    for raw_t, raw_value in zip(time_values or [], metric_values or []):
+        t = _to_float(raw_t)
+        value = _to_float(raw_value)
+        if t is None or value is None:
+            continue
+        if t < 0.0:
+            continue
+        if end_s is not None and t > end_s:
+            continue
+        pairs.append((float(t), float(value)))
+    pairs.sort(key=lambda item: item[0])
+    return pairs
+
+
+def _first_angle_crossing_time(
+    chart: dict[str, Any],
+    threshold_deg: float,
+    *,
+    end_s: float | None = None,
+) -> float | None:
+    pairs = _chart_time_value_pairs(chart, "angle_deg", end_s=end_s)
+    if not pairs:
+        return None
+    threshold = float(threshold_deg)
+    first_t, first_angle = pairs[0]
+    if first_angle >= threshold:
+        return first_t
+
+    prev_t, prev_angle = pairs[0]
+    for t, angle in pairs[1:]:
+        if prev_angle < threshold <= angle:
+            delta = angle - prev_angle
+            if abs(delta) <= 1e-9:
+                return t
+            ratio = (threshold - prev_angle) / delta
+            ratio = max(0.0, min(1.0, ratio))
+            return float(prev_t + ((t - prev_t) * ratio))
+        prev_t, prev_angle = t, angle
+    return None
+
+
+def _vvert_peak_time(chart: dict[str, Any], *, end_s: float | None = None) -> float | None:
+    pairs = _chart_time_value_pairs(chart, "vVert_kmh", end_s=end_s)
+    if not pairs:
+        return None
+    return max(pairs, key=lambda item: item[1])[0]
+
+
 def _build_jumper_record(
     report: dict[str, Any],
     *,
@@ -4251,19 +5411,30 @@ def _build_jumper_record(
     angle_turns_20_25 = _to_float(snapshot.get("angle_turns_20_25"))
     build_coverage = _to_float(snapshot.get("build_coverage"))
     hot_coverage = _to_float(snapshot.get("hot_coverage"))
-    eval_end_s = _effective_eval_window_end_s(notes=notes, chart=report.get("chart_data", {}))
+    chart = report.get("chart_data", {})
+    eval_end_s = _effective_eval_window_end_s(notes=notes, chart=chart)
     lateral = analyze_lateral_dynamics(
-        report.get("chart_data", {}),
+        chart,
         eval_end_s=eval_end_s,
     )
     lateral_event = lateral.get("speed_cost_event", {}) if isinstance(lateral, dict) else {}
     lateral_high_speed = lateral.get("high_speed", {}) if isinstance(lateral, dict) else {}
 
+    exit_score = _score_value_from_map(score_map, "Exit / Stabilisierung", "Exit")
+    dive_score = _score_value_from_map(score_map, "Dive-Aufbau")
+    main_accel_score = _score_value_from_map(score_map, "Hauptbeschleunigung", "Aufbau 10-20s")
+    hot_build_score = _score_value_from_map(score_map, "Hot-Zone Aufbau", "Hot-Zone")
+    max_speed_score = _score_value_from_map(score_map, "Max-Speed Fenster", "Stabilität / Kipp-Risiko")
+    build_score = _average_optional_scores([dive_score, main_accel_score])
+    hot_score = _average_optional_scores([hot_build_score, max_speed_score])
+    stability_score = max_speed_score
+
     core_scores = [
-        score_map.get("Exit"),
-        score_map.get("Aufbau 10-20s"),
-        score_map.get("Hot-Zone"),
-        score_map.get("Stabilität / Kipp-Risiko"),
+        exit_score,
+        dive_score,
+        main_accel_score,
+        hot_build_score,
+        max_speed_score,
     ]
     core_score_values = [float(s) for s in core_scores if s is not None]
     overall_score = int(round(mean(core_score_values))) if core_score_values else None
@@ -4275,12 +5446,18 @@ def _build_jumper_record(
         "feedback_context": build_feedback_coaching_context(report),
         "t0_utc": jump.get("t0_utc"),
         "best_3s_kmh": _to_float(metrics.get("best_3s_vVert_kmh")),
+        "best_3s_start_s": _to_float(metrics.get("best_3s_start_s")),
+        "best_3s_end_s": _to_float(metrics.get("best_3s_end_s")),
         "rule_score_kmh": _to_float(metrics.get("rule_based_3s_score")),
         "overall_score": overall_score,
-        "exit_score": score_map.get("Exit"),
-        "build_score": score_map.get("Aufbau 10-20s"),
-        "hot_score": score_map.get("Hot-Zone"),
-        "stability_score": score_map.get("Stabilität / Kipp-Risiko"),
+        "exit_score": exit_score,
+        "dive_score": dive_score,
+        "main_accel_score": main_accel_score,
+        "build_score": build_score,
+        "hot_build_score": hot_build_score,
+        "max_speed_score": max_speed_score,
+        "hot_score": hot_score,
+        "stability_score": stability_score,
         "vvert_10s": v10,
         "vvert_15s": v15,
         "vvert_20s": v20,
@@ -4290,6 +5467,14 @@ def _build_jumper_record(
         "gain_10_20": gain_10_20,
         "gain_10_15": gain_10_15,
         "gain_15_20": gain_15_20,
+        "angle_60_time_s": _first_angle_crossing_time(chart, 60.0, end_s=eval_end_s),
+        "angle_75_time_s": _first_angle_crossing_time(chart, 75.0, end_s=eval_end_s),
+        "angle_82_time_s": _first_angle_crossing_time(chart, 82.0, end_s=eval_end_s),
+        "angle_85_time_s": _first_angle_crossing_time(chart, 85.0, end_s=eval_end_s),
+        "vvert_peak_time_s": _vvert_peak_time(chart, end_s=eval_end_s),
+        "decel_start_s": _to_float(notes.get("decel_start_s")),
+        "curve_window_end_s": _to_float(notes.get("curve_window_end_s")),
+        "eval_end_s": eval_end_s,
         "hold_400_s": hold_400,
         "vhor_min_20_25": vhor_min_20_25,
         "angle_turns_20_25": angle_turns_20_25,
@@ -4327,16 +5512,11 @@ def _build_jumper_trend_rows(records: list[dict[str, Any]]) -> list[dict[str, An
 
     specs = [
         {"key": "best_3s_kmh", "name": "Top-Speed", "unit": "km/h", "higher_is_better": True, "threshold": 2.5},
-        {"key": "exit_score", "name": "Exit", "unit": "Score", "higher_is_better": True, "threshold": 5.0},
-        {"key": "build_score", "name": "Aufbau 10-20s", "unit": "Score", "higher_is_better": True, "threshold": 5.0},
-        {"key": "hot_score", "name": "Hot-Zone", "unit": "Score", "higher_is_better": True, "threshold": 5.0},
-        {
-            "key": "stability_score",
-            "name": "Stabilität / Kipp-Risiko",
-            "unit": "Score",
-            "higher_is_better": True,
-            "threshold": 5.0,
-        },
+        {"key": "exit_score", "name": "Exit / Stabilisierung", "unit": "Score", "higher_is_better": True, "threshold": 5.0},
+        {"key": "dive_score", "name": "Dive-Aufbau", "unit": "Score", "higher_is_better": True, "threshold": 5.0},
+        {"key": "main_accel_score", "name": "Hauptbeschleunigung", "unit": "Score", "higher_is_better": True, "threshold": 5.0},
+        {"key": "hot_build_score", "name": "Hot-Zone Aufbau", "unit": "Score", "higher_is_better": True, "threshold": 5.0},
+        {"key": "max_speed_score", "name": "Max-Speed Fenster", "unit": "Score", "higher_is_better": True, "threshold": 5.0},
         {
             "key": "angle_turns_20_25",
             "name": "Korrekturen 20-25s",
@@ -4411,6 +5591,11 @@ def _build_jumper_focus_actions(*, worse_rows: list[dict[str, Any]]) -> list[str
     action_map = {
         "Top-Speed": "In der späten schnellen Phase länger stabil bleiben und den Ausstieg später setzen.",
         "Exit": "Die ersten Sekunden nach dem Exit ruhiger und konstanter aufbauen, ohne harte Gegenkorrektur.",
+        "Exit / Stabilisierung": "Die ersten Sekunden nach dem Exit ruhiger und konstanter aufbauen, ohne harte Gegenkorrektur.",
+        "Dive-Aufbau": "Von +3s bis +8s kontrolliert in den Zielwinkel gehen, ohne den Druck zu spät zu setzen.",
+        "Hauptbeschleunigung": "Von +8s bis +15s den Speed mit stabilem Winkel aufbauen, statt nur steiler zu werden.",
+        "Hot-Zone Aufbau": "Von +15s bis +22s früher in den Zielbereich kommen und die horizontale Reserve schützen.",
+        "Max-Speed Fenster": "Im Max-Speed-Fenster den Winkel halten, vHor nicht abreißen lassen und Korrekturen klein halten.",
         "Aufbau 10-20s": "Zwischen +10s und +20s den Druck gleichmäßiger steigern, damit der Speed sauberer zunimmt.",
         "Hot-Zone": "Ab +20s kleinere, frühe Korrekturen setzen, damit die schnelle Zone stabil gehalten wird.",
         "Stabilität / Kipp-Risiko": "Körperspannung in Schulter, Rumpf und Hüfte früher stabilisieren.",
@@ -4452,16 +5637,18 @@ def _build_tip_effect_profile(
         return {"available": False}
 
     phases = [
-        {"key": "exit_score", "rank": 0, "label": "Exit"},
-        {"key": "build_score", "rank": 1, "label": "Aufbau 10-20s"},
-        {"key": "hot_score", "rank": 2, "label": "Hot-Zone"},
-        {"key": "stability_score", "rank": 3, "label": "Stabilität"},
+        {"key": "exit_score", "rank": 0, "label": "Exit / Stabilisierung"},
+        {"key": "dive_score", "rank": 1, "label": "Dive-Aufbau"},
+        {"key": "main_accel_score", "rank": 2, "label": "Hauptbeschleunigung"},
+        {"key": "hot_build_score", "rank": 3, "label": "Hot-Zone Aufbau"},
+        {"key": "max_speed_score", "rank": 4, "label": "Max-Speed Fenster"},
     ]
     low_thresholds = {
         "exit_score": 68.0,
-        "build_score": 70.0,
-        "hot_score": 70.0,
-        "stability_score": 68.0,
+        "dive_score": 70.0,
+        "main_accel_score": 70.0,
+        "hot_build_score": 70.0,
+        "max_speed_score": 68.0,
     }
     low_hit_min = max(2, int(round(recent_window * 0.35)))
 
@@ -4516,17 +5703,17 @@ def _build_tip_effect_profile(
         confidence = str(performance_profile.get("confidence") or "")
         if confidence in {"medium", "good", "stable"}:
             if band in {"schnell", "elite"}:
-                hot_metric = metrics.get("hot_score", {})
-                stability_metric = metrics.get("stability_score", {})
+                hot_metric = metrics.get("hot_build_score", {})
+                stability_metric = metrics.get("max_speed_score", {})
                 hot_avg = _to_float(hot_metric.get("recent_avg"))
                 stability_avg = _to_float(stability_metric.get("recent_avg"))
                 if hot_avg is not None and hot_avg < 78.0:
-                    phase_boosts[2] = min(6, int(phase_boosts.get(2, 0)) + 1)
-                if stability_avg is not None and stability_avg < 76.0:
                     phase_boosts[3] = min(6, int(phase_boosts.get(3, 0)) + 1)
+                if stability_avg is not None and stability_avg < 76.0:
+                    phase_boosts[4] = min(6, int(phase_boosts.get(4, 0)) + 1)
             elif band in {"basis", "aufbau"}:
                 exit_metric = metrics.get("exit_score", {})
-                build_metric = metrics.get("build_score", {})
+                build_metric = metrics.get("dive_score", {})
                 exit_avg = _to_float(exit_metric.get("recent_avg"))
                 build_avg = _to_float(build_metric.get("recent_avg"))
                 if exit_avg is not None and exit_avg < 76.0:
@@ -4573,9 +5760,20 @@ def _build_tip_effect_profile(
 
 
 def _mean_metric(rows: list[dict[str, Any]], key: str) -> float | None:
+    fallback_keys = {
+        "dive_score": ["build_score"],
+        "main_accel_score": ["build_score"],
+        "hot_build_score": ["hot_score"],
+        "max_speed_score": ["stability_score", "hot_score"],
+    }
     values: list[float] = []
     for row in rows:
         value = _to_float(row.get(key))
+        if value is None:
+            for fallback_key in fallback_keys.get(key, []):
+                value = _to_float(row.get(fallback_key))
+                if value is not None:
+                    break
         if value is None:
             continue
         values.append(value)
@@ -4599,7 +5797,13 @@ def _find_previous_jump_row(*, jumps: list[dict[str, Any]], current_jump_id: str
 
 
 def _tip_focus_order() -> list[str]:
-    return ["Exit", "Aufbau 10-20s", "Hot-Zone", "Stabilität / Kipp-Risiko"]
+    return [
+        "Exit / Stabilisierung",
+        "Dive-Aufbau",
+        "Hauptbeschleunigung",
+        "Hot-Zone Aufbau",
+        "Max-Speed Fenster",
+    ]
 
 
 def _tip_focus_from_previous(
@@ -4618,6 +5822,23 @@ def _tip_focus_from_previous(
         text = normalize_german_text(str(raw_tip or "").strip())
         if not text:
             continue
+        mark(
+            "Exit / Stabilisierung",
+            any(token in text for token in ["exit", "start", "absprung", "druck-mitnahme", "druck mitnahme"]),
+        )
+        mark("Dive-Aufbau", any(token in text for token in ["dive", "+3s", "+8s", "frueher aufbau", "frueher druck"]))
+        mark(
+            "Hauptbeschleunigung",
+            any(token in text for token in ["aufbau", "+10s", "+15s", "tauchwinkel", "winkel"]),
+        )
+        mark(
+            "Hot-Zone Aufbau",
+            any(token in text for token in ["hot-zone aufbau", "+20s", "hot-zone", "hot zone", "vhor"]),
+        )
+        mark(
+            "Max-Speed Fenster",
+            any(token in text for token in ["max-speed", "3s", "peak", "400", "stabil", "kipp", "koerperspannung", "korrektur"]),
+        )
         mark("Exit", any(token in text for token in ["exit", "start", "absprung", "druck-mitnahme", "druck mitnahme"]))
         mark("Aufbau 10-20s", any(token in text for token in ["aufbau", "+10s", "+15s", "+20s", "tauchwinkel", "winkel"]))
         mark("Hot-Zone", any(token in text for token in ["hot-zone", "hot zone", "hot-phase", "hot phase", "400", "vhor"]))
@@ -4631,8 +5852,34 @@ def _tip_focus_from_previous(
         for phase_name, _ in ranked[:2]:
             selected.add(phase_name)
 
+    canonical_selected: set[str] = set()
+    for phase_name in selected:
+        canonical_selected.update(_canonical_focus_phase_names(phase_name))
+    selected = canonical_selected
+
     ordered = [name for name in _tip_focus_order() if name in selected]
     return ordered
+
+
+def _canonical_focus_phase_names(phase_name: str) -> list[str]:
+    normalized = normalize_german_text(str(phase_name or ""))
+    if "exit" in normalized or "start" in normalized:
+        return ["Exit / Stabilisierung"]
+    if "dive" in normalized:
+        return ["Dive-Aufbau"]
+    if "hauptbeschleunigung" in normalized:
+        return ["Hauptbeschleunigung"]
+    if "aufbau 10-20" in normalized:
+        return ["Dive-Aufbau", "Hauptbeschleunigung"]
+    if "hot-zone aufbau" in normalized:
+        return ["Hot-Zone Aufbau"]
+    if normalized == "hot-zone" or normalized == "hot zone" or "hot-phase" in normalized:
+        return ["Hot-Zone Aufbau", "Max-Speed Fenster"]
+    if "max-speed" in normalized or "max speed" in normalized:
+        return ["Max-Speed Fenster"]
+    if "stabil" in normalized or "kipp" in normalized:
+        return ["Max-Speed Fenster"]
+    return [phase_name] if phase_name in _tip_focus_order() else []
 
 
 def _tip_follow_status(*, score_delta: int, positive_hits: int, negative_hits: int) -> tuple[str, str]:
@@ -4812,13 +6059,13 @@ def _goal_follow_group(item: dict[str, Any]) -> str:
 
 def _phase_for_follow_group(group: str, fallback: str) -> str:
     if group == "exit":
-        return "Exit"
+        return "Exit / Stabilisierung"
     if group in {"build_angle", "build_speed"}:
-        return "Aufbau 10-20s"
+        return "Hauptbeschleunigung"
     if group == "hot_zone_control":
-        return "Hot-Zone"
+        return "Hot-Zone Aufbau"
     if group == "stability":
-        return "Stabilität / Kipp-Risiko"
+        return "Max-Speed Fenster"
     return fallback
 
 
@@ -4896,8 +6143,10 @@ def _build_tip_follow_item(
     positive_hits = 0
     negative_hits = 0
     metric_parts: list[str] = []
+    canonical_phase_names = _canonical_focus_phase_names(phase_name)
+    canonical_phase = canonical_phase_names[0] if canonical_phase_names else phase_name
 
-    if phase_name == "Exit":
+    if canonical_phase == "Exit / Stabilisierung":
         prev_v10 = _to_float(prev_snapshot.get("v10"))
         curr_v10 = _to_float(curr_snapshot.get("v10"))
         if prev_v10 is not None and curr_v10 is not None:
@@ -4916,12 +6165,12 @@ def _build_tip_follow_item(
                 positive_hits += 1
             elif dc <= -0.04:
                 negative_hits += 1
-    elif phase_name == "Aufbau 10-20s":
+    elif canonical_phase in {"Dive-Aufbau", "Hauptbeschleunigung"}:
         prev_gain = _to_float(prev_snapshot.get("gain_10_20"))
         curr_gain = _to_float(curr_snapshot.get("gain_10_20"))
         if prev_gain is not None and curr_gain is not None:
             dg = curr_gain - prev_gain
-            metric_parts.append(f"Zuwachs +10 bis +20s {prev_gain:.1f} -> {curr_gain:.1f} km/h ({_fmt_delta(dg, unit=' km/h')})")
+            metric_parts.append(f"Aufbau-Zuwachs {prev_gain:.1f} -> {curr_gain:.1f} km/h ({_fmt_delta(dg, unit=' km/h')})")
             if dg >= 12.0:
                 positive_hits += 1
             elif dg <= -12.0:
@@ -4929,8 +6178,8 @@ def _build_tip_follow_item(
         prev_angle = _to_float(prev_snapshot.get("angle_20"))
         curr_angle = _to_float(curr_snapshot.get("angle_20"))
         if prev_angle is not None and curr_angle is not None:
-            metric_parts.append(f"Winkel +20s {prev_angle:.1f} -> {curr_angle:.1f}°")
-    elif phase_name == "Hot-Zone":
+            metric_parts.append(f"Winkel Richtung Hot-Zone {prev_angle:.1f} -> {curr_angle:.1f} Grad")
+    elif canonical_phase == "Hot-Zone Aufbau":
         prev_dur = _to_float(prev_snapshot.get("dur_400"))
         curr_dur = _to_float(curr_snapshot.get("dur_400"))
         if prev_dur is not None and curr_dur is not None:
@@ -5148,7 +6397,8 @@ def _filter_actions_for_primary_diagnosis(
     *,
     max_items: int,
 ) -> list[str]:
-    if str(primary_diagnosis.get("pattern") or "") != "late_hard_steepening_vhor_collapse":
+    pattern = str(primary_diagnosis.get("pattern") or "")
+    if pattern not in {"late_hard_steepening_vhor_collapse", "early_horizontal_reserve_collapse"}:
         return actions[:max_items]
     if not actions:
         return []
@@ -5166,8 +6416,11 @@ def _filter_actions_for_primary_diagnosis(
         "uebergang",
         "übergang",
         "vhor",
+        "horizontale reserve",
+        "waagerechte geschwindigkeit",
         "hot-zone",
         "hotzone",
+        "3s-fenster",
         "korrektur",
         "druck laenger tragen",
         "druck länger tragen",
@@ -5267,11 +6520,19 @@ def _is_scorecard_context_only_line(text: str) -> bool:
     lowered = normalize_german_text(str(text or "").strip())
     if not lowered:
         return False
+    if lowered.startswith("+") and "zielwinkel" in lowered:
+        return True
+    if lowered.startswith("istwerte") or lowered.startswith("messwerte"):
+        return True
+    if "avg winkel" in lowered and ("avg vvert" in lowered or "avg geschwindigkeit" in lowered):
+        return True
     context_markers = [
         "der tauchwinkel ist dabei eher zu flach",
         "der tauchwinkel ist dabei zu steil",
         "der tauchwinkel liegt in einem guten bereich",
         "du kannst die sehr schnelle phase spuerbar halten",
+        "phase liegt im technischen zielbereich",
+        "max-speed-fenster ist technisch nutzbar",
         "du kannst die sehr schnelle phase spürbar halten",
     ]
     return any(normalize_german_text(marker) in lowered for marker in context_markers)
@@ -5409,17 +6670,42 @@ def _scorecard_phase_rank(name: str) -> int:
     lowered = normalize_german_text(name.strip())
     if "exit" in lowered:
         return 0
-    if "aufbau" in lowered:
+    if "dive" in lowered:
         return 1
-    if "hot-zone" in lowered or "hot" in lowered:
+    if "hauptbeschleunigung" in lowered:
         return 2
-    if "stabilität" in lowered or "kipp" in lowered:
+    if "hot-zone aufbau" in lowered or ("hot" in lowered and "aufbau" in lowered):
         return 3
-    return 4
+    if "max-speed" in lowered or "max speed" in lowered:
+        return 4
+    if "aufbau" in lowered:
+        return 2
+    if "hot-zone" in lowered or "hot" in lowered:
+        return 3
+    if "stabilität" in lowered or "kipp" in lowered:
+        return 4
+    return 5
 
 
 def _topic_from_text(text: str) -> str:
     lowered = normalize_german_text(text.strip())
+    fast_unrest = any(
+        normalize_german_text(token) in lowered
+        for token in ["schnell", "schnelle phase", "peak", "schlussteil", "+20s", "+20 bis +25"]
+    ) and any(
+        normalize_german_text(token) in lowered
+        for token in [
+            "unruhig",
+            "seitbewegung",
+            "richtungsdrehen",
+            "winkelschwankung",
+            "korrektur",
+            "gegenkorrektur",
+            "lenkimpuls",
+        ]
+    )
+    if fast_unrest:
+        return "stability"
     if any(normalize_german_text(token) in lowered for token in ["hot-zone", "hot-phase", "+20 bis +25", "peak-phase", "schlussteil"]):
         return "hot"
     if any(
@@ -5578,10 +6864,10 @@ def _topic_matches_issue(*, issue_topic: str, action_topic: str) -> bool:
 
 def _focus_names_from_issue_texts(items: list[str]) -> list[str]:
     names_by_topic = {
-        "exit": "Exit",
-        "build": "Aufbau 10-20s",
-        "hot": "Hot-Zone",
-        "stability": "Stabilität / Kipp-Risiko",
+        "exit": "Exit / Stabilisierung",
+        "build": "Hauptbeschleunigung",
+        "hot": "Hot-Zone Aufbau",
+        "stability": "Max-Speed Fenster",
     }
     out: list[str] = []
     for item in items:
@@ -5635,6 +6921,150 @@ def _filter_conflicting_build_pressure_actions(*, main_issues: list[str], action
     if not any(_is_build_angle_control_action(action) for action in actions):
         return actions
     return [action for action in actions if not _is_generic_build_pressure_action(action)]
+
+
+def _harmonize_action_texts(
+    actions: list[str],
+    *,
+    max_items: int,
+    preserve_first: bool = False,
+) -> list[str]:
+    if max_items <= 0:
+        return []
+    unique_actions = _unique_texts([str(item).strip() for item in actions if str(item or "").strip()])
+    if len(unique_actions) <= 1:
+        return unique_actions[:max_items]
+
+    grouped_entries: list[dict[str, Any]] = []
+    family_entries: dict[str, dict[str, Any]] = {}
+    for text in unique_actions:
+        family = _action_harmonization_family(text)
+        if not family:
+            grouped_entries.append({"family": "", "texts": [text]})
+            continue
+        entry = family_entries.get(family)
+        if entry is None:
+            entry = {"family": family, "texts": []}
+            family_entries[family] = entry
+            grouped_entries.append(entry)
+        entry["texts"].append(text)
+
+    merged: list[str] = []
+    for entry in grouped_entries:
+        texts = [str(item).strip() for item in entry.get("texts", []) if str(item).strip()]
+        if not texts:
+            continue
+        family = str(entry.get("family") or "")
+        if family and len(texts) >= 2:
+            merged.append(_merge_action_family_text(family=family, texts=texts))
+        else:
+            merged.append(texts[0])
+    merged = _unique_texts(merged)
+    if preserve_first and unique_actions:
+        first = unique_actions[0]
+        if first in merged:
+            rest = [item for item in merged if item != first]
+            return [first] + _sort_texts_by_timeline(rest)[: max(0, max_items - 1)]
+    return _sort_texts_by_timeline(merged)[:max_items]
+
+
+def _action_harmonization_family(text: str) -> str:
+    lowered = normalize_german_text(text)
+    if not lowered:
+        return ""
+    if _is_build_specific_action_text(lowered):
+        return ""
+    correction_markers = [
+        "korrektur",
+        "gegenkorrektur",
+        "lenkimpuls",
+        "lenkimpulse",
+        "beschleunigungskurve",
+        "kurvenverlauf",
+        "richtung ruhiger",
+        "linie ruhiger",
+    ]
+    if not any(normalize_german_text(marker) in lowered for marker in correction_markers):
+        return ""
+    fast_markers = [
+        "letzte schnelle phase",
+        "schnelle phase",
+        "hot-zone",
+        "hot zone",
+        "hot-phase",
+        "peak",
+        "schlussteil",
+        "max-speed",
+        "+20",
+        "vhor",
+        "horizontale reserve",
+        "waagerechte geschwindigkeit",
+        "beschleunigungskurve",
+    ]
+    if any(normalize_german_text(marker) in lowered for marker in fast_markers):
+        return "fast_correction_control"
+    return ""
+
+
+def _is_build_specific_action_text(lowered: str) -> bool:
+    build_markers = [
+        "+10 bis +15",
+        "+15 bis +20",
+        "+10s",
+        "+15s",
+        "aufbau",
+        "zuwachs",
+        "stabilitaetsbereich",
+        "stabilitÃ¤tsbereich",
+        "zielbereich",
+        "zielkorridor",
+    ]
+    fast_markers = [
+        "letzte schnelle phase",
+        "schnelle phase",
+        "hot-zone",
+        "hot phase",
+        "hot-phase",
+        "peak",
+        "schlussteil",
+    ]
+    return any(normalize_german_text(marker) in lowered for marker in build_markers) and not any(
+        normalize_german_text(marker) in lowered for marker in fast_markers
+    )
+
+
+def _merge_action_family_text(*, family: str, texts: list[str]) -> str:
+    if family != "fast_correction_control":
+        return sorted(
+            texts,
+            key=lambda text: (
+                -_tip_specificity_score(text),
+                _generic_tip_penalty(text),
+                _timeline_rank_from_text(text),
+                len(text),
+            ),
+        )[0]
+
+    combined = normalize_german_text(" ".join(texts))
+    has_reserve = any(
+        normalize_german_text(marker) in combined
+        for marker in ["vhor", "horizontale reserve", "waagerechte geschwindigkeit"]
+    )
+    has_curve = "beschleunigungskurve" in combined or "kurvenverlauf" in combined
+    if has_reserve:
+        if has_curve:
+            return (
+                "In der letzten schnellen Phase die horizontale Reserve schuetzen: "
+                "Korrekturen frueher und kleiner setzen, damit Lenkimpulse und Beschleunigungskurve ruhiger werden."
+            )
+        return (
+            "In der letzten schnellen Phase die horizontale Reserve schuetzen: "
+            "Korrekturen frueher und kleiner setzen statt spaeter grosser Gegenkorrektur."
+        )
+    return (
+        "In der letzten schnellen Phase Korrekturen frueher und kleiner setzen, "
+        "damit Lenkimpulse und Beschleunigungskurve ruhiger werden."
+    )
 
 
 def _build_issue_aligned_actions(*, main_issues: list[str], actions: list[str], max_items: int) -> list[str]:
@@ -6087,13 +7517,13 @@ def _build_hot_zone_assessment(
 
     if vhor_min_20_25 is not None:
         if vhor_min_20_25 < 20.0:
-            reason_lines.append("In der Endphase geht die Vorwärtsbewegung fast komplett verloren.")
+            reason_lines.append("In der Endphase faellt die waagerechte Geschwindigkeit fast komplett weg.")
         elif vhor_min_20_25 < 25.0:
-            reason_lines.append("In der Endphase verlierst du deutlich Vorwärtsbewegung.")
+            reason_lines.append("In der Endphase faellt die waagerechte Geschwindigkeit deutlich ab.")
         elif vhor_min_20_25 < 30.0:
-            reason_lines.append("In der Endphase wird die Vorwärtsreserve knapp.")
+            reason_lines.append("In der Endphase wird die horizontale Reserve knapp.")
         else:
-            reason_lines.append("Die Vorwärtsreserve bleibt in der Endphase stabil.")
+            reason_lines.append("Die horizontale Reserve bleibt in der Endphase stabil.")
 
     if angle_turns_20_25 is not None:
         if angle_turns_20_25 >= 5:
@@ -6107,7 +7537,7 @@ def _build_hot_zone_assessment(
     hot_label = f"Hot-Zone +{hot_start_s:.1f}s bis +{hot_end_s:.1f}s"
     reason_lines.append(
         f"In deiner {hot_label} konntest du >400 km/h für {_fmt1(dur_400)}s halten. "
-        f"Die kleinste Vorwärtsreserve lag bei {_fmt1(vhor_min_20_25)} km/h, "
+        f"Die kleinste horizontale Reserve lag bei {_fmt1(vhor_min_20_25)} km/h, "
         f"der zusätzliche Speed in dieser Phase bei {_fmt1(vvert_gain_20_25)} km/h."
     )
     impact_parts: list[str] = []
@@ -6118,9 +7548,9 @@ def _build_hot_zone_assessment(
             impact_parts.append("die sehr schnelle Zone ist noch zu kurz")
     if vhor_min_20_25 is not None:
         if vhor_min_20_25 < 20.0:
-            impact_parts.append("die Vorwärtsreserve fällt fast komplett weg und große Gegenkorrekturen werden wahrscheinlicher")
+            impact_parts.append("die horizontale Reserve faellt fast komplett weg und grosse Gegenkorrekturen werden wahrscheinlicher")
         elif vhor_min_20_25 < 25.0:
-            impact_parts.append("die Vorwärtsreserve ist zu knapp und die Linie wird leichter unruhig")
+            impact_parts.append("die horizontale Reserve ist zu knapp und die Linie wird leichter unruhig")
     if vvert_gain_20_25 is not None and vvert_gain_20_25 < 8.0:
         impact_parts.append("im letzten schnellen Abschnitt entsteht kaum noch zusätzlicher Speed")
     if impact_parts:
@@ -6134,6 +7564,158 @@ def _build_hot_zone_assessment(
         "speed_score": speed_score,
         "stability_score": stability_score,
     }
+
+
+def _early_horizontal_reserve_context(*, chart: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
+    best_start = _to_float(metrics.get("best_3s_start_s"))
+    best_end = _to_float(metrics.get("best_3s_end_s"))
+    time_s = chart.get("time_s", []) or []
+    vhor_values = chart.get("vHor_kmh", []) or []
+    angle_values = chart.get("angle_deg", []) or []
+    if (
+        best_start is None
+        or best_end is None
+        or best_end <= best_start
+        or not time_s
+        or not vhor_values
+        or len(time_s) != len(vhor_values)
+    ):
+        return {"available": False, "collapse": False}
+
+    search_start = max(18.0, float(best_start) - 7.0)
+    search_end = float(best_end)
+    samples: list[tuple[float, float]] = []
+    for i, raw_t in enumerate(time_s):
+        t = _to_float(raw_t)
+        v = _to_float(vhor_values[i])
+        if t is None or v is None:
+            continue
+        if search_start <= t <= search_end:
+            samples.append((float(t), float(v)))
+    if len(samples) < 4:
+        return {"available": False, "collapse": False}
+
+    min_t, min_vhor = min(samples, key=lambda item: item[1])
+    vhor_at_best_start = _series_value_at(time_s=time_s, values=vhor_values, target_s=float(best_start))
+    vhor_at_best_end = _series_value_at(time_s=time_s, values=vhor_values, target_s=float(best_end))
+    rebound_to_best_end_pct = None
+    if vhor_at_best_end is not None and min_vhor > 1e-6:
+        rebound_to_best_end_pct = max(0.0, (float(vhor_at_best_end) - min_vhor) / min_vhor * 100.0)
+
+    angle_at_min = None
+    angle_peak_near_min = None
+    if angle_values and len(angle_values) == len(time_s):
+        angle_at_min = _series_value_at(time_s=time_s, values=angle_values, target_s=min_t)
+        near_angles: list[float] = []
+        for i, raw_t in enumerate(time_s):
+            t = _to_float(raw_t)
+            angle = _to_float(angle_values[i])
+            if t is None or angle is None:
+                continue
+            if abs(float(t) - min_t) <= 1.2:
+                near_angles.append(float(angle))
+        if near_angles:
+            angle_peak_near_min = max(near_angles)
+
+    forward_loss_to_best_end = None
+    forward_peak_s = None
+    forward_values = chart.get("forward_m", []) or []
+    if forward_values and len(forward_values) == len(time_s):
+        forward_samples: list[tuple[float, float]] = []
+        for i, raw_t in enumerate(time_s):
+            t = _to_float(raw_t)
+            v = _to_float(forward_values[i])
+            if t is None or v is None:
+                continue
+            if max(0.0, float(best_start) - 8.0) <= t <= float(best_end):
+                forward_samples.append((float(t), float(v)))
+        if len(forward_samples) >= 4:
+            forward_peak_s, forward_peak = max(forward_samples, key=lambda item: item[1])
+            forward_at_best_end = _series_value_at(time_s=time_s, values=forward_values, target_s=float(best_end))
+            if forward_at_best_end is not None:
+                forward_loss_to_best_end = max(0.0, float(forward_peak) - float(forward_at_best_end))
+
+    forward_reversal = bool(
+        forward_loss_to_best_end is not None
+        and forward_loss_to_best_end >= 8.0
+        and forward_peak_s is not None
+        and forward_peak_s <= float(best_start) + 0.5
+        and abs(forward_peak_s - min_t) <= 2.5
+    )
+    steep_at_min = bool(
+        (angle_at_min is not None and angle_at_min >= 85.5)
+        or (angle_peak_near_min is not None and angle_peak_near_min >= 86.0)
+    )
+    collapse = bool(
+        min_t <= float(best_start) - 0.7
+        and min_vhor <= 30.0
+        and rebound_to_best_end_pct is not None
+        and rebound_to_best_end_pct >= 25.0
+        and (steep_at_min or forward_reversal)
+    )
+    return {
+        "available": True,
+        "collapse": collapse,
+        "vhor_min_time_s": min_t,
+        "vhor_min_kmh": min_vhor,
+        "best_3s_start_s": float(best_start),
+        "best_3s_end_s": float(best_end),
+        "vhor_at_best_start_kmh": vhor_at_best_start,
+        "vhor_at_best_end_kmh": vhor_at_best_end,
+        "vhor_rebound_to_best_end_pct": rebound_to_best_end_pct,
+        "angle_at_vhor_min_deg": angle_at_min,
+        "angle_peak_near_vhor_min_deg": angle_peak_near_min,
+        "forward_reversal_near_vhor_min": forward_reversal,
+        "forward_peak_s": forward_peak_s,
+        "forward_loss_to_best_end_m": forward_loss_to_best_end,
+    }
+
+
+def _early_horizontal_reserve_reason_line(reserve_context: dict[str, Any] | None) -> str:
+    if not isinstance(reserve_context, dict) or not reserve_context.get("collapse"):
+        return ""
+    min_t = _to_float(reserve_context.get("vhor_min_time_s"))
+    min_vhor = _to_float(reserve_context.get("vhor_min_kmh"))
+    best_start = _to_float(reserve_context.get("best_3s_start_s"))
+    best_end = _to_float(reserve_context.get("best_3s_end_s"))
+    rebound = _to_float(reserve_context.get("vhor_rebound_to_best_end_pct"))
+    parts: list[str] = []
+    if min_t is not None and min_vhor is not None:
+        parts.append(f"vHor-Min +{min_t:.1f}s bei {_fmt1(min_vhor)} km/h")
+    if best_start is not None and best_end is not None:
+        parts.append(f"vor dem 3s-Fenster +{best_start:.1f}s bis +{best_end:.1f}s")
+    if rebound is not None:
+        parts.append(f"danach vHor-Rebound {_fmt1(rebound)}%")
+    if not parts:
+        return "Horizontale Reserve wird vor dem 3s-Fenster zu frueh verbraucht."
+    return "Horizontale Reserve zu frueh verbraucht: " + ", ".join(parts) + "."
+
+
+def _series_value_at(*, time_s: list[Any], values: list[Any], target_s: float) -> float | None:
+    if not time_s or not values or len(time_s) != len(values):
+        return None
+    pairs: list[tuple[float, float]] = []
+    for i, raw_t in enumerate(time_s):
+        t = _to_float(raw_t)
+        v = _to_float(values[i])
+        if t is None or v is None:
+            continue
+        pairs.append((float(t), float(v)))
+    if not pairs:
+        return None
+    pairs.sort(key=lambda item: item[0])
+    if target_s < pairs[0][0] or target_s > pairs[-1][0]:
+        return None
+    for idx, (t, v) in enumerate(pairs):
+        if abs(t - target_s) < 1e-9:
+            return v
+        if t > target_s:
+            prev_t, prev_v = pairs[idx - 1]
+            if abs(t - prev_t) < 1e-9:
+                return v
+            ratio = (target_s - prev_t) / (t - prev_t)
+            return float(prev_v + (v - prev_v) * ratio)
+    return pairs[-1][1]
 
 
 def _window_min(
@@ -6358,11 +7940,11 @@ def _describe_stability_reason_lines(*, raw_negative_details: str, risk_label: s
 
     lines: list[str] = []
     if (dip is not None and dip >= 30.0) or (vmin is not None and vmin < 24.0):
-        lines.append("In der schnellen Phase verlierst du zu stark Vorwärtsbewegung.")
+        lines.append("In der schnellen Phase faellt die waagerechte Geschwindigkeit zu stark ab.")
     elif (dip is not None and dip >= 20.0) or (vmin is not None and vmin < 28.0):
-        lines.append("In der schnellen Phase verlierst du merklich Vorwärtsbewegung.")
+        lines.append("In der schnellen Phase faellt die waagerechte Geschwindigkeit merklich ab.")
     else:
-        lines.append("Die Vorwärtsbewegung bleibt über weite Strecken stabil.")
+        lines.append("Die waagerechte Geschwindigkeit bleibt ueber weite Strecken stabil.")
 
     if rebound is not None:
         if rebound >= 120.0:
@@ -6587,6 +8169,11 @@ def _coach_status(report: dict[str, Any]) -> dict[str, str]:
     scorecard = report.get("scorecard", {})
     notes = report.get("notes", {})
     quality_issues = _build_quality_issue_lines(report.get("quality_flags", []))
+    phase_statuses = {
+        str(row.get("name") or ""): str(row.get("target_status") or "")
+        for row in _phase_rows_for_report(report)
+        if isinstance(row, dict)
+    }
 
     if bool(notes.get("analysis_blocked")):
         return {"level": "red", "label": "Rot", "reason": "Sprung endet zu früh / Daten unplausibel"}
@@ -6597,7 +8184,10 @@ def _coach_status(report: dict[str, Any]) -> dict[str, str]:
 
     if scorecard.get("kipp_risiko") == "mittel":
         return {"level": "yellow", "label": "Gelb", "reason": "Mittleres Stabilitätsrisiko"}
-    if scorecard.get("phase_10_20") in {"zu flach", "zu steil"}:
+    if scorecard.get("phase_10_20") in {"zu flach", "zu steil"} or any(
+        status in {"zu flach", "zu steil", "kurz zu steil"}
+        for status in phase_statuses.values()
+    ):
         return {"level": "yellow", "label": "Gelb", "reason": "Winkel im Aufbau noch unruhig"}
     if quality_issues:
         return {"level": "yellow", "label": "Gelb", "reason": "Datenhinweise vorhanden"}

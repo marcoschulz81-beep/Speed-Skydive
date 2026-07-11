@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from app.analysis.review import (
     _action_phase_rank,
+    _build_angle_status_from_phases,
     _build_priority_action_items,
     _build_priority_actions,
     _forward_eval_end_s,
     _goal_metrics_for_action,
+    _technical_phase_status_map,
     build_jump_review,
 )
 
@@ -66,6 +68,29 @@ def test_build_jump_review_contains_all_sections():
     assert isinstance(review["coaching_goals"][0]["target_metrics"], list)
 
 
+def test_angle_status_prefers_normalized_technical_phases_over_legacy_scorecard():
+    phase_statuses = _technical_phase_status_map(
+        {
+            "phases": [
+                {"name": "Hauptbeschleunigung", "angle_status": "in_band"},
+                {"name": "Hot-Zone Aufbau", "angle_status": "too_flat"},
+            ]
+        }
+    )
+
+    assert phase_statuses == {
+        "Hauptbeschleunigung": "im Zielbereich",
+        "Hot-Zone Aufbau": "zu flach",
+    }
+    assert (
+        _build_angle_status_from_phases(
+            scorecard={"phase_10_20": "optimal"},
+            phase_statuses=phase_statuses,
+        )
+        == "zu flach"
+    )
+
+
 def test_build_jump_review_prioritizes_start_and_build_when_low():
     report = {
         "jump": {"file_name": "b.csv"},
@@ -102,6 +127,63 @@ def test_build_jump_review_prioritizes_start_and_build_when_low():
 
     assert any("Priorität" in item for item in review["improve"])
     assert any("Startphase" in item or "Zwischen +10s und +20s mehr Druck aufbauen" in item for item in review["improve"])
+
+
+def test_build_jump_review_limits_low_build_target_to_next_step():
+    report = {
+        "jump": {"file_name": "incremental-target.csv"},
+        "metrics": {
+            "best_3s_start_s": 21.0,
+            "best_3s_end_s": 24.0,
+            "best_3s_vVert_kmh": 360.0,
+            "best_3s_vHor_kmh": 32.0,
+        },
+        "notes": {
+            "curve_window_start_s": 0.0,
+            "curve_window_end_s": 30.0,
+        },
+        "scorecard": {
+            "exit": "sauber",
+            "phase_10_20": "optimal",
+            "hot_zone": "stabil",
+            "kipp_risiko": "niedrig",
+        },
+        "quality_flags": [],
+        "fixpoints": [
+            {"t_rel_s": 10.0, "vVert_kmh": 200.0, "vHor_kmh": 70.0, "angle_deg": 73.0},
+            {"t_rel_s": 15.0, "vVert_kmh": 240.0, "vHor_kmh": 55.0, "angle_deg": 78.0},
+            {"t_rel_s": 20.0, "vVert_kmh": 274.0, "vHor_kmh": 40.0, "angle_deg": 82.0},
+            {"t_rel_s": 24.0, "vVert_kmh": 350.0, "vHor_kmh": 35.0, "angle_deg": 84.0},
+        ],
+        "chart_data": {
+            "time_s": [float(i) for i in range(0, 31)],
+            "vVert_kmh": [200.0 + 5.0 * i for i in range(0, 31)],
+            "vHor_kmh": [70.0 - 1.2 * i for i in range(0, 31)],
+            "angle_deg": [72.0 + 0.4 * i for i in range(0, 31)],
+            "accVert_mps2": [1.0 for _ in range(0, 31)],
+        },
+    }
+
+    review = build_jump_review(
+        report,
+        best_compare=None,
+        jumper_stability_reference={
+            "available": True,
+            "thresholds": {
+                "gain_10_20_target_low": 170.0,
+                "gain_10_20_target_high": 190.0,
+            },
+        },
+    )
+
+    build_actions = [
+        item
+        for item in review["improve"]
+        if "Zwischen +10s und +20s mehr Druck aufbauen" in item
+    ]
+    assert build_actions
+    assert "+99 km/h" in build_actions[0]
+    assert "+180 km/h" not in build_actions[0]
 
 
 def test_build_jump_review_suppresses_global_top5_tips_below_elite_level():
@@ -261,7 +343,7 @@ def test_priority_action_items_add_structured_goal_metrics():
 
     assert len(items) == 1
     assert items[0]["id"] == "phase_10_15_too_steep_not_hold"
-    assert items[0]["phase"] == "Aufbau 10-20s"
+    assert items[0]["phase"] == "Hauptbeschleunigung"
     assert items[0]["display_text"].startswith("Priorit")
     metrics = {item["metric"]: item for item in items[0]["target_metrics"]}
     assert metrics["angle_10"]["direction"] == "decrease"
@@ -682,6 +764,151 @@ def test_build_jump_review_detects_late_hard_steepening_vhor_collapse():
     assert diagnosis["evidence"]["angle_20"] < diagnosis["evidence"]["angle_peak"]
     assert any("Steilflug kommt zu hart" in line for line in review["not_good"])
     assert any("Übergang in den Steilflug" in line for line in review["improve"])
+
+
+def test_build_jump_review_prioritizes_early_horizontal_reserve_collapse():
+    time_s = [i * 0.5 for i in range(0, 61)]
+    vvert = []
+    vhor = []
+    angle = []
+    forward_m = []
+    for t in time_s:
+        vvert.append(230.0 + min(t, 25.0) * 8.2)
+        if t <= 18.0:
+            vhor.append(92.0 - t * 3.0)
+        elif t <= 21.0:
+            vhor.append(38.0 - (t - 18.0) * 5.2)
+        elif t <= 25.0:
+            vhor.append(22.4 + (t - 21.0) * 5.5)
+        else:
+            vhor.append(44.4 + min(3.0, (t - 25.0) * 0.8))
+
+        if t <= 21.0:
+            angle.append(70.0 + t * 0.82)
+        elif t <= 25.0:
+            angle.append(87.2 - (t - 21.0) * 0.75)
+        else:
+            angle.append(84.2)
+
+        if t <= 21.0:
+            forward_m.append(t * 28.0)
+        else:
+            forward_m.append(588.0 - (t - 21.0) * 12.0)
+
+    report = {
+        "jump": {"file_name": "early-reserve.csv", "jump_id": "early-reserve"},
+        "metrics": {
+            "best_3s_start_s": 24.5,
+            "best_3s_end_s": 27.5,
+            "best_3s_vVert_kmh": 432.0,
+            "best_3s_vHor_kmh": 45.0,
+        },
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 30.0, "decel_start_s": 31.0},
+        "scorecard": {"exit": "sauber", "phase_10_20": "optimal", "hot_zone": "stabil", "kipp_risiko": "niedrig"},
+        "quality_flags": [],
+        "fixpoints": [
+            {"t_rel_s": 10.0, "vVert_kmh": 312.0, "vHor_kmh": 62.0, "angle_deg": 78.2},
+            {"t_rel_s": 15.0, "vVert_kmh": 353.0, "vHor_kmh": 47.0, "angle_deg": 82.3},
+            {"t_rel_s": 20.0, "vVert_kmh": 394.0, "vHor_kmh": 27.6, "angle_deg": 86.4},
+            {"t_rel_s": 24.0, "vVert_kmh": 426.8, "vHor_kmh": 38.9, "angle_deg": 85.0},
+            {"t_rel_s": 28.0, "vVert_kmh": 435.0, "vHor_kmh": 46.8, "angle_deg": 84.2},
+        ],
+        "chart_data": {
+            "time_s": time_s,
+            "vVert_kmh": vvert,
+            "vHor_kmh": vhor,
+            "angle_deg": angle,
+            "accVert_mps2": [2.0 for _ in time_s],
+            "hAGL_m": [3600.0 - 55.0 * t for t in time_s],
+            "forward_m": forward_m,
+        },
+    }
+    stability_reference = {
+        "available": True,
+        "thresholds": {
+            "angle_20_target_low": 82.0,
+            "angle_20_target_high": 86.0,
+            "angle_20_risk_above": 86.0,
+            "vhor_min_20_25_floor": 35.0,
+        },
+    }
+
+    review = build_jump_review(
+        report,
+        best_compare=None,
+        jumper_stability_reference=stability_reference,
+    )
+
+    diagnosis = review["primary_diagnosis"]
+    assert diagnosis["available"] is True
+    assert diagnosis["pattern"] == "early_horizontal_reserve_collapse"
+    assert diagnosis["evidence"]["vhor_min_time_s"] < diagnosis["evidence"]["best_3s_start_s"]
+    assert any("horizontale Reserve" in line for line in review["not_good"])
+    assert review["coaching_goals"][0]["id"] == "early_horizontal_reserve_collapse"
+    assert any("horizontale Reserve" in line for line in review["technical_assessment"]["issues"])
+
+
+def test_build_jump_review_flags_late_personal_timing_without_changing_phases():
+    time_s = [float(i) for i in range(0, 32)]
+    angle = [68.0 + 0.47 * t for t in time_s]
+    report = {
+        "jump": {"file_name": "late-personal-timing.csv", "jump_id": "late-personal-timing"},
+        "metrics": {
+            "best_3s_start_s": 25.0,
+            "best_3s_end_s": 28.0,
+            "best_3s_vVert_kmh": 425.0,
+            "best_3s_vHor_kmh": 38.0,
+        },
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 31.0, "decel_start_s": 31.0},
+        "scorecard": {"exit": "sauber", "phase_10_20": "optimal", "hot_zone": "stabil", "kipp_risiko": "niedrig"},
+        "quality_flags": [],
+        "fixpoints": [
+            {"t_rel_s": 10.0, "vVert_kmh": 285.0, "vHor_kmh": 74.0, "angle_deg": 72.5},
+            {"t_rel_s": 15.0, "vVert_kmh": 330.0, "vHor_kmh": 62.0, "angle_deg": 74.8},
+            {"t_rel_s": 20.0, "vVert_kmh": 376.0, "vHor_kmh": 50.0, "angle_deg": 77.0},
+            {"t_rel_s": 24.0, "vVert_kmh": 410.0, "vHor_kmh": 41.0, "angle_deg": 78.8},
+            {"t_rel_s": 28.0, "vVert_kmh": 426.0, "vHor_kmh": 38.0, "angle_deg": 80.6},
+        ],
+        "chart_data": {
+            "time_s": time_s,
+            "vVert_kmh": [230.0 + 6.3 * t for t in time_s],
+            "vHor_kmh": [95.0 - 1.9 * t for t in time_s],
+            "angle_deg": angle,
+            "accVert_mps2": [2.1 for _ in time_s],
+            "hAGL_m": [3600.0 - 55.0 * t for t in time_s],
+            "forward_m": [18.0 * t for t in time_s],
+        },
+    }
+    stability_reference = {
+        "available": True,
+        "thresholds": {},
+        "timing_reference": {
+            "available": True,
+            "maturity": "active",
+            "confidence": "medium",
+            "basis_count": 5,
+            "anchors": {
+                "angle_82_time_s": {"low": 12.5, "high": 14.0, "median": 13.2},
+                "best_3s_start_s": {"low": 20.0, "high": 22.0, "median": 21.0},
+            },
+        },
+    }
+
+    review = build_jump_review(
+        report,
+        best_compare=None,
+        jumper_stability_reference=stability_reference,
+    )
+
+    assert any("Persoenliches Timing: 82 Grad" in line for line in review["not_good"])
+    assert any("beste 3s-Fenster startet spaeter" in line for line in review["not_good"])
+    assert [phase["name"] for phase in review["technical_assessment"]["phases"]][:5] == [
+        "Exit / Stabilisierung",
+        "Dive-Aufbau",
+        "Hauptbeschleunigung",
+        "Hot-Zone Aufbau",
+        "Max-Speed Fenster",
+    ]
 
 
 def test_build_jump_review_does_not_mix_fs2_quality_into_flight_feedback():

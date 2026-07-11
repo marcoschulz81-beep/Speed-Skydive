@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from app.config import TECHNICAL_PHASE_SPECS
 from app.main import (
+    _annotate_scorecard_with_reference,
     _build_ai_coaching_payload,
     _build_coaching_snapshot,
     _build_fs2_quality_issue_lines,
     _build_jump_brief_summary,
     _build_jump_brief_simple,
+    _build_phase_rows_with_reference,
     _build_scorecard_rows,
     _build_jumper_stability_reference,
+    _build_jumper_timing_reference,
     _build_tip_follow_up,
     _build_jumper_trend_rows,
+    _harmonize_action_texts,
+    _phase_rows_for_report,
     _jumper_overview_simple_status,
     _normalize_view_mode,
     _render_simple_glossary,
@@ -119,6 +127,134 @@ def test_ai_payload_includes_compact_feedback_context():
     assert payload["jump_feedback"]["intents"][0]["key"] == "arms_closer"
     assert payload["jump_feedback"]["evidence"]["end_unstable"] is True
     assert payload["feedback_training_profile"]["available"] is True
+
+
+def test_ai_payload_includes_compact_personal_timing_reference():
+    report = _minimal_goal_follow_report(
+        jump_id="timing-payload",
+        file_name="timing.csv",
+        angle_10=74.0,
+        angle_15=80.0,
+    )
+
+    payload = _build_ai_coaching_payload(
+        report=report,
+        review={"happened": [], "good": [], "not_good": [], "coaching_goals": []},
+        jump_brief={"summary": "Test", "main_issues": [], "strengths": [], "actions": []},
+        jump_brief_simple={"summary": "Test", "main_issues": [], "strengths": [], "actions": []},
+        scorecard_rows=[],
+        tip_follow_up={"available": False},
+        jumper_summary={
+            "performance_profile": {"available": False},
+            "timing_reference": {
+                "available": True,
+                "maturity": "active",
+                "confidence": "medium",
+                "basis_count": 5,
+                "usable_count": 5,
+                "source": "stable_control",
+                "best_reference_kmh": 434.0,
+                "top3_avg_kmh": 433.0,
+                "max_timing_spread_s": 0.9,
+                "summary_lines": ["Persoenliches Timing: 82 Grad meist bei +13.0 bis +13.6s."],
+                "anchors": {
+                    "angle_82_time_s": {"label": "82 Grad", "low": 13.0, "high": 13.6, "median": 13.3},
+                    "best_3s_start_s": {
+                        "label": "Start bestes 3s-Fenster",
+                        "low": 20.0,
+                        "high": 20.9,
+                        "median": 20.45,
+                    },
+                },
+            },
+        },
+        quality_issue_lines=[],
+        view_mode="expert",
+        feedback_context=None,
+    )
+
+    assert payload["personal_timing"]["available"] is True
+    assert payload["personal_timing"]["basis_count"] == 5
+    assert payload["personal_timing"]["maturity"] == "active"
+    assert payload["personal_timing"]["top3_avg_kmh"] == 433.0
+    assert payload["personal_timing"]["anchors"]["angle_82_time_s"]["median_s"] == 13.3
+
+
+def test_scorecard_keeps_five_phase_structure_when_max_speed_not_evaluable():
+    report = _minimal_goal_follow_report(
+        jump_id="short-window-scorecard",
+        file_name="short.csv",
+        angle_10=74.0,
+        angle_15=80.0,
+    )
+    report["notes"]["decel_start_s"] = 19.8
+
+    rows = _build_scorecard_rows(report)
+
+    assert [row["name"] for row in rows] == [phase["name"] for phase in TECHNICAL_PHASE_SPECS]
+    assert rows[-1]["name"] == "Max-Speed Fenster"
+    assert rows[-1]["target_status"] == "nicht belastbar"
+    assert "Bewertungsfenster endet" in rows[-1]["reason"]
+
+
+def test_scorecard_penalizes_early_horizontal_reserve_collapse():
+    time_s = [i * 0.5 for i in range(0, 61)]
+    vvert = []
+    vhor = []
+    angle = []
+    forward_m = []
+    for t in time_s:
+        vvert.append(230.0 + min(t, 25.0) * 8.2)
+        if t <= 18.0:
+            vhor.append(92.0 - t * 3.0)
+        elif t <= 21.0:
+            vhor.append(38.0 - (t - 18.0) * 5.2)
+        elif t <= 25.0:
+            vhor.append(22.4 + (t - 21.0) * 5.5)
+        else:
+            vhor.append(44.4 + min(3.0, (t - 25.0) * 0.8))
+        if t <= 21.0:
+            angle.append(70.0 + t * 0.82)
+        elif t <= 25.0:
+            angle.append(87.2 - (t - 21.0) * 0.75)
+        else:
+            angle.append(84.2)
+        if t <= 21.0:
+            forward_m.append(t * 28.0)
+        else:
+            forward_m.append(588.0 - (t - 21.0) * 12.0)
+
+    report = {
+        "jump": {"jump_id": "early-reserve-scorecard", "file_name": "early.csv"},
+        "metrics": {
+            "best_3s_vVert_kmh": 432.0,
+            "best_3s_start_s": 24.5,
+            "best_3s_end_s": 27.5,
+            "negative_risk_score": 0.0,
+        },
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 30.0, "decel_start_s": 31.0},
+        "scorecard": {"exit": "sauber", "phase_10_20": "optimal", "hot_zone": "stabil", "kipp_risiko": "niedrig"},
+        "quality_flags": [],
+        "fixpoints": [],
+        "chart_data": {
+            "time_s": time_s,
+            "vVert_kmh": vvert,
+            "vHor_kmh": vhor,
+            "angle_deg": angle,
+            "hAGL_m": [3600.0 - 55.0 * t for t in time_s],
+            "accVert_mps2": [2.0 for _ in time_s],
+            "forward_m": forward_m,
+        },
+    }
+
+    rows = _build_scorecard_rows(report)
+    hot_zone = next(row for row in rows if row["name"] == "Hot-Zone Aufbau")
+    max_speed = next(row for row in rows if row["name"] == "Max-Speed Fenster")
+
+    assert hot_zone["score"] <= 62
+    assert max_speed["score"] <= 64
+    assert any("Horizontale Reserve zu frueh verbraucht" in line for line in hot_zone["reason_lines"])
+    assert any("vor dem 3s-Fenster" in line for line in max_speed["reason_lines"])
 
 
 _TEST_MARCO_PROFILE = {
@@ -323,7 +459,86 @@ def test_jump_brief_summary_keeps_personal_stability_corridor_in_build_focus():
         top_reference_jumps=[],
     )
 
-    assert "Aufbau 10-20s" in summary["summary"]
+    assert "Hauptbeschleunigung" in summary["summary"]
+
+
+def test_harmonize_action_texts_merges_redundant_fast_correction_tips():
+    actions = [
+        "Die letzte schnelle Phase mit weniger Lenkimpulsen fliegen: kleine fruehe Korrekturen statt spaeter grosser Gegenkorrektur.",
+        "Korrekturen frueher und kleiner setzen, damit die Beschleunigungskurve ruhiger wird und der Speed nicht durch harte Gegenbewegungen verloren geht.",
+    ]
+
+    merged = _harmonize_action_texts(actions, max_items=5)
+
+    assert merged == [
+        "In der letzten schnellen Phase Korrekturen frueher und kleiner setzen, damit Lenkimpulse und Beschleunigungskurve ruhiger werden."
+    ]
+
+
+def test_harmonize_action_texts_keeps_build_gain_and_angle_control_separate():
+    actions = [
+        "Bei +20s nicht ueber deinen persoenlichen Stabilitaetsbereich schieben: 81.5 bis 84.4 Grad.",
+        "Im Segment +10 bis +15s frueher Druck aufbauen, aber den Winkel nicht erzwingen und die Linie ruhiger halten, damit der Zuwachs in Richtung +94 km/h geht.",
+    ]
+
+    merged = _harmonize_action_texts(actions, max_items=5)
+
+    assert merged == [actions[1], actions[0]]
+
+
+def test_expert_ai_template_keeps_rule_based_training_tips_visible():
+    template = Path("app/templates/jump_detail.html").read_text(encoding="utf-8")
+    ai_branch_start = template.index("{% if ai_coaching and ai_coaching.available %}")
+    fallback_start = template.index("{% elif vm == \"simple\" %}", ai_branch_start)
+    ai_branch = template[ai_branch_start:fallback_start]
+
+    assert "KI-Coaching-Fokus" in ai_branch
+    assert "Konkrete Trainings-Tipps" in ai_branch
+    assert "{% for item in jump_brief.actions %}" in ai_branch
+
+
+def test_jump_brief_summary_harmonizes_redundant_training_tips():
+    report = {
+        "jump": {"file_name": "redundant-tips.csv"},
+        "metrics": {
+            "best_3s_vVert_kmh": 430.0,
+            "best_3s_start_s": 22.0,
+            "best_3s_end_s": 25.0,
+        },
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 31.0},
+    }
+    review = {
+        "happened": [],
+        "good": [],
+        "not_good": [
+            "Bei +20s wird der Winkel zu hart in die schnelle Phase geschoben.",
+            "Sobald du schnell wirst, wird die Linie unruhig.",
+        ],
+        "improve": [
+            "Prioritaet 1: Bei +20s nicht ueber deinen persoenlichen Stabilitaetsbereich schieben: 81.5 bis 84.4 Grad.",
+            "Prioritaet 2: Im Segment +10 bis +15s frueher Druck aufbauen, aber den Winkel nicht erzwingen und die Linie ruhiger halten, damit der Zuwachs in Richtung +94 km/h geht.",
+            "Prioritaet 3: Die letzte schnelle Phase mit weniger Lenkimpulsen fliegen: kleine fruehe Korrekturen statt spaeter grosser Gegenkorrektur.",
+            "Prioritaet 4: Korrekturen frueher und kleiner setzen, damit die Beschleunigungskurve ruhiger wird und der Speed nicht durch harte Gegenbewegungen verloren geht.",
+        ],
+    }
+
+    summary = _build_jump_brief_summary(
+        report=report,
+        review=review,
+        scorecard_rows=[
+            {"name": "Hauptbeschleunigung", "score": 62, "reason": "Winkel wird zu hart."},
+            {"name": "Max-Speed Fenster", "score": 58, "reason": "Linie wird unruhig."},
+        ],
+        best_reference=None,
+        top_reference_jumps=[],
+    )
+
+    assert any("Stabilitaetsbereich" in item for item in summary["actions"])
+    assert any("+10 bis +15s" in item for item in summary["actions"])
+    assert sum("Lenkimpulse" in item or "Beschleunigungskurve" in item for item in summary["actions"]) == 1
+    assert len(summary["actions"]) == 3
+    assert "+10 bis +15s" in summary["actions"][0]
+    assert "+20s" in summary["actions"][1]
 
 
 def test_jump_brief_summary_uses_actual_issue_topics_for_focus_line():
@@ -372,9 +587,49 @@ def test_jump_brief_summary_uses_actual_issue_topics_for_focus_line():
     )
 
     assert "Hot-Zone" in summary["summary"]
-    assert "Stabil" in summary["summary"]
+    assert "Max-Speed" in summary["summary"]
     assert "Aufbau 10-20s" not in summary["summary"]
     assert not any("Tauchwinkel ist dabei" in item for item in summary["main_issues"])
+
+
+def test_jump_brief_summary_does_not_replace_issue_focus_with_action_focus():
+    report = {
+        "jump": {"file_name": "issue-focus.csv"},
+        "metrics": {
+            "best_3s_vVert_kmh": 416.2,
+            "best_3s_start_s": 22.8,
+            "best_3s_end_s": 25.8,
+        },
+        "notes": {"curve_window_start_s": 0.0, "curve_window_end_s": 28.0},
+    }
+    review = {
+        "happened": [],
+        "good": ["Das Max-Speed-Fenster war nutzbar."],
+        "not_good": [
+            "Phase +10 bis +15s: Zuwachs +58.8 km/h (dein stabiler Korridor: +67.9 bis +70.7).",
+            "Die Hot-Zone ist ineffizient: viel Hoehenverlust bei zu wenig zusaetzlichem Speed.",
+        ],
+        "improve": [
+            "Prioritaet 1: Im Max-Speed-Fenster den Winkel halten und Korrekturen klein halten.",
+            "Prioritaet 2: Zwischen +10s und +20s mehr Druck aufbauen.",
+        ],
+    }
+
+    summary = _build_jump_brief_summary(
+        report=report,
+        review=review,
+        scorecard_rows=[
+            {"name": "Hauptbeschleunigung", "score": 63, "reason": "Zuwachs ist zu niedrig."},
+            {"name": "Hot-Zone Aufbau", "score": 50, "reason": "Hot-Zone ist ineffizient."},
+            {"name": "Max-Speed Fenster", "score": 75, "reason": "Fenster ist nutzbar."},
+        ],
+        best_reference=None,
+        top_reference_jumps=[],
+    )
+
+    assert "Hauptbeschleunigung" in summary["summary"]
+    assert "Hot-Zone" in summary["summary"]
+    assert "Max-Speed" not in summary["summary"]
 
 
 def test_jump_brief_summary_removes_duplicate_primary_transition_action():
@@ -416,7 +671,7 @@ def test_jump_brief_summary_removes_duplicate_primary_transition_action():
     assert not any("Uebergang in den Steilflug" in item for item in summary["actions"][1:])
 
 
-def test_scorecard_low_reference_score_gets_reference_context():
+def test_scorecard_filters_legacy_reference_score_context_from_phase_reasons():
     report = _minimal_goal_follow_report(
         jump_id="ref-score",
         file_name="ref-score.csv",
@@ -436,11 +691,128 @@ def test_scorecard_low_reference_score_gets_reference_context():
     }
 
     rows = _build_scorecard_rows(report, marco_profile=marco_profile)
-    build_row = next(row for row in rows if row["name"] == "Aufbau 10-20s")
+    build_row = next(row for row in rows if row["name"] == "Hauptbeschleunigung")
 
     assert build_row["score"] < 70
-    assert "Referenzscore" in build_row["reason"]
-    assert "Referenzband" in build_row["reason"]
+    assert "Referenzscore" not in build_row["reason"]
+    assert "Referenzband" not in build_row["reason"]
+    assert "Aufbaufenster" not in build_row["reason"]
+
+
+def test_scorecard_phase_reason_order_puts_measurements_before_rating():
+    report = _minimal_goal_follow_report(
+        jump_id="scorecard-order",
+        file_name="scorecard-order.csv",
+        angle_10=74.0,
+        angle_15=80.0,
+    )
+
+    rows = _build_scorecard_rows(report)
+    hot_zone = next(row for row in rows if row["name"] == "Hot-Zone Aufbau")
+    reason_lines = hot_zone["reason_lines"]
+
+    assert reason_lines[0] == "+15.0s bis +22.0s, Zielwinkel 82-86 Grad."
+    assert reason_lines[1].startswith("Istwerte: Avg Winkel")
+    assert "Avg vVert" in reason_lines[1]
+    assert reason_lines[2].startswith("Bewertung: zu flach")
+    assert reason_lines.index(next(line for line in reason_lines if line.startswith("Bewertung:"))) < reason_lines.index(
+        next(line for line in reason_lines if line.startswith("vVert-Zuwachs"))
+    )
+
+
+def test_scorecard_reference_phase_average_lines_are_neutral_deltas():
+    report = _minimal_goal_follow_report(
+        jump_id="scorecard-current",
+        file_name="scorecard-current.csv",
+        angle_10=74.0,
+        angle_15=80.0,
+    )
+    reference = _minimal_goal_follow_report(
+        jump_id="scorecard-reference",
+        file_name="scorecard-reference.csv",
+        angle_10=72.0,
+        angle_15=78.0,
+    )
+    reference["chart_data"]["vVert_kmh"] = [value - 20.0 for value in reference["chart_data"]["vVert_kmh"]]
+
+    rows = _annotate_scorecard_with_reference(
+        rows=_build_scorecard_rows(report),
+        report=report,
+        reference_report=reference,
+    )
+    hot_zone = next(row for row in rows if row["name"] == "Hot-Zone Aufbau")
+    avg_vvert_line = next(line for line in hot_zone["benchmark_lines"] if line.startswith("Avg vVert"))
+
+    assert "Delta" in avg_vvert_line
+    assert "bestes Ergebnis bisher" not in avg_vvert_line
+
+
+def test_max_speed_eher_flach_comment_matches_status():
+    report = _minimal_goal_follow_report(
+        jump_id="max-speed-eher-flach",
+        file_name="max-speed-eher-flach.csv",
+        angle_10=77.0,
+        angle_15=82.0,
+    )
+    time_s = [float(i) for i in range(0, 31)]
+    angle = []
+    for t in time_s:
+        if t < 20.0:
+            angle.append(78.0 + (0.25 * t))
+        elif t == 20.0:
+            angle.append(79.5)
+        else:
+            angle.append(84.0)
+    report["chart_data"]["time_s"] = time_s
+    report["chart_data"]["angle_deg"] = angle
+
+    phase_rows = _phase_rows_for_report(report)
+    max_speed = next(row for row in phase_rows if row["name"] == "Max-Speed Fenster")
+
+    assert max_speed["target_status"] == "eher flach"
+    assert "einzelne Abschnitte fallen darunter" in max_speed["comment"]
+
+
+def test_short_too_steep_phase_explains_avg_and_max_angle():
+    report = _minimal_goal_follow_report(
+        jump_id="short-too-steep",
+        file_name="short-too-steep.csv",
+        angle_10=74.0,
+        angle_15=80.0,
+    )
+    time_s = report["chart_data"]["time_s"]
+    angle = [78.0 for _ in time_s]
+    for i, t in enumerate(time_s):
+        if 3.0 <= t < 8.0:
+            angle[i] = 62.0
+        elif t == 8.0:
+            angle[i] = 72.3
+    report["chart_data"]["angle_deg"] = angle
+
+    phase_rows = _phase_rows_for_report(report)
+    dive_phase = next(row for row in phase_rows if row["name"] == "Dive-Aufbau")
+
+    assert dive_phase["target_status"] == "kurz zu steil"
+    assert dive_phase["angle_start_deg"] == 62.0
+    assert dive_phase["angle_end_deg"] == 72.3
+    assert dive_phase["angle_delta_deg"] == 10.3
+    assert "Durchschnitt liegt im Zielbereich" in dive_phase["comment"]
+    assert "Max Winkel 72.3 Grad" in dive_phase["comment"]
+    assert "Winkel liegt ueber dem Technikmodell" not in dive_phase["comment"]
+
+    display_rows = _build_phase_rows_with_reference(report=report, reference_report=None)
+    display_dive = next(row for row in display_rows if row["name"] == "Dive-Aufbau")
+
+    assert display_dive["angle_progression_display"] == "62.0 -> 72.3 Grad (+10.3)"
+
+    score_rows = _build_scorecard_rows(report)
+    dive_score = next(row for row in score_rows if row["name"] == "Dive-Aufbau")
+    rating_line = next(line for line in dive_score["reason_lines"] if line.startswith("Bewertung:"))
+
+    assert "Avg Winkel 63.7 Grad zum Zielband 60-70 Grad passt" in rating_line
+    assert "Max Winkel 72.3 Grad aber kurz darueber liegt" in rating_line
+    assert "Winkelverlauf: 62.0 -> 72.3 Grad (+10.3)." in dive_score["reason_lines"]
+    assert sum("Max Winkel" in line for line in dive_score["reason_lines"]) == 1
 
 
 def test_jump_brief_summary_strengths_remove_semantic_duplicates():
@@ -814,7 +1186,11 @@ def test_jumper_trend_rows_detect_better_and_worse_developments():
         {
             "best_3s_kmh": 440.0,
             "exit_score": 82,
+            "dive_score": 79,
+            "main_accel_score": 79,
             "build_score": 79,
+            "hot_build_score": 50,
+            "max_speed_score": 61,
             "hot_score": 50,
             "stability_score": 61,
             "angle_turns_20_25": 6.0,
@@ -822,7 +1198,11 @@ def test_jumper_trend_rows_detect_better_and_worse_developments():
         {
             "best_3s_kmh": 438.0,
             "exit_score": 81,
+            "dive_score": 78,
+            "main_accel_score": 78,
             "build_score": 78,
+            "hot_build_score": 52,
+            "max_speed_score": 60,
             "hot_score": 52,
             "stability_score": 60,
             "angle_turns_20_25": 7.0,
@@ -830,7 +1210,11 @@ def test_jumper_trend_rows_detect_better_and_worse_developments():
         {
             "best_3s_kmh": 430.0,
             "exit_score": 75,
+            "dive_score": 79,
+            "main_accel_score": 79,
             "build_score": 79,
+            "hot_build_score": 66,
+            "max_speed_score": 63,
             "hot_score": 66,
             "stability_score": 63,
             "angle_turns_20_25": 3.5,
@@ -838,7 +1222,11 @@ def test_jumper_trend_rows_detect_better_and_worse_developments():
         {
             "best_3s_kmh": 428.0,
             "exit_score": 74,
+            "dive_score": 80,
+            "main_accel_score": 80,
             "build_score": 80,
+            "hot_build_score": 68,
+            "max_speed_score": 64,
             "hot_score": 68,
             "stability_score": 64,
             "angle_turns_20_25": 3.0,
@@ -849,7 +1237,7 @@ def test_jumper_trend_rows_detect_better_and_worse_developments():
     by_name = {row["name"]: row for row in rows}
 
     assert by_name["Top-Speed"]["status"] == "schlechter"
-    assert by_name["Hot-Zone"]["status"] == "besser"
+    assert by_name["Hot-Zone Aufbau"]["status"] == "besser"
     assert by_name["Korrekturen 20-25s"]["status"] == "besser"
     assert by_name["Top-Speed"]["earlier_better_text"].startswith("Top-Speed war früher besser")
 
@@ -940,6 +1328,121 @@ def test_jumper_stability_reference_builds_stable_and_unstable_lines():
     assert ref["capability_profile"]["mode"] in {"basis", "safe", "build", "push"}
 
 
+def test_jumper_timing_reference_uses_stable_personal_anchors():
+    records = [
+        {
+            "analysis_blocked": False,
+            "best_3s_kmh": 430.0 + idx,
+            "best_3s_start_s": 20.0 + idx * 0.3,
+            "best_3s_end_s": 23.0 + idx * 0.3,
+            "angle_75_time_s": 8.0 + idx * 0.2,
+            "angle_82_time_s": 13.0 + idx * 0.2,
+            "angle_85_time_s": 17.0 + idx * 0.2,
+            "vvert_peak_time_s": 24.0 + idx * 0.2,
+            "decel_start_s": 25.0 + idx * 0.2,
+            "stability_score": 74,
+            "hot_score": 70,
+            "build_score": 72,
+            "vhor_min_20_25": 34.0,
+            "angle_turns_20_25": 2.0,
+            "build_coverage": 0.95,
+            "hot_coverage": 0.95,
+        }
+        for idx in range(5)
+    ]
+
+    ref = _build_jumper_timing_reference(records)
+
+    assert ref["available"] is True
+    assert ref["maturity"] == "active"
+    assert ref["usable_count"] == 5
+    assert ref["basis_count"] == 5
+    assert ref["confidence"] == "medium"
+    assert ref["source"] == "stable_control"
+    assert ref["best_reference_kmh"] == 434.0
+    assert ref["top3_avg_kmh"] == 433.0
+    assert ref["anchors"]["angle_82_time_s"]["median"] == 13.4
+    assert any("82 Grad" in line for line in ref["summary_lines"])
+    assert any("Decel/Recovery" in line for line in ref["summary_lines"])
+
+
+def test_jumper_timing_reference_requires_enough_usable_jumps():
+    records = [
+        {
+            "analysis_blocked": False,
+            "best_3s_kmh": 440.0 + idx,
+            "best_3s_start_s": 20.0 + idx * 0.2,
+            "best_3s_end_s": 23.0 + idx * 0.2,
+            "angle_82_time_s": 13.0 + idx * 0.2,
+            "angle_85_time_s": 17.0 + idx * 0.2,
+            "stability_score": 74,
+            "hot_score": 70,
+            "build_score": 72,
+            "vhor_min_20_25": 34.0,
+            "angle_turns_20_25": 2.0,
+            "build_coverage": 0.95,
+            "hot_coverage": 0.95,
+        }
+        for idx in range(4)
+    ]
+
+    ref = _build_jumper_timing_reference(records)
+
+    assert ref["available"] is False
+    assert ref["maturity"] == "off"
+    assert ref["usable_count"] == 4
+    assert "mindestens 5" in ref["reason"]
+
+
+def test_jumper_timing_reference_stays_soft_when_level_or_timing_is_not_stable():
+    low_top3_records = [
+        {
+            "analysis_blocked": False,
+            "best_3s_kmh": speed,
+            "best_3s_start_s": 20.0 + idx * 0.2,
+            "best_3s_end_s": 23.0 + idx * 0.2,
+            "angle_82_time_s": 13.0 + idx * 0.2,
+            "angle_85_time_s": 17.0 + idx * 0.2,
+            "stability_score": 74,
+            "hot_score": 70,
+            "build_score": 72,
+            "vhor_min_20_25": 34.0,
+            "angle_turns_20_25": 2.0,
+            "build_coverage": 0.95,
+            "hot_coverage": 0.95,
+        }
+        for idx, speed in enumerate([431.0, 405.0, 404.0, 403.0, 402.0])
+    ]
+    variable_timing_records = [
+        {
+            "analysis_blocked": False,
+            "best_3s_kmh": 440.0 + idx,
+            "best_3s_start_s": 20.0 + idx * 0.2,
+            "best_3s_end_s": 23.0 + idx * 0.2,
+            "angle_82_time_s": 11.0 + idx * 3.0,
+            "angle_85_time_s": 17.0 + idx * 0.2,
+            "stability_score": 74,
+            "hot_score": 70,
+            "build_score": 72,
+            "vhor_min_20_25": 34.0,
+            "angle_turns_20_25": 2.0,
+            "build_coverage": 0.95,
+            "hot_coverage": 0.95,
+        }
+        for idx in range(5)
+    ]
+
+    low_top3_ref = _build_jumper_timing_reference(low_top3_records)
+    variable_ref = _build_jumper_timing_reference(variable_timing_records)
+
+    assert low_top3_ref["available"] is False
+    assert low_top3_ref["maturity"] == "soft"
+    assert any("Top-3" in item for item in low_top3_ref["maturity_reasons"])
+    assert variable_ref["available"] is False
+    assert variable_ref["maturity"] == "soft"
+    assert any("82-Grad-Timing streut" in item for item in variable_ref["maturity_reasons"])
+
+
 def test_tip_focus_from_previous_uses_weak_scores_and_tip_keywords():
     previous_rows = [
         {"name": "Exit", "score": 82},
@@ -952,7 +1455,13 @@ def test_tip_focus_from_previous_uses_weak_scores_and_tip_keywords():
         "Beim Exit Druck besser mitnehmen.",
     ]
     phases = _tip_focus_from_previous(previous_score_rows=previous_rows, previous_tips=previous_tips)
-    assert phases == ["Exit", "Aufbau 10-20s", "Hot-Zone", "Stabilität / Kipp-Risiko"]
+    assert phases == [
+        "Exit / Stabilisierung",
+        "Dive-Aufbau",
+        "Hauptbeschleunigung",
+        "Hot-Zone Aufbau",
+        "Max-Speed Fenster",
+    ]
 
 
 def test_tip_follow_status_classifies_implemented_partial_open():
@@ -1345,7 +1854,7 @@ def test_tip_follow_up_compacts_duplicate_structured_goals_and_flags_quality():
     assert follow_up["available"] is True
     assert len(follow_up["entries"]) == 2
     assert follow_up["entries"][0]["status_key"] == "gemischt"
-    assert follow_up["entries"][1]["phase"] == "Hot-Zone"
+    assert follow_up["entries"][1]["phase"] == "Hot-Zone Aufbau"
     assert "ähnliche" in follow_up["entries"][1]["detail"]
     assert "Zeitlücken" in follow_up["quality_note"]
 
@@ -1403,6 +1912,105 @@ def test_jump_brief_simple_uses_plain_language_and_limits_numeric_jargon():
     assert "bei +20s fehlen" not in text_blob
     assert len(simple.get("main_issues", [])) <= 2
     assert len(simple.get("actions", [])) <= 3
+
+
+def test_jump_brief_simple_prefers_actionable_brief_issues_over_phase_context():
+    jump_brief = {
+        "summary": "Die groessten Baustellen liegen bei Hauptbeschleunigung und Hot-Zone.",
+        "basis_lines": [],
+        "main_issues": [
+            "Dive-Aufbau: +3.0s bis +8.0s, Zielwinkel 60-70 Grad: zu steil.",
+            "Dive-Aufbau: Istwerte: Avg Winkel 49.9 Grad, Avg vVert 165.8 km/h, Avg vHor 135.9 km/h.",
+            "Phase +10 bis +15s: Zuwachs +58.8 km/h (dein stabiler Korridor: +67.9 bis +70.7).",
+            "Die Hot-Zone ist ineffizient: viel Hoehenverlust bei zu wenig zusaetzlichem Speed.",
+        ],
+        "strengths": ["Das Max-Speed-Fenster war gut nutzbar."],
+        "actions": ["Zwischen +10s und +20s mehr Druck aufbauen."],
+    }
+
+    simple = _build_jump_brief_simple(
+        report={"notes": {}},
+        jump_brief=jump_brief,
+        scorecard_rows=[
+            {
+                "name": "Dive-Aufbau",
+                "score": 56,
+                "target_status": "zu steil",
+                "target_angle_label": "60-70 Grad",
+                "avg_angle_deg": 71.7,
+            },
+            {
+                "name": "Hot-Zone Aufbau",
+                "score": 50,
+                "target_status": "zu flach",
+                "target_angle_label": "82-86 Grad",
+                "avg_angle_deg": 77.0,
+            },
+            {
+                "name": "Max-Speed Fenster",
+                "score": 75,
+                "target_status": "im Zielbereich",
+            },
+        ],
+    )
+
+    assert simple["main_issues"] == [
+        "Zwischen +10s und +15s kommt noch zu wenig zusaetzlicher Speed.",
+        "In der Hot-Zone geht viel Hoehe verloren, aber es kommt nur wenig zusaetzlicher Speed dazu.",
+    ]
+    combined = " ".join(simple["main_issues"])
+    assert "Zielwinkel 60" not in combined
+    assert "bis ," not in combined
+    assert "Istwerte" not in combined
+    assert "Avg" not in combined
+    assert "Das Max-Speed-Fenster war gut nutzbar." in simple["strengths"]
+    assert any(item.startswith("Schnelle Phase:") for item in simple["actions"])
+
+
+def test_jump_brief_simple_maps_hot_zone_build_action_to_fast_phase():
+    simple = _build_jump_brief_simple(
+        report={"notes": {}},
+        jump_brief={
+            "summary": "Hot-Zone kritisch.",
+            "basis_lines": [],
+            "main_issues": ["Die Hot-Zone ist ineffizient."],
+            "strengths": [],
+            "actions": [],
+        },
+        scorecard_rows=[
+            {"name": "Hot-Zone Aufbau", "score": 50, "target_status": "zu flach"},
+        ],
+    )
+
+    assert simple["actions"][0].startswith("Schnelle Phase:")
+    assert not simple["actions"][0].startswith("Aufbauphase:")
+
+
+def test_jump_brief_simple_translates_scorecard_angle_reason_without_avg_jargon():
+    simple = _build_jump_brief_simple(
+        report={"notes": {}},
+        jump_brief={
+            "summary": "Dive-Aufbau kritisch.",
+            "basis_lines": [],
+            "main_issues": [
+                "Dive-Aufbau: Bewertung: zu flach, weil der Avg Winkel 49.9 Grad unter dem Ziel 60-70 Grad liegt."
+            ],
+            "strengths": [],
+            "actions": [],
+        },
+        scorecard_rows=[
+            {
+                "name": "Dive-Aufbau",
+                "score": 60,
+                "target_status": "zu flach",
+                "target_angle_label": "60-70 Grad",
+                "avg_angle_deg": 49.9,
+            },
+        ],
+    )
+
+    assert simple["main_issues"][0] == "Dive-Aufbau: Der Winkel liegt im Durchschnitt unter dem Zielbereich."
+    assert "Avg" not in simple["main_issues"][0]
 
 
 def test_render_simple_glossary_wraps_known_terms_with_tooltip():

@@ -51,6 +51,26 @@ def test_feedback_context_matches_subjective_end_unrest_to_objective_signals():
     assert context["confidence"] in {"medium", "high"}
 
 
+def test_feedback_context_normalizes_review_phase_statuses_before_evidence():
+    report = _report_with_feedback("Ich wollte spaeter steil werden, aber es fuehlte sich zu flach an.")
+    review = {
+        "technical_assessment": {
+            "available": True,
+            "phases": [
+                {"name": "Hauptbeschleunigung", "angle_status": "in_band"},
+                {"name": "Hot-Zone Aufbau", "angle_status": "too_flat"},
+            ],
+        },
+    }
+
+    context = build_feedback_coaching_context(report, review=review)
+
+    assert context["evidence"]["technical_phase_statuses"]["Hauptbeschleunigung"] == "im Zielbereich"
+    assert context["evidence"]["technical_phase_statuses"]["Hot-Zone Aufbau"] == "zu flach"
+    assert context["evidence"]["build_too_flat"] is True
+    assert "Speed-Aufbau bleibt dadurch noch zu schwach" in context["coaching_hint"]
+
+
 def test_feedback_training_profile_detects_repeated_compact_unrest_context():
     records = [
         {

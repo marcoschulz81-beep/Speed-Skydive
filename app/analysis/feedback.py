@@ -212,9 +212,18 @@ def _feedback_evidence(report: dict[str, Any], review: dict[str, Any] | None) ->
     angle15 = _fixpoint_value(fixpoints, 15.0, "angle_deg")
     angle20 = _fixpoint_value(fixpoints, 20.0, "angle_deg")
     phase_10_20 = str(scorecard.get("phase_10_20") or "")
+    phase_statuses = _technical_phase_statuses(technical, report)
     hot_zone = str(scorecard.get("hot_zone") or "")
     risk = str(scorecard.get("kipp_risiko") or "")
     pattern = str(primary.get("pattern") or "")
+    build_too_flat = any(
+        phase_statuses.get(name) in {"zu flach", "eher flach"}
+        for name in ["Dive-Aufbau", "Hauptbeschleunigung", "Hot-Zone Aufbau"]
+    ) or phase_10_20 == "zu flach"
+    build_too_steep = any(
+        phase_statuses.get(name) in {"zu steil", "kurz zu steil"}
+        for name in ["Dive-Aufbau", "Hauptbeschleunigung", "Hot-Zone Aufbau", "Max-Speed Fenster"]
+    ) or phase_10_20 == "zu steil"
 
     strong_count = 0
     objective_signals: list[str] = []
@@ -248,12 +257,13 @@ def _feedback_evidence(report: dict[str, Any], review: dict[str, Any] | None) ->
         "hot_zone_label": hot_zone,
         "risk_label": risk,
         "phase_10_20_label": phase_10_20,
+        "technical_phase_statuses": phase_statuses,
         "primary_pattern": pattern,
         "too_fast_steep": pattern == "too_fast_steep_not_hold",
         "late_hard_transition": pattern == "late_hard_steepening_vhor_collapse",
         "rollback_instability": pattern == "rollback_with_instability",
-        "build_too_flat": phase_10_20 == "zu flach",
-        "build_too_steep": phase_10_20 == "zu steil",
+        "build_too_flat": build_too_flat,
+        "build_too_steep": build_too_steep,
         "angle10": angle10,
         "angle15": angle15,
         "angle20": angle20,
@@ -275,6 +285,44 @@ def _feedback_evidence(report: dict[str, Any], review: dict[str, Any] | None) ->
             "label": str(jerk.get("label") or ""),
         },
     }
+
+
+def _technical_phase_statuses(technical: dict[str, Any], report: dict[str, Any]) -> dict[str, str]:
+    rows = []
+    if isinstance(technical.get("phases"), list):
+        rows = technical.get("phases") or []
+    if not rows and isinstance(report.get("phases"), list):
+        rows = report.get("phases") or []
+    out: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        status = _normalize_phase_status(row.get("target_status") or row.get("angle_status"))
+        if name and status:
+            out[name] = status
+    return out
+
+
+def _normalize_phase_status(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized = normalize_german_text(raw).replace("_", " ").replace("-", " ")
+    status_map = {
+        "too flat": "zu flach",
+        "too steep": "zu steil",
+        "in band": "im Zielbereich",
+        "in zielbereich": "im Zielbereich",
+        "im zielbereich": "im Zielbereich",
+        "optimal": "im Zielbereich",
+        "zu flach": "zu flach",
+        "eher flach": "eher flach",
+        "zu steil": "zu steil",
+        "kurz zu steil": "kurz zu steil",
+        "nicht belastbar": "nicht belastbar",
+    }
+    return status_map.get(normalized, raw)
 
 
 def _build_match_lines(

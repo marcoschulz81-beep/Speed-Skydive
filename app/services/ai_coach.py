@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from datetime import date
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
-AI_COACHING_SCHEMA_VERSION = 8
+AI_COACHING_SCHEMA_VERSION = 10
 
 _REQUIRED_TEXT_FIELDS = [
     "summary",
@@ -20,12 +21,56 @@ _REQUIRED_TEXT_FIELDS = [
 _MAX_FIELD_LENGTHS = {
     "summary": 280,
     "main_issue": 320,
-    "coaching_text": 900,
-    "next_jump_focus": 420,
+    "coaching_text": 1800,
+    "next_jump_focus": 560,
     "confidence_note": 280,
+}
+_DANGLING_TEXT_ENDINGS = {
+    "aber",
+    "am",
+    "an",
+    "auf",
+    "bei",
+    "bis",
+    "damit",
+    "das",
+    "dass",
+    "dem",
+    "den",
+    "der",
+    "des",
+    "die",
+    "ein",
+    "eine",
+    "einem",
+    "einen",
+    "einer",
+    "fuer",
+    "gegen",
+    "im",
+    "in",
+    "mit",
+    "nach",
+    "oder",
+    "ohne",
+    "sodass",
+    "sowie",
+    "ueber",
+    "um",
+    "und",
+    "unter",
+    "vom",
+    "von",
+    "vor",
+    "wenn",
+    "weil",
+    "zu",
+    "zum",
+    "zur",
 }
 _AI_COACHING_CACHE: dict[str, dict[str, Any]] = {}
 _AI_COACHING_DAILY_USAGE: dict[str, int] = {}
+_LOGGER = logging.getLogger(__name__)
 
 ClientFactory = Callable[[str, float], Any]
 
@@ -100,10 +145,12 @@ def generate_ai_coaching_texts(
             enabled=True,
             reason="OpenAI-Python-Paket fehlt. Bitte requirements.txt installieren.",
         )
-    except Exception:
+    except Exception as exc:
+        _LOGGER.warning("AI coaching request failed: %s", type(exc).__name__)
         return _unavailable(
             enabled=True,
-            reason="KI-Coaching konnte nicht erzeugt werden. Die normale Analyse bleibt aktiv.",
+            reason=f"KI-Coaching konnte nicht erzeugt werden ({_safe_exception_category(exc)}). Die normale Analyse bleibt aktiv.",
+            error_type=type(exc).__name__,
         )
 
     try:
@@ -163,13 +210,30 @@ def _default_client(api_key: str, timeout_s: float) -> Any:
     return OpenAI(api_key=api_key, timeout=float(timeout_s))
 
 
-def _unavailable(*, enabled: bool, reason: str) -> dict[str, Any]:
-    return {
+def _unavailable(*, enabled: bool, reason: str, error_type: str | None = None) -> dict[str, Any]:
+    out = {
         "available": False,
         "enabled": bool(enabled),
         "reason": reason,
         "source": "fallback",
     }
+    if error_type:
+        out["error_type"] = str(error_type)
+    return out
+
+
+def _safe_exception_category(exc: Exception) -> str:
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    if "timeout" in name or "timeout" in text or "timed out" in text:
+        return "Timeout"
+    if "rate" in name or "rate limit" in text or "429" in text:
+        return "Rate Limit"
+    if "auth" in name or "permission" in name or "401" in text or "403" in text:
+        return "Auth/API-Key"
+    if "connect" in name or "network" in name or "connection" in text or "dns" in text:
+        return "Netzwerk"
+    return "Clientfehler"
 
 
 def _compact_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -205,13 +269,26 @@ def _cache_key(*, payload: dict[str, Any], view_mode: str, model: str) -> str:
 
 
 def _instructions_for_view(view_mode: str) -> str:
+    is_simple = view_mode == "simple"
     style = (
         "Schreibe sehr einfach, direkt und ohne Fachjargon. Maximal drei kurze Saetze pro Feld. "
         "Nutze keine internen Begriffe wie Technikmodell, technische Bewertung, technische Analyse, "
-        "vHor, vVert, Jerk, RMS, Speed-Drop oder 3s-Window. Schreibe stattdessen Vorwaertsbewegung, "
-        "vertikale Geschwindigkeit, harte Korrekturen, Geschwindigkeitseinbruch und 3s-Fenster."
-        if view_mode == "simple"
+        "vHor, vVert, Jerk, RMS, Speed-Drop oder 3s-Window. Schreibe stattdessen waagerechte Geschwindigkeit, "
+        "horizontale Reserve, vertikale Geschwindigkeit, harte Korrekturen, Geschwindigkeitseinbruch und 3s-Fenster. "
+        "Vermeide Vorwaertsbewegung oder Vorwaertsrichtung, weil GPS nicht die Koerperausrichtung misst."
+        if is_simple
         else "Schreibe technisch praezise, aber knapp. Messwerte duerfen genannt werden, wenn sie im Payload stehen."
+    )
+    focus_rule = (
+        "next_jump_focus ist genau eine konkrete Aufgabe fuer den naechsten Sprung. "
+        "next_jump_focus soll kurz, messbar und handlungsorientiert sein. "
+        if is_simple
+        else (
+            "next_jump_focus ist der KI-Coaching-Fokus: Formuliere in ein bis zwei Saetzen, wie die "
+            "regelbasierten Tipps aus jump_brief.actions zusammenhaengen und welche Prioritaet daraus folgt. "
+            "Du darfst Dopplungen sprachlich glaetten, aber keine Tipps ersetzen, keine Tipps frei weglassen "
+            "und keine neuen technischen Zielwerte erfinden. Die pruefbare Tipp-Liste bleibt separat sichtbar. "
+        )
     )
     return (
         "Du bist ein Speed-Skydiving-Coach. Formuliere Coaching-Texte ausschliesslich aus den gelieferten "
@@ -230,9 +307,10 @@ def _instructions_for_view(view_mode: str) -> str:
         "sicheren naechsten Schritt ab. Wenn feedback_training_profile vorhanden ist, nutze es nur als wiederkehrenden "
         "Trainingskontext, nicht als harte Bewertung. "
         "Trenne die Ausgabefelder strikt: summary ist nur das Kurzfazit, main_issue ist nur die Diagnose, "
-        "coaching_text erklaert warum der Fehler entsteht und was im Sprung passiert, next_jump_focus ist genau "
-        "eine konkrete Aufgabe fuer den naechsten Sprung. coaching_text darf die konkrete Fokus-Anweisung nicht "
-        "wiederholen und soll nicht mit Imperativen wie 'im naechsten Sprung' beginnen. next_jump_focus soll kurz, "
+        "coaching_text erklaert warum der Fehler entsteht und was im Sprung passiert. "
+        f"{focus_rule}"
+        "coaching_text darf die konkrete Fokus-Anweisung nicht "
+        "wiederholen und soll nicht mit Imperativen wie 'im naechsten Sprung' beginnen. next_jump_focus soll "
         "messbar und handlungsorientiert sein. Ein reines Ergebnisziel wie 'Zuwachs um 12 km/h erhoehen' reicht "
         "nicht aus; beschreibe immer auch wie der Springer das technisch versuchen soll, z. B. Timing, Druck, "
         "Winkel, Linie, Korrekturen oder Guardrail. Wenn ein persoenlicher Winkel- oder Stabilitaetskorridor genannt wird, "
@@ -270,9 +348,9 @@ def _response_schema() -> dict[str, Any]:
             "next_jump_focus": {
                 "type": "string",
                 "description": (
-                    "Eine einzige konkrete, messbare Aufgabe fuer den naechsten Sprung. "
-                    "Kurz und handlungsorientiert, keine lange Erklaerung. Kein reines Ergebnisziel; "
-                    "immer eine technische Handlung nennen."
+                    "Simple: eine konkrete, messbare Aufgabe fuer den naechsten Sprung. "
+                    "Expert: ein kurzer KI-Coaching-Fokus, der die regelbasierten Tipps aus jump_brief.actions "
+                    "als Zusammenhang erklaert, ohne neue Ziele oder Messwerte zu erfinden."
                 ),
             },
             "confidence_note": {
@@ -320,7 +398,7 @@ def _validate_ai_response(value: Any, *, payload: dict[str, Any]) -> dict[str, s
         text = " ".join(raw.strip().split())
         if not text:
             return None
-        out[field] = text[: _MAX_FIELD_LENGTHS[field]]
+        out[field] = _limit_text(text, _MAX_FIELD_LENGTHS[field])
     return _separate_coaching_roles(out, payload=payload)
 
 
@@ -328,10 +406,13 @@ def _separate_coaching_roles(value: dict[str, str], *, payload: dict[str, Any]) 
     out = dict(value)
     focus_replacement = _build_actionable_next_focus(out, payload=payload)
     if focus_replacement:
-        out["next_jump_focus"] = focus_replacement[: _MAX_FIELD_LENGTHS["next_jump_focus"]]
+        out["next_jump_focus"] = _limit_text(
+            focus_replacement,
+            _MAX_FIELD_LENGTHS["next_jump_focus"],
+        )
     summary_replacement = _build_safe_summary_replacement(out, payload=payload)
     if summary_replacement:
-        out["summary"] = summary_replacement[: _MAX_FIELD_LENGTHS["summary"]]
+        out["summary"] = _limit_text(summary_replacement, _MAX_FIELD_LENGTHS["summary"])
 
     coaching_text = out.get("coaching_text", "")
     next_focus = out.get("next_jump_focus", "")
@@ -340,7 +421,10 @@ def _separate_coaching_roles(value: dict[str, str], *, payload: dict[str, Any]) 
 
     replacement = _build_explanatory_coaching_text(out, payload=payload)
     if replacement:
-        out["coaching_text"] = replacement[: _MAX_FIELD_LENGTHS["coaching_text"]]
+        out["coaching_text"] = _limit_text(
+            replacement,
+            _MAX_FIELD_LENGTHS["coaching_text"],
+        )
     return _sanitize_texts_for_view(out, payload=payload)
 
 
@@ -349,8 +433,52 @@ def _sanitize_texts_for_view(value: dict[str, str], *, payload: dict[str, Any]) 
         return value
     out = dict(value)
     for field in _REQUIRED_TEXT_FIELDS:
-        out[field] = _sanitize_simple_ai_text(out.get(field, ""))[: _MAX_FIELD_LENGTHS[field]]
+        out[field] = _limit_text(
+            _sanitize_simple_ai_text(out.get(field, "")),
+            _MAX_FIELD_LENGTHS[field],
+        )
     return out
+
+
+def _limit_text(text: str, max_len: int) -> str:
+    cleaned = " ".join(str(text or "").strip().split())
+    if len(cleaned) <= max_len:
+        return cleaned
+
+    boundary = max_len
+    sentence_boundary = max(
+        cleaned.rfind(".", 0, max_len + 1),
+        cleaned.rfind("!", 0, max_len + 1),
+        cleaned.rfind("?", 0, max_len + 1),
+    )
+    if sentence_boundary >= max(80, int(max_len * 0.65)):
+        boundary = sentence_boundary + 1
+    else:
+        word_boundary = cleaned.rfind(" ", 0, max_len + 1)
+        if word_boundary >= max(40, int(max_len * 0.75)):
+            boundary = word_boundary
+
+    limited = _trim_dangling_text_tail(cleaned[:boundary])
+    if not limited:
+        limited = cleaned[:boundary].rstrip(" ,;:-")
+    if not limited.endswith((".", "!", "?")):
+        if len(limited) >= max_len:
+            limited = _trim_dangling_text_tail(limited[: max_len - 1])
+        limited = f"{limited}."
+    return limited
+
+
+def _trim_dangling_text_tail(text: str) -> str:
+    cleaned = str(text or "").rstrip(" ,;:-")
+    while cleaned:
+        match = re.search(r"(.+?)\s+([^\s]+)$", cleaned)
+        if not match:
+            break
+        tail = match.group(2).strip(".,;:!?()[]{}\"'").casefold()
+        if tail not in _DANGLING_TEXT_ENDINGS:
+            break
+        cleaned = match.group(1).rstrip(" ,;:-")
+    return cleaned
 
 
 def _sanitize_simple_ai_text(text: str) -> str:
@@ -417,7 +545,7 @@ def _sanitize_simple_ai_text(text: str) -> str:
             "Einbruch der waagerechten Geschwindigkeit",
         ),
         (r"\bvHor[\u2010-\u2015\s-]*Abfall\b", "Abfall der waagerechten Geschwindigkeit"),
-        (r"\bvHor[\u2010-\u2015\s-]*Reserve\b", "Vorwaertsreserve"),
+        (r"\bvHor[\u2010-\u2015\s-]*Reserve\b", "horizontale Reserve"),
         (
             r"\bvVert[\u2010-\u2015\s-]*(?:Einbruch|Drop)\b",
             "Abfall der vertikalen Geschwindigkeit",
@@ -437,7 +565,14 @@ def _sanitize_simple_ai_text(text: str) -> str:
             r"\bvertikale\s+Geschwindigkeit[\u2010-\u2015\s-]*(?:Einbruch|Drop)\b",
             "Abfall der vertikalen Geschwindigkeit",
         ),
-        (r"\bwaagerechte\s+Reserve\b", "Vorwaertsreserve"),
+        (r"\b[Vv]orw(?:ae|ä|Ã¤)rtsbewegung\b", "waagerechte Geschwindigkeit"),
+        (r"\b[Vv]orw(?:ae|ä|Ã¤)rtsrichtung\b", "waagerechte Richtung"),
+        (r"\b[Vv]orw(?:ae|ä|Ã¤)rtsreserve\b", "horizontale Reserve"),
+        (r"\bwaagerechte\s+Reserve\b", "horizontale Reserve"),
+        (
+            r"\b[Ss]obald\s+die\s+waagerechte\s+Geschwindigkeit\s+hoch\s+(?:ist|wird)\b",
+            "Sobald der Sprung schnell wird",
+        ),
         (r"\bripples\b", "Unruhe"),
         (r"\bSpeed[\u2010-\u2015\s-]*Drop\b", "Geschwindigkeitseinbruch"),
     ]
@@ -456,7 +591,7 @@ def _sanitize_simple_ai_text(text: str) -> str:
     cleaned = re.sub(r"\b[Mm]essmodell\b", "Messwerte", cleaned)
     cleaned = re.sub(r"\bharte\s+Korrekturen\s*\(\s*harte\s+Korrekturen\s*\)", "harte Korrekturen", cleaned)
     cleaned = re.sub(r"\bharte\s+Korrekturen[\u2010-\u2015\s-]*RMS\b", "harte Korrekturen", cleaned)
-    cleaned = re.sub(r"\bden\s+harte\s+Korrekturen\b", "die harten Korrekturen", cleaned)
+    cleaned = re.sub(r"\b[Dd]en\s+harte\s+Korrekturen\b", "die harten Korrekturen", cleaned)
     cleaned = re.sub(r"(^|[.!?]\s+)passt\s+das\s+zu\b", lambda match: f"{match.group(1)}Das passt zu", cleaned)
     cleaned = re.sub(r"(^|[.!?]\s+)ergibt\s+das\b", lambda match: f"{match.group(1)}Das ergibt", cleaned)
     cleaned = re.sub(r"(^|[.!?]\s+)f(?:ue|ü)hrt\s+das\s+zu\b", lambda match: f"{match.group(1)}Das fuehrt zu", cleaned)
@@ -516,6 +651,15 @@ def _build_actionable_next_focus(value: dict[str, str], *, payload: dict[str, An
     jump_brief = payload.get("jump_brief") if isinstance(payload.get("jump_brief"), dict) else {}
     primary = payload.get("primary_diagnosis") if isinstance(payload.get("primary_diagnosis"), dict) else {}
     actions = [str(item or "") for item in (jump_brief.get("actions") or [])]
+    view_mode = str(payload.get("view_mode") or "").strip().lower()
+
+    if view_mode != "simple":
+        current_clean = _clean_focus_text(current)
+        if _expert_focus_is_usable(current_clean):
+            return current_clean
+        rule_summary = _build_expert_focus_from_actions(actions=actions, primary=primary)
+        if rule_summary:
+            return rule_summary
 
     candidates: list[str] = []
     if primary and primary.get("available"):
@@ -536,6 +680,88 @@ def _build_actionable_next_focus(value: dict[str, str], *, payload: dict[str, An
         if _focus_has_actionable_how(text):
             return _focus_text_for_view(text, payload=payload)
     return ""
+
+
+def _expert_focus_is_usable(text: str) -> bool:
+    if not text:
+        return False
+    if _focus_has_untrusted_precision(text):
+        return False
+    if _focus_is_metric_only(text):
+        return False
+    return _focus_has_actionable_how(text)
+
+
+def _focus_has_untrusted_precision(text: str) -> bool:
+    normalized = str(text or "").replace(",", ".")
+    return bool(
+        re.search(r"\b\d+(?:\.\d+)?\s*[-–]\s*\d+(?:\.\d+)?\s*s\b", normalized, flags=re.IGNORECASE)
+    )
+
+
+def _focus_is_metric_only(text: str) -> bool:
+    norm = _normalize_for_similarity(text)
+    if not norm:
+        return True
+    result_markers = ["zuwachs", "km/h", "score", "um >=", "erhoehen", "erhöhen"]
+    how_markers = [
+        "druck",
+        "winkel",
+        "linie",
+        "korrig",
+        "stabil",
+        "halten",
+        "schieben",
+        "aufbauen",
+        "tragen",
+        "fliegen",
+    ]
+    return any(marker in norm for marker in result_markers) and not any(marker in norm for marker in how_markers)
+
+
+def _build_expert_focus_from_actions(*, actions: list[str], primary: dict[str, Any]) -> str:
+    clean_actions = [_clean_focus_text(item) for item in actions]
+    clean_actions = [item for item in clean_actions if item]
+    if primary and primary.get("available"):
+        primary_focus = _clean_focus_text(str(primary.get("next_focus") or primary.get("action") or ""))
+        if primary_focus and not _focus_has_untrusted_precision(primary_focus):
+            return primary_focus
+
+    if len(clean_actions) < 2:
+        return clean_actions[0] if clean_actions else ""
+
+    combined = _normalize_for_similarity(" ".join(clean_actions))
+    has_build = any(marker in combined for marker in ["+10", "+15", "aufbau", "druck", "zuwachs"])
+    has_guardrail = any(marker in combined for marker in ["+20", "stabilitaetsbereich", "stabilitätsbereich", "winkel"])
+    has_fast_correction = any(
+        marker in combined
+        for marker in ["letzte schnelle phase", "lenkimpuls", "beschleunigungskurve", "gegenkorrektur", "korrektur"]
+    )
+    has_reserve = any(marker in combined for marker in ["vhor", "horizontale reserve", "waagerechte geschwindigkeit"])
+
+    if has_build and has_guardrail and has_fast_correction:
+        return (
+            "Der Fokus liegt auf dem Aufbau in die schnelle Phase: frueher Druck aufnehmen, aber bei +20s "
+            "die persoenliche Winkel-Grenze und die Linie stabil halten. Wenn das ruhiger gelingt, werden "
+            "spaete Gegenkorrekturen in der letzten schnellen Phase weniger noetig."
+        )
+    if has_build and has_guardrail:
+        return (
+            "Die Aufbau-Tipps gehoeren zusammen: frueher Druck aufnehmen, aber den Winkel bei +20s als "
+            "Stabilitaets-Grenze behandeln. Erst wenn Linie und horizontale Reserve stabil bleiben, wieder "
+            "steiler pushen."
+        )
+    if has_reserve and has_fast_correction:
+        return (
+            "Der Fokus liegt auf der letzten schnellen Phase: horizontale Reserve laenger halten und "
+            "Korrekturen frueher kleiner setzen, damit die Linie nicht erst spaet gerettet werden muss."
+        )
+    if has_fast_correction:
+        return (
+            "Die Tipps zielen auf eine ruhigere schnelle Phase: weniger spaete Lenkimpulse, fruehere kleine "
+            "Korrekturen und eine gleichmaessigere Beschleunigungskurve."
+        )
+    return " ".join(clean_actions[:2])
 
 
 def _focus_text_for_view(text: str, *, payload: dict[str, Any]) -> str:

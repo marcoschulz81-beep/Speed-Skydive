@@ -126,18 +126,23 @@ def _extract_feature_row(report: dict[str, Any]) -> _FeatureRow | None:
     v10 = _num(fp10.get("vVert_kmh"))
     v20 = _num(fp20.get("vVert_kmh"))
     a20 = _num(fp20.get("angle_deg"))
+    phase_gain = _phase_build_gain(report)
+    phase_angle_dev = _phase_late_angle_deviation(report)
     target = _num(metrics.get("best_3s_vVert_kmh"))
     risk = _num(metrics.get("negative_risk_score"))
     jump_id = str(jump.get("jump_id", ""))
     if v10 is None or v20 is None or a20 is None or target is None or risk is None or not jump_id:
         return None
 
+    gain_feature = float(phase_gain) if phase_gain is not None else float(v20 - v10)
+    angle_dev_feature = float(phase_angle_dev) if phase_angle_dev is not None else float(abs(a20 - 83.0))
+
     return _FeatureRow(
         jump_id=jump_id,
         best_3s_kmh=float(target),
         v10_kmh=float(v10),
-        gain10_20_kmh=float(v20 - v10),
-        angle_dev20_deg=float(abs(a20 - 83.0)),
+        gain10_20_kmh=gain_feature,
+        angle_dev20_deg=angle_dev_feature,
         risk_score=float(risk),
         has_time_gaps=("TIME_GAPS" in flags),
     )
@@ -167,7 +172,7 @@ def _feature_contributions(
     base_features: np.ndarray,
     improved_features: np.ndarray,
 ) -> list[dict[str, Any]]:
-    labels = ["Exit-Speed (+10s)", "Speed-Aufbau (+10s bis +20s)", "Winkelpräzision (+20s)", "Stabilität (Risiko)"]
+    labels = ["Exit-Speed (+10s)", "Speed-Aufbau Phasen", "Winkelpraezision Hot-Zone/Max-Speed", "Stabilitaet (Risiko)"]
     out: list[dict[str, Any]] = []
     for idx, label in enumerate(labels, start=1):
         delta_feature = float(improved_features[idx - 1] - base_features[idx - 1])
@@ -192,6 +197,54 @@ def _confidence_label(*, n: int, rmse_kmh: float, has_time_gaps_ratio: float) ->
 
 def _fixpoint_at(fixpoints: list[dict[str, Any]], t_rel_s: float) -> dict[str, Any] | None:
     return next((item for item in fixpoints if abs(float(item.get("t_rel_s", -1)) - t_rel_s) < 1e-6), None)
+
+
+def _phase_build_gain(report: dict[str, Any]) -> float | None:
+    phases = report.get("phases") if isinstance(report.get("phases"), list) else []
+    gains: list[float] = []
+    for name in ["Dive-Aufbau", "Hauptbeschleunigung", "Hot-Zone Aufbau"]:
+        row = _phase_by_name(phases, name)
+        if row is None:
+            continue
+        direct_gain = _num(row.get("vVert_gain_kmh", row.get("vvert_gain_kmh")))
+        if direct_gain is not None:
+            gains.append(float(direct_gain))
+            continue
+        start_v = _num(row.get("start_vVert_kmh"))
+        end_v = _num(row.get("end_vVert_kmh"))
+        if start_v is not None and end_v is not None:
+            gains.append(float(end_v - start_v))
+            continue
+        avg_v = _num(row.get("avg_vVert_kmh"))
+        if avg_v is not None:
+            gains.append(float(avg_v))
+    if not gains:
+        return None
+    if len(gains) >= 2 and all(value > 120.0 for value in gains):
+        return max(0.0, max(gains) - min(gains))
+    return float(sum(gains))
+
+
+def _phase_late_angle_deviation(report: dict[str, Any]) -> float | None:
+    phases = report.get("phases") if isinstance(report.get("phases"), list) else []
+    deviations: list[float] = []
+    for name, target in [("Hot-Zone Aufbau", 84.0), ("Max-Speed Fenster", 85.0)]:
+        row = _phase_by_name(phases, name)
+        if row is None:
+            continue
+        angle = _num(row.get("avg_angle_deg"))
+        if angle is not None:
+            deviations.append(abs(float(angle) - target))
+    if not deviations:
+        return None
+    return float(sum(deviations) / len(deviations))
+
+
+def _phase_by_name(phases: list[Any], name: str) -> dict[str, Any] | None:
+    for row in phases:
+        if isinstance(row, dict) and str(row.get("name") or "") == name:
+            return row
+    return None
 
 
 def _num(value: Any) -> float | None:

@@ -144,10 +144,18 @@
                 <p>{{ ai_coaching.coaching_text }}</p>
             </div>
             <div class="score-box">
-                <span class="k">Konkreter Trainingsfokus</span>
+                <span class="k">KI-Coaching-Fokus</span>
                 <p>{{ ai_coaching.next_jump_focus }}</p>
                 <span class="m">{{ ai_coaching.confidence_note }}</span>
                 <span class="m">Modell: {{ ai_coaching.model }}{% if ai_coaching.cached %}, Cache{% endif %}</span>
+            </div>
+            <div class="score-box">
+                <span class="k">Konkrete Trainings-Tipps</span>
+                <ul class="tips">
+                    {% for item in jump_brief.actions %}
+                    <li>{{ item }}</li>
+                    {% endfor %}
+                </ul>
             </div>
         </div>
         {% else %}
@@ -343,6 +351,24 @@
 {% endif %}
 
 {% if vm == "expert" %}
+{% set timing_reference = jumper_summary.timing_reference if jumper_summary is defined and jumper_summary.timing_reference is defined else none %}
+{% if timing_reference and timing_reference.available %}
+<section class="panel">
+    <h2>Persoenliches Timing</h2>
+    <p class="muted">
+        Referenz aus {{ timing_reference.basis_count }} kontrollierten Spruengen
+        (Sicherheit: {{ timing_reference.confidence }}). Die festen Phasen bleiben das technische Standardmodell.
+    </p>
+    <ul class="tips compact">
+        {% for line in timing_reference.summary_lines %}
+        <li>{{ line }}</li>
+        {% endfor %}
+    </ul>
+</section>
+{% endif %}
+{% endif %}
+
+{% if vm == "expert" %}
 <section class="panel">
     <h2>Phasen</h2>
     {% if best_history_reference %}
@@ -357,6 +383,7 @@
                 <th>Avg vVert</th>
                 <th>Avg vHor</th>
                 <th>Avg Winkel</th>
+                <th>Winkelverlauf</th>
                 <th>Zielwinkel</th>
                 <th>Bewertung</th>
             </tr>
@@ -369,6 +396,7 @@
                 <td>{{ phase.avg_vVert_display if phase.avg_vVert_display is defined else (phase.avg_vVert_kmh if phase.avg_vVert_kmh is not none else "-") }}</td>
                 <td>{{ phase.avg_vHor_display if phase.avg_vHor_display is defined else (phase.avg_vHor_kmh if phase.avg_vHor_kmh is not none else "-") }}</td>
                 <td>{{ phase.avg_angle_display if phase.avg_angle_display is defined else (phase.avg_angle_deg if phase.avg_angle_deg is not none else "-") }}</td>
+                <td>{{ phase.angle_progression_display if phase.angle_progression_display is defined else "-" }}</td>
                 <td>{{ phase.target_angle_label if phase.target_angle_label is defined else "-" }}</td>
                 <td>
                     {% if phase.target_status is defined %}{{ phase.target_status }}{% else %}-{% endif %}

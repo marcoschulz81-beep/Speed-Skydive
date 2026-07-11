@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.config import TECHNICAL_PHASE_SPECS
+
 
 def build_jump_comparison(
     *,
@@ -539,7 +541,7 @@ def _build_compare_brief(
                 f"Im Segment {label} früher konstant Druck aufbauen, damit der vVert-Aufbau nicht abreißt."
             )
 
-        if label in {"10-15s", "15-20s"} and angle_delta is not None and angle_delta < -2.0:
+        if label in {"Dive-Aufbau", "Hauptbeschleunigung", "Hot-Zone Aufbau"} and angle_delta is not None and angle_delta < -2.0:
             main_issues.append(
                 f"Im Segment {label} ist der Vergleich flacher als die Referenz ({angle_delta:.1f} Grad Delta)."
             )
@@ -547,7 +549,7 @@ def _build_compare_brief(
                 f"Im Segment {label} den Tauchwinkel früher stabil in den Zielbereich bringen (kleine, frühe Korrekturen)."
             )
 
-        if label in {"20-25s"} and angle_delta is not None and angle_delta > 2.0:
+        if label in {"Hot-Zone Aufbau", "Max-Speed Fenster"} and angle_delta is not None and angle_delta > 2.0:
             main_issues.append(
                 f"Im Segment {label} wird der Vergleich deutlich steiler als die Referenz ({angle_delta:+.1f} Grad)."
             )
@@ -555,7 +557,7 @@ def _build_compare_brief(
                 "In der heißen Zone nicht zu steil werden; Linie ruhiger bei hohem Speed halten."
             )
 
-        if label in {"20-25s"} and min_vhor_delta is not None and min_vhor_delta < -5.0:
+        if label in {"Hot-Zone Aufbau", "Max-Speed Fenster"} and min_vhor_delta is not None and min_vhor_delta < -5.0:
             main_issues.append(
                 f"Im Segment {label} fällt vHor im Vergleich deutlich tiefer ({min_vhor_delta:.1f} km/h Delta)."
             )
@@ -563,7 +565,7 @@ def _build_compare_brief(
                 "Ab +20s Körperspannung früher stabilisieren, damit vHor nicht zu stark einbricht."
             )
 
-        if label in {"20-25s"} and turns_delta is not None and turns_delta >= 2.0:
+        if label in {"Hot-Zone Aufbau", "Max-Speed Fenster"} and turns_delta is not None and turns_delta >= 2.0:
             main_issues.append(
                 f"Im Segment {label} zeigt der Vergleich mehr Nachkorrekturen als die Referenz (+{turns_delta:.0f})."
             )
@@ -640,12 +642,10 @@ def _build_segment_pairs(
     cmp_window_end: float,
 ) -> list[dict[str, Any]]:
     pairs: list[dict[str, Any]] = []
-    for start_s, end_s, label in [
-        (0.0, 10.0, "0-10s"),
-        (10.0, 15.0, "10-15s"),
-        (15.0, 20.0, "15-20s"),
-        (20.0, 25.0, "20-25s"),
-    ]:
+    for spec in TECHNICAL_PHASE_SPECS:
+        start_s = float(spec["start_s"])
+        end_s = float(spec["end_s"])
+        label = str(spec["name"])
         ref_seg = _segment_stats(ref_chart, start_s, min(end_s, ref_window_end))
         cmp_seg = _segment_stats(cmp_chart, start_s, min(end_s, cmp_window_end))
         pairs.append({"label": label, "reference": ref_seg, "comparison": cmp_seg})
