@@ -303,6 +303,34 @@ def _safe_interp(x: np.ndarray, y: np.ndarray, x_target: float) -> float | None:
     return float(np.interp(x_target, x, y))
 
 
+def _manual_t0_from_utc(
+    *,
+    manual_t0_utc: str,
+    raw_start_time: pd.Timestamp,
+    t_abs_s: np.ndarray,
+) -> tuple[float, str]:
+    try:
+        manual_ts = pd.Timestamp(manual_t0_utc)
+    except Exception as exc:
+        raise AnalysisError("Manueller Absprungzeitpunkt ist kein gueltiger UTC-Zeitstempel.") from exc
+
+    if manual_ts.tzinfo is None:
+        manual_ts = manual_ts.tz_localize("UTC")
+    else:
+        manual_ts = manual_ts.tz_convert("UTC")
+
+    raw_start = pd.Timestamp(raw_start_time)
+    if raw_start.tzinfo is None:
+        raw_start = raw_start.tz_localize("UTC")
+    else:
+        raw_start = raw_start.tz_convert("UTC")
+
+    t0_abs_s = float((manual_ts - raw_start).total_seconds())
+    if len(t_abs_s) == 0 or t0_abs_s < float(t_abs_s[0]) or t0_abs_s > float(t_abs_s[-1]):
+        raise AnalysisError("Manueller Absprungzeitpunkt liegt ausserhalb der Original-CSV.")
+    return t0_abs_s, manual_ts.isoformat()
+
+
 def _build_fs2_track_summary(
     *,
     post: pd.DataFrame,
@@ -1471,6 +1499,7 @@ def analyze_flysight_csv(
     jumper_name: str,
     ground_elevation_m: float | None,
     breakoff_altitude_agl_m: float | None,
+    manual_t0_utc: str | None = None,
 ) -> dict[str, Any]:
     df = _read_csv(content)
     df, unit_normalization = _normalize_import_units(df)
@@ -1483,10 +1512,36 @@ def analyze_flysight_csv(
     sample_rate_hz = float(1.0 / np.median(dt)) if len(dt) else 0.0
     quality_flags, quality_score = _compute_quality_flags(df, sample_rate_hz, dt)
 
-    t0_idx, t0_confidence, t0_uncertainty_s, t0_reason = _detect_t0(df, t_abs_s, sample_rate_hz)
-    t0_utc = df["time"].iloc[t0_idx].isoformat()
-    t0_abs_s = float(t_abs_s[t0_idx])
-    if t0_confidence < 0.55 or t0_uncertainty_s > 1.2:
+    auto_t0_idx, auto_t0_confidence, auto_t0_uncertainty_s, auto_t0_reason = _detect_t0(
+        df,
+        t_abs_s,
+        sample_rate_hz,
+    )
+    auto_t0_utc = df["time"].iloc[auto_t0_idx].isoformat()
+    manual_t0_applied = False
+    if manual_t0_utc is not None and str(manual_t0_utc).strip():
+        t0_abs_s, t0_utc = _manual_t0_from_utc(
+            manual_t0_utc=str(manual_t0_utc),
+            raw_start_time=df["time"].iloc[0],
+            t_abs_s=t_abs_s,
+        )
+        t0_idx = int(np.searchsorted(t_abs_s, t0_abs_s, side="left"))
+        if t0_idx >= len(t_abs_s):
+            t0_idx = len(t_abs_s) - 1
+        manual_t0_applied = True
+        t0_confidence = 1.0
+        t0_uncertainty_s = 0.0
+        t0_reason = (
+            "Manuell gesetzter Absprungzeitpunkt; automatische Erkennung wurde nur als Referenz gespeichert."
+        )
+    else:
+        t0_idx = auto_t0_idx
+        t0_confidence = auto_t0_confidence
+        t0_uncertainty_s = auto_t0_uncertainty_s
+        t0_reason = auto_t0_reason
+        t0_utc = auto_t0_utc
+        t0_abs_s = float(t_abs_s[t0_idx])
+    if not manual_t0_applied and (t0_confidence < 0.55 or t0_uncertainty_s > 1.2):
         quality_flags.append("NO_CLEAR_EXIT")
 
     ground_estimated = False
@@ -1500,8 +1555,13 @@ def analyze_flysight_csv(
     if post.empty:
         raise AnalysisError("Nach t0 sind keine Samples vorhanden.")
 
-    exit_altitude_msl = float(data["hMSL"].iloc[t0_idx])
-    exit_altitude_agl = float(data["hAGL_m"].iloc[t0_idx]) if not np.isnan(data["hAGL_m"].iloc[t0_idx]) else None
+    exit_altitude_msl = float(np.interp(t0_abs_s, t_abs_s, data["hMSL"].to_numpy(dtype=float)))
+    hagl_series = data["hAGL_m"].to_numpy(dtype=float)
+    exit_altitude_agl = (
+        None
+        if np.isnan(hagl_series).all()
+        else float(np.interp(t0_abs_s, t_abs_s, hagl_series))
+    )
     is_valid_altitude = True if exit_altitude_agl is None else exit_altitude_agl <= MAX_VALID_EXIT_ALTITUDE_AGL_M
 
     if exit_altitude_agl is not None and not is_valid_altitude:
@@ -1512,8 +1572,7 @@ def analyze_flysight_csv(
         raise AnalysisError("3-Sekunden-Fenster konnte nicht bestimmt werden.")
 
     vel_d = df["velD"].to_numpy()
-    pw_candidates = np.where(vel_d >= 10.0)[0]
-    pw_candidates = pw_candidates[pw_candidates >= t0_idx]
+    pw_candidates = np.where((vel_d >= 10.0) & (t_abs_s >= t0_abs_s))[0]
     pw_start_idx = int(pw_candidates[0]) if len(pw_candidates) else None
     performance_window_start_s = None
     performance_window_start_utc = None
@@ -1687,8 +1746,13 @@ def analyze_flysight_csv(
     notes = {
         "t0_confidence": round(t0_confidence, 3),
         "t0_uncertainty_s": round(t0_uncertainty_s, 3),
-        "t0_review_required": bool(t0_confidence < 0.55 or t0_uncertainty_s > 1.2),
+        "t0_review_required": bool((not manual_t0_applied) and (t0_confidence < 0.55 or t0_uncertainty_s > 1.2)),
         "t0_reason": t0_reason,
+        "t0_manual_override": manual_t0_applied,
+        "auto_t0_utc": auto_t0_utc,
+        "auto_t0_confidence": round(auto_t0_confidence, 3),
+        "auto_t0_uncertainty_s": round(auto_t0_uncertainty_s, 3),
+        "auto_t0_reason": auto_t0_reason,
         "analysis_blocked": analysis_blocked,
         "analysis_block_reason": early_end_reason,
         "exit_profile": exit_profile,

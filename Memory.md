@@ -31,6 +31,9 @@ Zentrale Datei: `app/analysis/pipeline.py`
 - Zeit wird UTC-normalisiert, Daten werden sortiert, Duplikate entfernt, numerische Spalten gecastet.
 - `t0` ist der erkannte Absprungzeitpunkt. Unsichere Erkennung setzt `NO_CLEAR_EXIT`.
 - T0-Erkennung ist auf den dominanten Freefall-Peak geankert. Wenn die erste Erkennung erst mitten in einer steigenden Rampe landet, wird sie auf den plausiblen Rampenbeginn zurueckgeschoben. Das greift auch bei mittelspaeten Kandidaten um ca. `35-45 m/s` vertikal, sofern davor eine monotone Rampe ab ca. `10 m/s` und ein klarer Peak-Gain liegen.
+- Expert-Reports koennen t0 manuell setzen. Der Nutzer gibt eine Kurvenzeit relativ zum aktuell gespeicherten t0 ein; daraus wird ein UTC-Zeitpunkt berechnet und nur dieser Sprung aus der gecachten Original-CSV neu analysiert.
+- Bei manuellem t0 speichert `notes` weiterhin die automatische Erkennung als `auto_t0_utc`, `auto_t0_confidence`, `auto_t0_uncertainty_s` und `auto_t0_reason`; `t0_manual_override=true`, `t0_confidence=1.0`, `t0_uncertainty_s=0.0`.
+- Alte Reports ohne diese neuen Notes bleiben gueltig. Eine Massen-Reanalyse ist nicht erforderlich, solange nur Diagnose/UI oder ein einzelnes manuelles Override genutzt wird.
 - Wenn keine Bodenhoehe gesetzt ist, wird Boden aus niedrigem `hMSL`-Quantil geschaetzt und `NO_GROUND_LEVEL` gesetzt.
 - Abgeleitete Samples:
   - `t_rel_s`
@@ -51,6 +54,7 @@ Zentrale Datei: `app/analysis/pipeline.py`
   - Ende ueber maximalen Hoehenverlust `PERFORMANCE_WINDOW_VERTICAL_DROP_M = 2256.0` oder Breakoff-Hoehe.
 - Coaching/3s-Qualitaet trennt spaete Ausstiegs-/Decel-Drops von echten Technikproblemen. Ein Speed-Drop nach dem Fenster wird nur als Problem gewertet, wenn er vor `decel_start` und in belastbarem Folgezeitraum liegt.
 - `curve_window` begrenzt den technisch sinnvollen Bereich; zu kurze/inkonsistente Tracks koennen `analysis_blocked` setzen.
+- Die Experten-Diagnose zeigt t0-Startprobe, Performance-Window-Grenzen und vHor-Basis. vHor ist die waagerechte GPS-Geschwindigkeit ueber Grund und aktuell nicht windkorrigiert.
 
 ## Qualitaetsflags
 

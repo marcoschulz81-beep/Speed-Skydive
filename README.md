@@ -93,6 +93,12 @@ Fuer Coaching und Bewertung wird zwischen regelnahem Score und allgemeinem Train
 
 Damit kann die Software weiterhin echte Faelle erkennen, in denen es den Springer vorzeitig rausreisst, ohne Ausstiegs-/Bremsphasen faelschlich als Technikproblem zu werten.
 
+### T0, Ausrichtung und manuelle Korrektur
+
+Die automatische `t0`-Erkennung bleibt der Standard. In der Expertenansicht werden zusaetzlich Startprobe, Performance-Window, t0-Confidence und Datenhinweise sichtbar gemacht. Wenn ein Sprung offensichtlich falsch ausgerichtet ist, kann der Absprung manuell als aktuelle Kurvenzeit gesetzt werden. Dann wird nur dieser Sprung aus der gecachten Original-CSV neu ausgewertet; die automatische t0-Erkennung bleibt als Referenz in den Notes gespeichert.
+
+Vergleiche zeigen die Ausrichtungsbasis beider Spruenge. `vHor` ist dabei die waagerechte GPS-Geschwindigkeit ueber Grund und aktuell nicht windkorrigiert.
+
 ### Sprungfeedback
 
 Springer koennen optional einen Freitext zum Sprung erfassen, z. B. Fokus, Gefuehl, Frage oder wahrgenommene Instabilitaet. Das Feedback ist bewusst kein Pflichtfeld und keine harte Messgrundlage.

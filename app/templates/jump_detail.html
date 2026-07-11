@@ -487,9 +487,35 @@
     <p><strong>Kurvenfenster:</strong> +{{ report.notes.curve_window_start_s }}s bis +{{ report.notes.curve_window_end_s }}s</p>
     <p><strong>Fensterlogik:</strong> {{ report.notes.curve_window_reason }}</p>
     <p><strong>Performance-Window Start:</strong> {{ report.notes.pw_start_utc }} (t_rel {{ report.notes.pw_start_s_from_t0 }}s)</p>
+    <p><strong>Performance-Window Ende:</strong> {{ report.metrics.performance_window_end_s }}s, Qualitaet {{ report.metrics.validation_window_quality if report.metrics.validation_window_quality is not none else "-" }}</p>
     <p><strong>t0-Erkennung:</strong> {{ report.notes.t0_reason }}</p>
     <p><strong>t0 Confidence:</strong> {{ report.notes.t0_confidence }} (Unsicherheit ±{{ report.notes.t0_uncertainty_s }}s)</p>
     <p><strong>t0 Review nötig:</strong> {{ "Ja" if report.notes.t0_review_required else "Nein" }}</p>
+    {% if t0_diagnostics.t0_manual_override %}
+    <p><strong>Manuelles t0:</strong> aktiv. Auto-Referenz: {{ t0_diagnostics.auto_t0_utc }} (Confidence {{ t0_diagnostics.auto_t0_confidence if t0_diagnostics.auto_t0_confidence is not none else "-" }}).</p>
+    {% endif %}
+    <p>
+        <strong>Startprobe nach t0:</strong>
+        vVert {{ "%.1f"|format(t0_diagnostics.first_vvert_kmh) if t0_diagnostics.first_vvert_kmh is not none else "-" }} km/h,
+        vHor {{ "%.1f"|format(t0_diagnostics.first_vhor_kmh) if t0_diagnostics.first_vhor_kmh is not none else "-" }} km/h,
+        Winkel {{ "%.1f"|format(t0_diagnostics.first_angle_deg) if t0_diagnostics.first_angle_deg is not none else "-" }} Grad.
+    </p>
+    <p><strong>vHor-Basis:</strong> {{ t0_diagnostics.vhor_basis }}</p>
+    {% if t0_diagnostics.warnings %}
+    <ul class="tips compact">
+        {% for line in t0_diagnostics.warnings %}
+        <li>{{ line }}</li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+    <form method="post" action="/jumps/{{ jump_id }}/manual-t0?view={{ vm }}" class="compare-form" onsubmit="return confirm('Absprung manuell setzen und diesen Sprung neu auswerten?');">
+        <label>
+            <span>Neues t0 als aktuelle Kurvenzeit [s]</span>
+            <input type="number" name="new_t0_rel_s" value="0.0" step="0.1" min="-120" max="120" required>
+        </label>
+        <button type="submit" class="btn secondary">Absprung manuell setzen</button>
+        <p class="muted">Positive Werte setzen den Absprung spaeter, negative Werte frueher in der Original-CSV. 0.0 wird nicht als Aenderung gespeichert.</p>
+    </form>
     <p><strong>Hot-Zone:</strong> {{ report.notes.hot_zone_reason }}</p>
     <p><strong>Negativ/Kippen:</strong> {{ report.notes.negative_details }}</p>
     {% if review.technical_assessment and review.technical_assessment.available %}

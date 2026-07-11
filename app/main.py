@@ -5,7 +5,7 @@ import json
 import math
 import re
 from html import escape as html_escape
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -232,6 +232,82 @@ def _chart_data_for_client(report: dict[str, Any], *, max_points: int = 3200) ->
 
     filtered = _chart_data_at_indices(chart, indices) if indices else chart
     return _downsample_chart_data(filtered, max_points=max_points)
+
+
+def _build_t0_diagnostics(report: dict[str, Any]) -> dict[str, Any]:
+    notes = report.get("notes", {}) if isinstance(report.get("notes"), dict) else {}
+    metrics = report.get("metrics", {}) if isinstance(report.get("metrics"), dict) else {}
+    jump = report.get("jump", {}) if isinstance(report.get("jump"), dict) else {}
+    chart = report.get("chart_data", {}) if isinstance(report.get("chart_data"), dict) else {}
+    flags = {str(flag) for flag in (report.get("quality_flags") or [])}
+
+    first_vvert = _first_chart_number(chart, "vVert_kmh")
+    first_vhor = _first_chart_number(chart, "vHor_kmh")
+    first_angle = _first_chart_number(chart, "angle_deg")
+    pw_start = _to_float(metrics.get("performance_window_start_s"))
+    pw_end = _to_float(metrics.get("performance_window_end_s"))
+    validation_quality = _to_float(metrics.get("validation_window_quality"))
+
+    warnings: list[str] = []
+    if bool(notes.get("t0_review_required")):
+        warnings.append("Automatische t0-Erkennung ist unsicher; Kurvenvergleich und Phasenzeiten pruefen.")
+    if first_vvert is not None and first_vvert >= 90.0:
+        warnings.append("Der erste Punkt nach t0 ist bereits sehr schnell; t0 koennte zu spaet liegen.")
+    elif first_vvert is not None and first_vvert >= 65.0:
+        warnings.append("Der erste Punkt nach t0 ist schon dynamisch; bei auffaelligem Vergleich t0 pruefen.")
+    if first_angle is not None and first_angle >= 65.0:
+        warnings.append("Der erste Winkel nach t0 ist bereits steil; Exit-/Startanker visuell gegenpruefen.")
+    if "NO_GROUND_LEVEL" in flags:
+        warnings.append("Bodenhoehe wurde geschaetzt; AGL- und Performance-Window-Grenzen sind weniger belastbar.")
+
+    return {
+        "file_name": str(jump.get("file_name") or ""),
+        "t0_utc": str(jump.get("t0_utc") or ""),
+        "t0_confidence": _to_float(notes.get("t0_confidence")),
+        "t0_uncertainty_s": _to_float(notes.get("t0_uncertainty_s")),
+        "t0_review_required": bool(notes.get("t0_review_required")),
+        "t0_manual_override": bool(notes.get("t0_manual_override")),
+        "t0_reason": str(notes.get("t0_reason") or ""),
+        "auto_t0_utc": str(notes.get("auto_t0_utc") or ""),
+        "auto_t0_confidence": _to_float(notes.get("auto_t0_confidence")),
+        "first_vvert_kmh": first_vvert,
+        "first_vhor_kmh": first_vhor,
+        "first_angle_deg": first_angle,
+        "performance_window_start_s": pw_start,
+        "performance_window_end_s": pw_end,
+        "validation_window_quality": validation_quality,
+        "ground_level_estimated": bool(notes.get("ground_level_estimated") or ("NO_GROUND_LEVEL" in flags)),
+        "agl_note": str(notes.get("agl_note") or ""),
+        "vhor_basis": "GPS-Geschwindigkeit ueber Grund; aktuell nicht windkorrigiert.",
+        "warnings": _unique_texts(warnings),
+    }
+
+
+def _first_chart_number(chart: dict[str, Any], key: str) -> float | None:
+    values = chart.get(key, []) if isinstance(chart.get(key), list) else []
+    for raw in values:
+        value = _to_float(raw)
+        if value is not None:
+            return float(value)
+    return None
+
+
+def _build_compare_alignment(
+    *,
+    reference_report: dict[str, Any],
+    comparison_report: dict[str, Any],
+) -> dict[str, Any]:
+    reference = _build_t0_diagnostics(reference_report)
+    comparison = _build_t0_diagnostics(comparison_report)
+    warnings: list[str] = []
+    for label, diag in [("Referenz", reference), ("Vergleich", comparison)]:
+        for warning in diag.get("warnings", []):
+            warnings.append(f"{label}: {warning}")
+    return {
+        "reference": reference,
+        "comparison": comparison,
+        "warnings": _unique_texts(warnings),
+    }
 
 
 def _chart_data_at_indices(chart: dict[str, Any], indices: list[int]) -> dict[str, Any]:
@@ -567,6 +643,7 @@ def jump_detail(
     quality_issue_lines = _build_quality_issue_lines(report.get("quality_flags", []))
     quality_issue_lines.extend(_build_fs2_quality_issue_lines(report.get("notes", {})))
     quality_issue_lines = _unique_texts(quality_issue_lines)
+    t0_diagnostics = _build_t0_diagnostics(report)
     ai_coaching = _build_ai_coaching(
         report=report,
         review=review,
@@ -616,6 +693,7 @@ def jump_detail(
             "report_meta_json": json.dumps(_report_for_client(report)),
             "quality_flags_json": json.dumps(report["quality_flags"]),
             "quality_issue_lines": quality_issue_lines,
+            "t0_diagnostics": t0_diagnostics,
             "message": message,
             "error": error,
             "view_mode": view_mode,
@@ -673,6 +751,76 @@ def reprocess_t0(jump_id: str, view: str | None = None):
         return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(msg)}", status_code=303)
 
     ok_msg = "Absprung wurde neu erkannt und der Datensatz aktualisiert."
+    return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&message={quote_plus(ok_msg)}", status_code=303)
+
+
+@app.post("/jumps/{jump_id}/manual-t0")
+def manual_t0(
+    jump_id: str,
+    new_t0_rel_s: str = Form(...),
+    view: str | None = None,
+):
+    view_mode = _normalize_view_mode(view)
+    report = get_jump_report(jump_id)
+    source_meta = get_jump_source_metadata(jump_id)
+    if report is None or source_meta is None:
+        raise HTTPException(status_code=404, detail="Sprung nicht gefunden.")
+
+    try:
+        rel_s = float(str(new_t0_rel_s).replace(",", ".").strip())
+    except ValueError:
+        msg = "Bitte eine gueltige Sekundenangabe fuer den neuen Absprung eingeben."
+        return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(msg)}", status_code=303)
+    if not math.isfinite(rel_s) or abs(rel_s) > 120.0:
+        msg = "Manuelle t0-Korrektur muss zwischen -120s und +120s relativ zum aktuellen t0 liegen."
+        return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(msg)}", status_code=303)
+    if abs(rel_s) < 0.05:
+        msg = "Bitte eine Kurvenzeit ungleich 0.0s eingeben, wenn t0 manuell geaendert werden soll."
+        return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(msg)}", status_code=303)
+
+    source_path = _resolve_source_file_for_jump(source_meta)
+    if source_path is None or not source_path.exists():
+        msg = "Original-CSV nicht gefunden. Bitte Datei erneut hochladen."
+        return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(msg)}", status_code=303)
+
+    try:
+        manual_t0_utc = _manual_t0_utc_from_current(report["jump"]["t0_utc"], rel_s)
+        content = source_path.read_bytes()
+        source_hash = hashlib.sha256(content).hexdigest()
+        cached_path = _cache_uploaded_file(
+            source_hash=source_hash,
+            original_name=report["jump"]["file_name"],
+            content=content,
+        )
+        quality_flags = set(report.get("quality_flags") or [])
+        ground_elevation_m = (
+            None
+            if "NO_GROUND_LEVEL" in quality_flags
+            else report["jump"].get("ground_elevation_m")
+        )
+        new_result = analyze_flysight_csv(
+            content=content,
+            file_name=report["jump"]["file_name"],
+            jumper_name=report["jump"]["jumper_name"],
+            ground_elevation_m=ground_elevation_m,
+            breakoff_altitude_agl_m=None,
+            manual_t0_utc=manual_t0_utc,
+        )
+        replace_analysis_result(
+            jump_id=jump_id,
+            result=new_result,
+            is_reference_only=bool(report["jump"].get("is_reference_only")),
+            source_file_sha256=source_hash,
+            source_file_path=str(cached_path),
+        )
+        _clear_derived_caches()
+    except AnalysisError as exc:
+        return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(str(exc))}", status_code=303)
+    except Exception as exc:  # pragma: no cover
+        msg = f"Unerwarteter Reanalysefehler: {exc}"
+        return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(msg)}", status_code=303)
+
+    ok_msg = f"Absprung wurde manuell auf aktuelle Kurvenzeit {rel_s:+.1f}s gesetzt und neu ausgewertet."
     return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&message={quote_plus(ok_msg)}", status_code=303)
 
 
@@ -759,6 +907,7 @@ def jump_compare(
     compare_error: str | None = None
     compare_result: dict[str, Any] | None = None
     compare_chart_json: str | None = None
+    compare_alignment: dict[str, Any] | None = None
     view_mode = _normalize_view_mode(view)
 
     if preset == "best":
@@ -783,6 +932,14 @@ def jump_compare(
                     left_report=base_report,
                     right_report=compare_report,
                 )
+                reports_by_id = {
+                    str(base_report["jump"]["jump_id"]): base_report,
+                    str(compare_report["jump"]["jump_id"]): compare_report,
+                }
+                compare_alignment = _build_compare_alignment(
+                    reference_report=reports_by_id[str(compare_result["reference"]["jump_id"])],
+                    comparison_report=reports_by_id[str(compare_result["comparison"]["jump_id"])],
+                )
                 compare_chart_json = json.dumps(compare_result["charts"])
 
     return templates.TemplateResponse(
@@ -797,6 +954,7 @@ def jump_compare(
             "other_candidates": other_candidates,
             "compare_error": compare_error,
             "compare_result": compare_result,
+            "compare_alignment": compare_alignment,
             "compare_chart_json": compare_chart_json,
             "selected_compare_jump_id": compare_jump_id,
             "view_mode": view_mode,
@@ -823,6 +981,7 @@ def jumper_view(request: Request, jumper_name: str, view: str | None = None):
             "jumps": jumps,
             "jumper_summary": jumper_summary,
             "compare_result": None,
+            "compare_alignment": None,
             "compare_chart_json": None,
             "compare_error": None,
             "left_jump_id": None,
@@ -863,6 +1022,14 @@ def jumper_compare(
             compare_error = "Vergleich ungültig: Mindestens ein Sprung wurde nicht gefunden."
         else:
             compare_result = build_jump_comparison(left_report=left_report, right_report=right_report)
+            reports_by_id = {
+                str(left_report["jump"]["jump_id"]): left_report,
+                str(right_report["jump"]["jump_id"]): right_report,
+            }
+            compare_alignment = _build_compare_alignment(
+                reference_report=reports_by_id[str(compare_result["reference"]["jump_id"])],
+                comparison_report=reports_by_id[str(compare_result["comparison"]["jump_id"])],
+            )
             compare_chart_json = json.dumps(compare_result["charts"])
 
     return templates.TemplateResponse(
@@ -874,6 +1041,7 @@ def jumper_compare(
             "jumps": jumps,
             "jumper_summary": jumper_summary,
             "compare_result": compare_result,
+            "compare_alignment": compare_alignment,
             "compare_chart_json": compare_chart_json,
             "compare_error": compare_error,
             "left_jump_id": left_jump_id,
@@ -8022,6 +8190,23 @@ def _resolve_source_file_for_jump(source_meta: dict[str, Any]) -> Path | None:
             return candidate
 
     return None
+
+
+def _manual_t0_utc_from_current(current_t0_utc: Any, rel_s: float) -> str:
+    text = str(current_t0_utc or "").strip()
+    if not text:
+        raise AnalysisError("Aktueller t0-Zeitpunkt fehlt.")
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        current = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise AnalysisError("Aktueller t0-Zeitpunkt ist ungueltig.") from exc
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    else:
+        current = current.astimezone(timezone.utc)
+    return (current + timedelta(seconds=float(rel_s))).isoformat()
 
 
 def _annotate_best_jump(jumps: list[dict[str, Any]]) -> list[dict[str, Any]]:

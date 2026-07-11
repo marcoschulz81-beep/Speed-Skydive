@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from app.analysis.pipeline import (
     AnalysisError,
@@ -367,6 +368,56 @@ def test_pipeline_outputs_core_metrics():
     assert "t0_confidence" in notes
     assert "t0_uncertainty_s" in notes
     assert "pw_start_s_from_t0" in notes
+
+
+def test_manual_t0_override_reanchors_report_and_keeps_auto_reference():
+    content = _build_synthetic_csv()
+    auto_result = analyze_flysight_csv(
+        content=content,
+        file_name="synthetic.csv",
+        jumper_name="Marlene",
+        ground_elevation_m=200.0,
+        breakoff_altitude_agl_m=1700.0,
+    )
+
+    auto_t0 = datetime.fromisoformat(auto_result["jump_record"]["t0_utc"])
+    manual_t0 = auto_t0 + timedelta(seconds=2.0)
+    manual_result = analyze_flysight_csv(
+        content=content,
+        file_name="synthetic.csv",
+        jumper_name="Marlene",
+        ground_elevation_m=200.0,
+        breakoff_altitude_agl_m=1700.0,
+        manual_t0_utc=manual_t0.isoformat(),
+    )
+
+    notes = manual_result["report"]["notes"]
+    manual_flags = set(json.loads(manual_result["jump_record"]["quality_flags"]))
+
+    assert manual_result["jump_record"]["t0_utc"] == manual_t0.isoformat()
+    assert notes["t0_manual_override"] is True
+    assert notes["t0_confidence"] == 1.0
+    assert notes["t0_uncertainty_s"] == 0.0
+    assert notes["t0_review_required"] is False
+    assert notes["auto_t0_utc"] == auto_result["jump_record"]["t0_utc"]
+    assert "NO_CLEAR_EXIT" not in manual_flags
+    assert manual_result["report"]["chart_data"]["time_s"][0] >= 0.0
+    assert (
+        manual_result["report"]["chart_data"]["vVert_kmh"][0]
+        >= auto_result["report"]["chart_data"]["vVert_kmh"][0]
+    )
+
+
+def test_manual_t0_override_rejects_times_outside_original_csv():
+    with pytest.raises(AnalysisError, match="ausserhalb"):
+        analyze_flysight_csv(
+            content=_build_synthetic_csv(),
+            file_name="synthetic.csv",
+            jumper_name="Marlene",
+            ground_elevation_m=200.0,
+            breakoff_altitude_agl_m=1700.0,
+            manual_t0_utc=datetime(2026, 5, 29, 9, 0, 0, tzinfo=timezone.utc).isoformat(),
+        )
 
 
 def test_pipeline_parses_flysight2_track_csv_format():

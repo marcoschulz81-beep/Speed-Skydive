@@ -117,6 +117,50 @@
         Referenz (schneller): {{ compare_result.reference.file_name }} ({{ compare_result.reference.t0_utc }})<br>
         Vergleich: {{ compare_result.comparison.file_name }} ({{ compare_result.comparison.t0_utc }})
     </p>
+    {% if compare_alignment %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Ausrichtung</th>
+                <th>Referenz</th>
+                <th>Vergleich</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr>
+                <td>t0 Confidence</td>
+                <td>{{ compare_alignment.reference.t0_confidence if compare_alignment.reference.t0_confidence is not none else "-" }}</td>
+                <td>{{ compare_alignment.comparison.t0_confidence if compare_alignment.comparison.t0_confidence is not none else "-" }}</td>
+            </tr>
+            <tr>
+                <td>Startprobe nach t0</td>
+                <td>vVert {{ "%.1f"|format(compare_alignment.reference.first_vvert_kmh) if compare_alignment.reference.first_vvert_kmh is not none else "-" }} km/h, Winkel {{ "%.1f"|format(compare_alignment.reference.first_angle_deg) if compare_alignment.reference.first_angle_deg is not none else "-" }} Grad</td>
+                <td>vVert {{ "%.1f"|format(compare_alignment.comparison.first_vvert_kmh) if compare_alignment.comparison.first_vvert_kmh is not none else "-" }} km/h, Winkel {{ "%.1f"|format(compare_alignment.comparison.first_angle_deg) if compare_alignment.comparison.first_angle_deg is not none else "-" }} Grad</td>
+            </tr>
+            <tr>
+                <td>Performance-Window</td>
+                <td>{{ compare_alignment.reference.performance_window_start_s if compare_alignment.reference.performance_window_start_s is not none else "-" }}s bis {{ compare_alignment.reference.performance_window_end_s if compare_alignment.reference.performance_window_end_s is not none else "-" }}s</td>
+                <td>{{ compare_alignment.comparison.performance_window_start_s if compare_alignment.comparison.performance_window_start_s is not none else "-" }}s bis {{ compare_alignment.comparison.performance_window_end_s if compare_alignment.comparison.performance_window_end_s is not none else "-" }}s</td>
+            </tr>
+            <tr>
+                <td>vHor-Basis</td>
+                <td colspan="2">{{ compare_alignment.reference.vhor_basis }}</td>
+            </tr>
+            </tbody>
+        </table>
+    </div>
+    {% if compare_alignment.warnings %}
+    <div class="flash warn">
+        <strong>Ausrichtung pruefen:</strong>
+        <ul class="tips compact">
+            {% for line in compare_alignment.warnings %}
+            <li>{{ line }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+    {% endif %}
     <div class="table-wrap">
         <table>
             <thead>
