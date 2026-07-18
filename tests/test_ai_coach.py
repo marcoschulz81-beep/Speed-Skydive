@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from app.services.ai_coach import clear_ai_coaching_cache, generate_ai_coaching_texts, _limit_text
+from app.services.ai_coach import _limit_text, clear_ai_coaching_cache, generate_ai_coaching_texts
 
 
 class _FakeResponses:

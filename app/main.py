@@ -4,8 +4,9 @@ import hashlib
 import json
 import math
 import re
-from html import escape as html_escape
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from html import escape as html_escape
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -16,10 +17,11 @@ from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.analysis.pipeline import AnalysisError, analyze_flysight_csv
 from app.analysis.comparison import build_jump_comparison
+from app.analysis.evaluation import effective_eval_window_end_s, is_reference_eligible
 from app.analysis.feedback import build_feedback_coaching_context, build_feedback_training_profile
 from app.analysis.lateral import analyze_lateral_dynamics
+from app.analysis.pipeline import AnalysisError, analyze_flysight_csv
 from app.analysis.potential import build_speed_potential_preview
 from app.analysis.review import build_jump_review
 from app.config import (
@@ -28,8 +30,11 @@ from app.config import (
     AI_COACHING_MAX_REQUESTS_PER_DAY,
     AI_COACHING_MODEL,
     AI_COACHING_TIMEOUT_S,
+    ANALYSIS_VERSION,
+    APP_VERSION,
     BASE_DIR,
     COACH_VIEW_ENABLED,
+    MAX_UPLOAD_BYTES,
     RAW_UPLOAD_DIR,
     TECHNICAL_PHASE_SPECS,
 )
@@ -38,26 +43,33 @@ from app.services.ai_coach import AI_COACHING_SCHEMA_VERSION, generate_ai_coachi
 from app.services.storage import (
     VALID_JUMP_CONTEXTS,
     delete_jump,
-    find_duplicate_jump_by_source_hash,
     get_best_jump_for_jumper,
     get_jump_report,
     get_jump_source_metadata,
     get_jump_summary,
     list_compare_candidates,
-    list_top_global_references,
-    list_jumps_for_jumper,
     list_jumpers,
+    list_jumps_for_jumper,
     list_recent_jumps,
+    list_top_global_references,
+    normalize_jump_context,
     replace_analysis_result,
     save_analysis_result,
-    normalize_jump_context,
     update_jump_context,
     upsert_coaching_snapshot,
     upsert_jump_feedback,
 )
 from app.text_utils import normalize_german_text
 
-app = FastAPI(title="Speed-Skydive Analyzer", version="1.0.0")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    init_db()
+    RAW_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    yield
+
+
+app = FastAPI(title="Speed-Skydive Analyzer", version=APP_VERSION, lifespan=_lifespan)
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 templates.env.globals["coach_view_enabled"] = COACH_VIEW_ENABLED
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), name="static")
@@ -207,6 +219,18 @@ def _clear_derived_caches() -> None:
 
 def _report_for_client(report: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in report.items() if key != "chart_data"}
+
+
+def _safe_json_dumps(value: Any) -> str:
+    """Serialize JSON for an inline script without allowing an HTML end-tag escape."""
+    return (
+        json.dumps(value, ensure_ascii=False, allow_nan=False)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
 
 
 def _chart_data_for_client(report: dict[str, Any], *, max_points: int = 3200) -> dict[str, Any]:
@@ -391,12 +415,6 @@ def _jumper_overview_simple_status(*, stable_count: int, unstable_count: int) ->
     return "Unruhig"
 
 
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
-    RAW_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-
 @app.get("/plotly.min.js", include_in_schema=False)
 def plotly_bundle() -> Response:
     global _PLOTLY_JS_CACHE
@@ -455,16 +473,24 @@ async def analyze_upload(
     if not jumper:
         return _render_index_with_error(request, "Springername ist erforderlich.", view_mode=resolved_view_mode)
 
-    if not csv_file.filename.lower().endswith(".csv"):
+    uploaded_file_name = str(csv_file.filename or "").strip()
+    if not uploaded_file_name.lower().endswith(".csv"):
         return _render_index_with_error(request, "Bitte eine CSV-Datei hochladen.", view_mode=resolved_view_mode)
 
     resolved_jump_context = _normalize_jump_context(jump_context, default="")
     if resolved_jump_context not in VALID_JUMP_CONTEXTS:
         return _render_index_with_error(request, "Ungültiger Sprung-Kontext.", view_mode=resolved_view_mode)
 
-    content = await csv_file.read()
+    content = await csv_file.read(MAX_UPLOAD_BYTES + 1)
     if not content:
         return _render_index_with_error(request, "Die hochgeladene Datei ist leer.", view_mode=resolved_view_mode)
+    if len(content) > MAX_UPLOAD_BYTES:
+        max_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
+        return _render_index_with_error(
+            request,
+            f"Die CSV-Datei ist größer als das erlaubte Limit von {max_mb:.0f} MB.",
+            view_mode=resolved_view_mode,
+        )
 
     try:
         ground = _parse_optional_float(ground_elevation_m)
@@ -473,25 +499,10 @@ async def analyze_upload(
         return _render_index_with_error(request, str(exc), view_mode=resolved_view_mode)
 
     source_hash = hashlib.sha256(content).hexdigest()
-    duplicate_id = find_duplicate_jump_by_source_hash(
-        jumper_name=jumper,
-        source_file_sha256=source_hash,
-    )
-    if duplicate_id is not None:
-        if str(jump_feedback or "").strip():
-            upsert_jump_feedback(duplicate_id, jump_feedback)
-            _clear_derived_caches()
-            msg = "Sprung existiert bereits; Feedback wurde aktualisiert."
-            return RedirectResponse(
-                url=f"/jumps/{duplicate_id}?view={resolved_view_mode}&message={quote_plus(msg)}",
-                status_code=303,
-            )
-        return RedirectResponse(url=f"/jumps/{duplicate_id}?view={resolved_view_mode}", status_code=303)
-
     try:
         result = analyze_flysight_csv(
             content=content,
-            file_name=csv_file.filename,
+            file_name=uploaded_file_name,
             jumper_name=jumper,
             ground_elevation_m=ground,
             breakoff_altitude_agl_m=breakoff,
@@ -501,16 +512,16 @@ async def analyze_upload(
     except Exception as exc:  # pragma: no cover
         return _render_index_with_error(request, f"Unerwarteter Analysefehler: {exc}", view_mode=resolved_view_mode)
 
-    source_path = _cache_uploaded_file(source_hash=source_hash, original_name=csv_file.filename, content=content)
+    source_path = _cache_uploaded_file(source_hash=source_hash, original_name=uploaded_file_name, content=content)
     jump_id, is_duplicate = save_analysis_result(
         result,
         jump_context=resolved_jump_context,
         source_file_sha256=source_hash,
         source_file_path=str(source_path),
     )
+    if str(jump_feedback or "").strip():
+        upsert_jump_feedback(jump_id, jump_feedback)
     if not is_duplicate:
-        if str(jump_feedback or "").strip():
-            upsert_jump_feedback(jump_id, jump_feedback)
         _clear_derived_caches()
     jump_url = f"/jumps/{jump_id}?view={resolved_view_mode}"
     if is_duplicate:
@@ -641,6 +652,7 @@ def jump_detail(
         feedback_context=feedback_context,
     )
     quality_issue_lines = _build_quality_issue_lines(report.get("quality_flags", []))
+    quality_issue_lines.extend(_build_rule_score_issue_lines(report.get("metrics", {})))
     quality_issue_lines.extend(_build_fs2_quality_issue_lines(report.get("notes", {})))
     quality_issue_lines = _unique_texts(quality_issue_lines)
     t0_diagnostics = _build_t0_diagnostics(report)
@@ -689,9 +701,9 @@ def jump_detail(
             "tip_follow_up": tip_follow_up,
             "ai_coaching": ai_coaching,
             "feedback_context": feedback_context,
-            "chart_data_json": json.dumps(_chart_data_for_client(report)),
-            "report_meta_json": json.dumps(_report_for_client(report)),
-            "quality_flags_json": json.dumps(report["quality_flags"]),
+            "chart_data_json": _safe_json_dumps(_chart_data_for_client(report)),
+            "report_meta_json": _safe_json_dumps(_report_for_client(report)),
+            "quality_flags_json": _safe_json_dumps(report["quality_flags"]),
             "quality_issue_lines": quality_issue_lines,
             "t0_diagnostics": t0_diagnostics,
             "message": message,
@@ -723,10 +735,9 @@ def reprocess_t0(jump_id: str, view: str | None = None):
             original_name=report["jump"]["file_name"],
             content=content,
         )
-        quality_flags = set(report.get("quality_flags") or [])
         ground_elevation_m = (
             None
-            if "NO_GROUND_LEVEL" in quality_flags
+            if report["jump"].get("ground_elevation_source") == "estimated"
             else report["jump"].get("ground_elevation_m")
         )
         new_result = analyze_flysight_csv(
@@ -734,7 +745,7 @@ def reprocess_t0(jump_id: str, view: str | None = None):
             file_name=report["jump"]["file_name"],
             jumper_name=report["jump"]["jumper_name"],
             ground_elevation_m=ground_elevation_m,
-            breakoff_altitude_agl_m=None,
+            breakoff_altitude_agl_m=report["jump"].get("breakoff_altitude_agl_m"),
         )
         replace_analysis_result(
             jump_id=jump_id,
@@ -792,10 +803,9 @@ def manual_t0(
             original_name=report["jump"]["file_name"],
             content=content,
         )
-        quality_flags = set(report.get("quality_flags") or [])
         ground_elevation_m = (
             None
-            if "NO_GROUND_LEVEL" in quality_flags
+            if report["jump"].get("ground_elevation_source") == "estimated"
             else report["jump"].get("ground_elevation_m")
         )
         new_result = analyze_flysight_csv(
@@ -803,7 +813,7 @@ def manual_t0(
             file_name=report["jump"]["file_name"],
             jumper_name=report["jump"]["jumper_name"],
             ground_elevation_m=ground_elevation_m,
-            breakoff_altitude_agl_m=None,
+            breakoff_altitude_agl_m=report["jump"].get("breakoff_altitude_agl_m"),
             manual_t0_utc=manual_t0_utc,
         )
         replace_analysis_result(
@@ -940,7 +950,7 @@ def jump_compare(
                     reference_report=reports_by_id[str(compare_result["reference"]["jump_id"])],
                     comparison_report=reports_by_id[str(compare_result["comparison"]["jump_id"])],
                 )
-                compare_chart_json = json.dumps(compare_result["charts"])
+                compare_chart_json = _safe_json_dumps(compare_result["charts"])
 
     return templates.TemplateResponse(
         request,
@@ -1030,7 +1040,7 @@ def jumper_compare(
                 reference_report=reports_by_id[str(compare_result["reference"]["jump_id"])],
                 comparison_report=reports_by_id[str(compare_result["comparison"]["jump_id"])],
             )
-            compare_chart_json = json.dumps(compare_result["charts"])
+            compare_chart_json = _safe_json_dumps(compare_result["charts"])
 
     return templates.TemplateResponse(
         request,
@@ -1078,10 +1088,8 @@ def coach_view(request: Request, jumper_name: str | None = None, view: str | Non
             continue
         jump_rows = _annotate_best_jump(jump_rows)
         jumper_summary = _build_jumper_summary(jumper_name=jumper, jumps=jump_rows)
-        best = next((item for item in jump_rows if item.get("is_best")), jump_rows[0])
-        best_report = get_jump_report(best["jump_id"])
-        if best_report is None:
-            continue
+        best = next((item for item in jump_rows if item.get("is_best")), None)
+        best_report = get_jump_report(best["jump_id"]) if best is not None else None
 
         jumps_for_coach: list[dict[str, Any]] = []
         for item in jump_rows:
@@ -1091,10 +1099,15 @@ def coach_view(request: Request, jumper_name: str | None = None, view: str | Non
 
             best_compare: dict[str, Any] | None = None
             delta_to_best: float | None = None
-            if item["jump_id"] != best["jump_id"]:
+            if (
+                best is not None
+                and best_report is not None
+                and item["jump_id"] != best["jump_id"]
+                and item.get("rule_score_status") == "valid"
+            ):
                 best_compare = build_jump_comparison(left_report=report, right_report=best_report)
                 by_label = {row["label"]: row for row in best_compare.get("summary", [])}
-                row = by_label.get("3s Max (Training)")
+                row = by_label.get("Rule Score")
                 if row and row.get("delta") is not None:
                     delta_to_best = float(row["delta"])
 
@@ -1133,6 +1146,8 @@ def coach_view(request: Request, jumper_name: str | None = None, view: str | Non
                     "jump_context": item.get("jump_context", "unknown"),
                     "t0_utc": item["t0_utc"],
                     "best_3s_vVert_kmh": item["best_3s_vVert_kmh"],
+                    "rule_based_3s_score": item.get("rule_based_3s_score"),
+                    "rule_score_status": item.get("rule_score_status"),
                     "delta_to_best": delta_to_best,
                     "is_best": bool(item.get("is_best")),
                     "status": status,
@@ -1146,9 +1161,9 @@ def coach_view(request: Request, jumper_name: str | None = None, view: str | Non
         groups.append(
             {
                 "jumper_name": jumper,
-                "best_jump_id": best["jump_id"],
-                "best_file_name": best["file_name"],
-                "best_score": best["best_3s_vVert_kmh"],
+                "best_jump_id": None if best is None else best["jump_id"],
+                "best_file_name": None if best is None else best["file_name"],
+                "best_score": None if best is None else best.get("rule_based_3s_score"),
                 "latest_t0_utc": jumps_for_coach[0]["t0_utc"] if jumps_for_coach else None,
                 "stability_reference": jumper_summary.get("stability_reference")
                 if isinstance(jumper_summary, dict)
@@ -1190,10 +1205,8 @@ def _build_legacy_scorecard_rows(
     notes = report.get("notes", {})
     scorecard = report.get("scorecard", {})
     chart = report.get("chart_data", {})
-    fixpoints = report.get("fixpoints", [])
     snapshot = _scorecard_metric_snapshot(report)
 
-    fp10 = _fixpoint_at(fixpoints, 10.0)
     v10 = _to_float(snapshot.get("v10"))
     a20 = _to_float(snapshot.get("angle_20"))
     gain_10_20 = _to_float(snapshot.get("gain_10_20"))
@@ -1282,6 +1295,7 @@ def _build_legacy_scorecard_rows(
     # 3) Hot-Zone
     hot_zone = _build_hot_zone_assessment(
         notes=notes,
+        metrics=metrics,
         scorecard=scorecard,
         chart=chart,
     )
@@ -1931,7 +1945,9 @@ def _phase_rows_for_report(report: dict[str, Any]) -> list[dict[str, Any]]:
 def _build_normalized_phase_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
     notes = report.get("notes", {}) if isinstance(report.get("notes"), dict) else {}
     chart = report.get("chart_data", {}) if isinstance(report.get("chart_data"), dict) else {}
-    eval_end = _effective_eval_window_end_s(notes=notes, chart=chart)
+    eval_end = effective_eval_window_end_s(
+        metrics=report.get("metrics", {}), notes=notes, chart_data=chart
+    )
     if eval_end is None or eval_end < 8.0:
         return []
 
@@ -2181,30 +2197,6 @@ def _tau_to_time(*, tau0: float, tau1: float, eval_end_s: float) -> tuple[float,
     start = max(0.0, min(end_s, float(tau0) * end_s))
     end = max(start, min(end_s, float(tau1) * end_s))
     return start, end
-
-
-def _effective_eval_window_end_s(*, notes: dict[str, Any], chart: dict[str, Any]) -> float | None:
-    candidates: list[float] = []
-    for key in ["decel_start_s", "performance_window_end_s", "canopy_open_s"]:
-        value = _to_float(notes.get(key))
-        if value is not None and value >= 8.0:
-            candidates.append(float(value))
-
-    curve_end = _to_float(notes.get("curve_window_end_s"))
-    if curve_end is not None and curve_end >= 8.0:
-        candidates.append(float(curve_end))
-
-    max_time = _max_time_s(chart.get("time_s", []))
-    if max_time is not None and max_time >= 8.0 and not candidates:
-        candidates.append(float(max_time))
-
-    if not candidates:
-        return None
-
-    end_s = float(min(candidates))
-    if max_time is not None:
-        end_s = min(end_s, float(max_time))
-    return end_s if end_s >= 8.0 else None
 
 
 def _max_time_s(time_s: list[Any]) -> float | None:
@@ -2587,7 +2579,9 @@ def _scorecard_metric_snapshot(report: dict[str, Any]) -> dict[str, float | None
     if carry_ratio is None:
         carry_ratio = _estimate_carry_ratio(chart)
 
-    eval_end = _effective_eval_window_end_s(notes=notes, chart=chart)
+    eval_end = effective_eval_window_end_s(
+        metrics=report.get("metrics", {}), notes=notes, chart_data=chart
+    )
     if eval_end is None:
         curve_end = _to_float(notes.get("curve_window_end_s"))
         eval_end = 25.0 if curve_end is None else float(curve_end)
@@ -2739,6 +2733,8 @@ def _jumper_summary_signature(rows: list[dict[str, Any]]) -> str:
                     str(row.get("is_valid_altitude") or ""),
                     str(row.get("best_3s_vVert_kmh") or ""),
                     str(row.get("rule_based_3s_score") or ""),
+                    str(row.get("rule_score_status") or ""),
+                    str(row.get("analysis_version") or ""),
                 ]
             )
         )
@@ -2758,7 +2754,7 @@ def _build_marco_top15_profile(
 
     ordered_rows = sorted(
         rows,
-        key=lambda item: float(_to_float(item.get("best_3s_vVert_kmh")) or float("-inf")),
+        key=lambda item: float(_to_float(item.get("rule_based_3s_score")) or float("-inf")),
         reverse=True,
     )
 
@@ -2774,7 +2770,7 @@ def _build_marco_top15_profile(
         if not _is_clean_reference_jump(row, report):
             continue
         snap = _scorecard_metric_snapshot(report)
-        best_3s = _to_float(report.get("metrics", {}).get("best_3s_vVert_kmh"))
+        best_3s = _to_float(report.get("metrics", {}).get("rule_based_3s_score"))
         if best_3s is None:
             continue
         snap["best_3s"] = best_3s
@@ -3100,7 +3096,6 @@ def _build_jump_brief_summary(
     top_reference_jumps: list[dict[str, Any]],
     feedback_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    jump = report.get("jump", {})
     metrics = report.get("metrics", {})
     notes = report.get("notes", {})
     best_3s_kmh = _to_float(metrics.get("best_3s_vVert_kmh"))
@@ -3592,6 +3587,11 @@ def _build_coaching_snapshot(
     return {
         "available": True,
         "schema_version": 1,
+        "analysis_version": str(
+            (report.get("metrics") or {}).get("analysis_version")
+            or jump.get("analysis_version")
+            or ANALYSIS_VERSION
+        ),
         "jump_id": str(jump.get("jump_id") or ""),
         "view_mode": view_mode,
         "source": source,
@@ -4422,10 +4422,13 @@ def _build_performance_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
         flags = _parse_quality_flags(row.get("quality_flags"))
         if "NO_GROUND_LEVEL" in flags:
             ground_estimated_count += 1
+        if row.get("learning_eligible") is False:
+            excluded += 1
+            continue
         if bool(row.get("analysis_blocked")) or bool(row.get("t0_review_required")) or (flags & hard_flags):
             excluded += 1
             continue
-        if _to_float(row.get("rule_score_kmh")) is None and _to_float(row.get("best_3s_kmh")) is None:
+        if _to_float(row.get("rule_score_kmh")) is None:
             excluded += 1
             continue
         usable.append(row)
@@ -4442,7 +4445,7 @@ def _build_performance_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
         for value in [_to_float(row.get("best_3s_kmh"))]
         if value is not None
     ]
-    basis_values = rule_values if rule_values else training_values
+    basis_values = rule_values
     if not basis_values:
         return {
             "available": False,
@@ -4465,8 +4468,8 @@ def _build_performance_profile(records: list[dict[str, Any]]) -> dict[str, Any]:
     ):
         confidence = "good"
 
-    source = "rule" if rule_values else "training"
-    source_label = "regelnah" if source == "rule" else "Training 3s"
+    source = "rule"
+    source_label = "Regel-Score"
     band = _performance_band_for_speed(top_available)
     summary = (
         f"{_PERFORMANCE_BAND_LABELS.get(band, band)}: Top-{top_label_count} {source_label} "
@@ -4568,8 +4571,16 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
         _JUMPER_SUMMARY_CACHE[cache_key] = (signature, result)
         return result
 
-    best_record = max(records, key=lambda item: item.get("best_3s_kmh", float("-inf")))
-    trend_rows = _build_jumper_trend_rows(records)
+    learning_records = [item for item in records if bool(item.get("learning_eligible"))]
+    best_record = (
+        max(
+            learning_records,
+            key=lambda item: _to_float(item.get("rule_score_kmh")) or float("-inf"),
+        )
+        if learning_records
+        else None
+    )
+    trend_rows = _build_jumper_trend_rows(learning_records)
     better_rows = [row for row in trend_rows if row.get("status") == "besser"]
     worse_rows = [row for row in trend_rows if row.get("status") == "schlechter"]
 
@@ -4589,20 +4600,23 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
     earlier_better_points = [row["earlier_better_text"] for row in worse_rows[:4]]
     focus_actions = _build_jumper_focus_actions(worse_rows=worse_rows)
     performance_profile = _build_performance_profile(records)
-    stability_reference = _build_jumper_stability_reference(records)
+    stability_reference = _build_jumper_stability_reference(learning_records)
     stability_reference["performance_profile"] = performance_profile
-    timing_reference = _build_jumper_timing_reference(records)
+    timing_reference = _build_jumper_timing_reference(learning_records)
     stability_reference["timing_reference"] = timing_reference
-    tip_effect_profile = _build_tip_effect_profile(records, performance_profile=performance_profile)
-    feedback_training_profile = build_feedback_training_profile(records)
+    tip_effect_profile = _build_tip_effect_profile(learning_records, performance_profile=performance_profile)
+    feedback_training_profile = build_feedback_training_profile(learning_records)
 
     result = {
         "available": True,
         "jumper_name": jumper_name,
         "jump_count": len(records),
-        "best_speed_kmh": best_record.get("best_3s_kmh"),
-        "best_file_name": best_record.get("file_name"),
-        "best_t0_utc": best_record.get("t0_utc"),
+        "learning_jump_count": len(learning_records),
+        "excluded_learning_jump_count": len(records) - len(learning_records),
+        "best_speed_kmh": None if best_record is None else best_record.get("rule_score_kmh"),
+        "best_file_name": None if best_record is None else best_record.get("file_name"),
+        "best_t0_utc": None if best_record is None else best_record.get("t0_utc"),
+        "best_score_source": "rule_based_3s_score",
         "trend_summary": trend_summary,
         "trend_rows": trend_rows,
         "improved_points": improved_points,
@@ -4672,7 +4686,7 @@ def _timing_reference_maturity(
     speed_values = [
         float(value)
         for row in usable_rows
-        for value in [_to_float(row.get("best_3s_kmh"))]
+        for value in [_to_float(row.get("rule_score_kmh"))]
         if value is not None
     ]
     best_reference = max(speed_values) if speed_values else None
@@ -4751,7 +4765,8 @@ def _build_jumper_timing_reference(records: list[dict[str, Any]]) -> dict[str, A
     usable = [
         row
         for row in records
-        if not bool(row.get("analysis_blocked"))
+        if bool(row.get("learning_eligible", True))
+        and not bool(row.get("analysis_blocked"))
         and _to_float(row.get("best_3s_start_s")) is not None
         and _to_float(row.get("best_3s_end_s")) is not None
         and (
@@ -4789,7 +4804,7 @@ def _build_jumper_timing_reference(records: list[dict[str, Any]]) -> dict[str, A
             usable,
             key=lambda row: (
                 _control_reference_score(row),
-                float(_to_float(row.get("best_3s_kmh")) or 0.0),
+                float(_to_float(row.get("rule_score_kmh")) or 0.0),
             ),
             reverse=True,
         )
@@ -5001,7 +5016,8 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
     raw_usable = [
         row
         for row in records
-        if not bool(row.get("analysis_blocked"))
+        if bool(row.get("learning_eligible", True))
+        and not bool(row.get("analysis_blocked"))
         and _to_float(row.get("vvert_10s")) is not None
         and _to_float(row.get("vvert_20s")) is not None
         and _to_float(row.get("angle_20s")) is not None
@@ -5025,9 +5041,9 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
             and 60.0 <= float(_to_float(row.get("angle_20s"))) <= 88.8
         )
     ]
-    if len(usable) < 2:
+    if len(usable) < 5:
         usable = raw_usable
-    if len(usable) < 2:
+    if len(usable) < 5:
         return {
             "available": False,
             "reason": "Zu wenige verwertbare Sprünge für eine persönliche Stabilitäts-Referenz.",
@@ -5059,10 +5075,7 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
             and _is_stable_geometry(row)
         ]
     if len(stable_rows) < 2:
-        stable_guard_pool = [row for row in usable if _is_stable_geometry(row)]
-        ranked = sorted(stable_guard_pool or usable, key=_control_reference_score, reverse=True)
-        take_count = min(len(ranked), max(2, min(5, (len(ranked) + 1) // 2)))
-        stable_rows = ranked[:take_count]
+        stable_rows = []
 
     unstable_rows = [
         row
@@ -5079,10 +5092,10 @@ def _build_jumper_stability_reference(records: list[dict[str, Any]]) -> dict[str
             if (int(row.get("stability_score") or 100) < 62)
             or (int(row.get("hot_score") or 100) < 62)
         ]
+    stable_row_ids = {id(row) for row in stable_rows}
+    unstable_rows = [row for row in unstable_rows if id(row) not in stable_row_ids]
     if len(unstable_rows) < 2:
-        ranked_low = sorted(usable, key=_control_reference_score)
-        take_count = min(len(ranked_low), max(2, min(5, (len(ranked_low) + 1) // 2)))
-        unstable_rows = ranked_low[:take_count]
+        unstable_rows = []
 
     stable_v10_stats = _metric_stats(stable_rows, "vvert_10s")
     stable_v15_stats = _metric_stats(stable_rows, "vvert_15s")
@@ -5556,6 +5569,7 @@ def _build_jumper_record(
     jump = report.get("jump", {})
     metrics = report.get("metrics", {})
     notes = report.get("notes", {})
+    quality_flags = report.get("quality_flags", [])
     fixpoints = report.get("fixpoints", [])
     score_rows = _build_scorecard_rows(report, marco_profile=marco_profile)
     score_map = {str(row.get("name")): int(row.get("score", 0)) for row in score_rows}
@@ -5580,7 +5594,7 @@ def _build_jumper_record(
     build_coverage = _to_float(snapshot.get("build_coverage"))
     hot_coverage = _to_float(snapshot.get("hot_coverage"))
     chart = report.get("chart_data", {})
-    eval_end_s = _effective_eval_window_end_s(notes=notes, chart=chart)
+    eval_end_s = effective_eval_window_end_s(metrics=metrics, notes=notes, chart_data=chart)
     lateral = analyze_lateral_dynamics(
         chart,
         eval_end_s=eval_end_s,
@@ -5617,6 +5631,12 @@ def _build_jumper_record(
         "best_3s_start_s": _to_float(metrics.get("best_3s_start_s")),
         "best_3s_end_s": _to_float(metrics.get("best_3s_end_s")),
         "rule_score_kmh": _to_float(metrics.get("rule_based_3s_score")),
+        "rule_score_status": metrics.get("rule_score_status"),
+        "learning_eligible": is_reference_eligible(
+            metrics=metrics,
+            notes=notes if isinstance(notes, dict) else {},
+            quality_flags=quality_flags,
+        ),
         "overall_score": overall_score,
         "exit_score": exit_score,
         "dive_score": dive_score,
@@ -5662,7 +5682,7 @@ def _build_jumper_record(
         "high_speed_heading_rate_rms_dps": _to_float(lateral_high_speed.get("heading_rate_rms_dps")) if isinstance(lateral_high_speed, dict) else None,
         "build_coverage": build_coverage,
         "hot_coverage": hot_coverage,
-        "quality_flags": report.get("quality_flags", []),
+        "quality_flags": quality_flags,
         "analysis_blocked": bool(notes.get("analysis_blocked")),
         "t0_review_required": bool(notes.get("t0_review_required")),
     }
@@ -5679,7 +5699,7 @@ def _build_jumper_trend_rows(records: list[dict[str, Any]]) -> list[dict[str, An
         return []
 
     specs = [
-        {"key": "best_3s_kmh", "name": "Top-Speed", "unit": "km/h", "higher_is_better": True, "threshold": 2.5},
+        {"key": "rule_score_kmh", "name": "Regel-Score", "unit": "km/h", "higher_is_better": True, "threshold": 2.5},
         {"key": "exit_score", "name": "Exit / Stabilisierung", "unit": "Score", "higher_is_better": True, "threshold": 5.0},
         {"key": "dive_score", "name": "Dive-Aufbau", "unit": "Score", "higher_is_better": True, "threshold": 5.0},
         {"key": "main_accel_score", "name": "Hauptbeschleunigung", "unit": "Score", "higher_is_better": True, "threshold": 5.0},
@@ -5789,7 +5809,11 @@ def _build_tip_effect_profile(
     *,
     performance_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    usable = [row for row in records if not bool(row.get("analysis_blocked"))]
+    usable = [
+        row
+        for row in records
+        if bool(row.get("learning_eligible", True)) and not bool(row.get("analysis_blocked"))
+    ]
     if len(usable) < 3:
         return {"available": False}
 
@@ -6051,17 +6075,13 @@ def _canonical_focus_phase_names(phase_name: str) -> list[str]:
 
 
 def _tip_follow_status(*, score_delta: int, positive_hits: int, negative_hits: int) -> tuple[str, str]:
-    if score_delta >= 6 and negative_hits == 0 and positive_hits >= 1:
-        return "umgesetzt", "Umgesetzt"
-    if score_delta <= -6 and negative_hits >= 1:
-        return "offen", "Noch offen"
-    if negative_hits > positive_hits:
-        return "offen", "Noch offen"
-    if positive_hits > negative_hits and score_delta >= 1:
-        return "teilweise", "Teilweise"
-    if score_delta >= 4:
-        return "teilweise", "Teilweise"
-    return "teilweise", "Teilweise"
+    if positive_hits > 0 and negative_hits > 0:
+        return "uneindeutig", "Uneindeutig"
+    if positive_hits > 0 or score_delta >= 4:
+        return "verbessert", "Verbessert"
+    if negative_hits > 0 or score_delta <= -4:
+        return "verschlechtert", "Verschlechtert"
+    return "unveraendert", "Unverändert"
 
 
 def _fmt_delta(value: float | None, *, unit: str, decimals: int = 1) -> str:
@@ -6104,7 +6124,8 @@ def _evaluate_goal_metric(
     direction = str(target.get("direction") or "").strip().lower()
     min_delta = abs(float(_to_float(target.get("min_delta")) or 0.0))
     unit = str(target.get("unit") or "")
-    decimals = int(target.get("decimals") or 1)
+    raw_decimals = target.get("decimals")
+    decimals = int(raw_decimals) if raw_decimals is not None else 1
     delta = float(curr_value - prev_value)
     label = str(target.get("label") or metric)
 
@@ -6135,16 +6156,14 @@ def _evaluate_goal_metric(
 
 def _goal_follow_status(*, positive_hits: int, negative_hits: int, total_hits: int) -> tuple[str, str]:
     if total_hits <= 0:
-        return "teilweise", "Teilweise"
-    if positive_hits >= max(1, total_hits) and negative_hits == 0:
-        return "umgesetzt", "Umgesetzt"
-    if positive_hits >= 1 and negative_hits == 0:
-        return "teilweise", "Teilweise"
+        return "nicht_messbar", "Nicht messbar"
     if positive_hits >= 1 and negative_hits >= 1:
-        return "gemischt", "Gemischt"
-    if negative_hits > positive_hits:
-        return "offen", "Noch offen"
-    return "teilweise", "Teilweise"
+        return "uneindeutig", "Uneindeutig"
+    if positive_hits >= 1:
+        return "verbessert", "Verbessert"
+    if negative_hits >= 1:
+        return "verschlechtert", "Verschlechtert"
+    return "unveraendert", "Unverändert"
 
 
 def _build_goal_follow_item(
@@ -6181,10 +6200,11 @@ def _build_goal_follow_item(
         total_hits=len(evaluated),
     )
     message_prefix = {
-        "umgesetzt": "Das konkrete Ziel wurde messbar umgesetzt.",
-        "gemischt": "Das konkrete Ziel zeigt ein gemischtes Bild.",
-        "teilweise": "Das konkrete Ziel wurde teilweise umgesetzt.",
-        "offen": "Das konkrete Ziel ist noch offen.",
+        "verbessert": "Das konkrete Ziel hat sich messbar verbessert.",
+        "verschlechtert": "Das konkrete Ziel hat sich messbar verschlechtert.",
+        "unveraendert": "Das konkrete Ziel ist innerhalb der definierten Schwelle unverändert.",
+        "uneindeutig": "Die Messwerte des konkreten Ziels entwickeln sich uneindeutig.",
+        "nicht_messbar": "Das konkrete Ziel ist mit diesen Daten nicht messbar.",
     }[status_key]
     goal_text = _strip_priority_prefix(str(goal.get("text") or goal.get("display_text") or "")).strip()
     details = "; ".join(str(item.get("detail") or "") for item in evaluated if item.get("detail"))
@@ -6237,13 +6257,27 @@ def _phase_for_follow_group(group: str, fallback: str) -> str:
     return fallback
 
 
-def _compact_goal_follow_items(items: list[dict[str, Any]], *, max_items: int = 2) -> tuple[list[dict[str, Any]], int]:
+def _compact_goal_follow_items(items: list[dict[str, Any]], *, max_items: int = 8) -> tuple[list[dict[str, Any]], int]:
     grouped: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for item in items:
         group = _goal_follow_group(item)
         if group in grouped:
-            grouped[group]["related_goal_count"] = int(grouped[group].get("related_goal_count") or 1) + 1
+            current = grouped[group]
+            current["related_goal_count"] = int(current.get("related_goal_count") or 1) + 1
+            results = current.setdefault("target_results", [])
+            known = {
+                (str(result.get("metric") or ""), str(result.get("detail") or ""))
+                for result in results
+                if isinstance(result, dict)
+            }
+            for result in item.get("target_results", []):
+                if not isinstance(result, dict):
+                    continue
+                identity = (str(result.get("metric") or ""), str(result.get("detail") or ""))
+                if identity not in known:
+                    results.append(result)
+                    known.add(identity)
             continue
         copied = dict(item)
         copied["phase"] = _phase_for_follow_group(group, str(item.get("phase") or "Coaching-Ziel"))
@@ -6252,8 +6286,27 @@ def _compact_goal_follow_items(items: list[dict[str, Any]], *, max_items: int = 
         order.append(group)
 
     compacted = [grouped[group] for group in order[:max_items]]
-    hidden_count = max(0, len(items) - len(compacted))
+    hidden_count = max(0, len(order) - len(compacted))
     for item in compacted:
+        results = [result for result in item.get("target_results", []) if isinstance(result, dict)]
+        positive_hits = sum(1 for result in results if result.get("status_key") == "met")
+        negative_hits = sum(1 for result in results if result.get("status_key") == "missed")
+        status_key, status_label = _goal_follow_status(
+            positive_hits=positive_hits,
+            negative_hits=negative_hits,
+            total_hits=len(results),
+        )
+        item["status_key"] = status_key
+        item["status"] = status_label
+        prefix = {
+            "verbessert": "Die zusammengehörigen Zielwerte haben sich messbar verbessert.",
+            "verschlechtert": "Die zusammengehörigen Zielwerte haben sich messbar verschlechtert.",
+            "unveraendert": "Die zusammengehörigen Zielwerte sind innerhalb der Schwellen unverändert.",
+            "uneindeutig": "Die zusammengehörigen Zielwerte entwickeln sich uneindeutig.",
+            "nicht_messbar": "Die zusammengehörigen Zielwerte sind nicht messbar.",
+        }[status_key]
+        details = "; ".join(str(result.get("detail") or "") for result in results if result.get("detail"))
+        item["detail"] = f"{prefix} Messwerte: {details}." if details else prefix
         related = int(item.get("related_goal_count") or 1)
         if related > 1:
             detail = str(item.get("detail") or "").strip()
@@ -6403,9 +6456,10 @@ def _build_tip_follow_item(
         negative_hits=negative_hits,
     )
     message_prefix = {
-        "umgesetzt": "Der Schwerpunkt wurde messbar verbessert.",
-        "teilweise": "Es gibt Fortschritt, aber noch keine durchgehend stabile Umsetzung.",
-        "offen": "Der Schwerpunkt ist noch nicht stabil umgesetzt.",
+        "verbessert": "Der Schwerpunkt wurde messbar verbessert.",
+        "verschlechtert": "Der Schwerpunkt hat sich messbar verschlechtert.",
+        "unveraendert": "Der Schwerpunkt ist innerhalb der definierten Schwellen unverändert.",
+        "uneindeutig": "Die Messwerte des Schwerpunkts entwickeln sich uneindeutig.",
     }[status_key]
     detail_text = f"{message_prefix} Score {score_before} -> {score_now} ({_fmt_delta(float(score_delta), unit='', decimals=0)})."
     if metric_parts:
@@ -6477,7 +6531,7 @@ def _build_tip_follow_up(
         snapshot_used = False
 
     if structured_items:
-        items, hidden_count = _compact_goal_follow_items(structured_items, max_items=2)
+        items, hidden_count = _compact_goal_follow_items(structured_items, max_items=8)
     else:
         if not focus_phases:
             return {
@@ -7534,6 +7588,41 @@ def _build_quality_issue_lines(raw_flags: Any) -> list[str]:
     return lines
 
 
+def _build_rule_score_issue_lines(metrics: Any) -> list[str]:
+    if not isinstance(metrics, dict):
+        return []
+    status = str(metrics.get("rule_score_status") or "estimated").strip().lower()
+    if status == "valid":
+        return []
+    lines = [
+        (
+            "Der Regel-Score ist nur ein Schätzwert und wird nicht für Bestwerte, Referenzen oder Lernen genutzt."
+            if status == "estimated"
+            else "Für diesen Sprung gibt es keinen gültigen Regel-Score; er wird nicht für Bestwerte, Referenzen oder Lernen genutzt."
+        )
+    ]
+    raw_reasons = metrics.get("rule_score_reasons")
+    if isinstance(raw_reasons, str):
+        try:
+            raw_reasons = json.loads(raw_reasons)
+        except json.JSONDecodeError:
+            raw_reasons = []
+    reasons = {str(item) for item in (raw_reasons or [])}
+    mapping = {
+        "NO_RULE_WINDOW": "Kein vollständiges regelkonformes 3s-Fenster vorhanden.",
+        "PERFORMANCE_WINDOW_INCOMPLETE": "Das Performance-Fenster ist unvollständig oder beginnt bereits unterhalb der Breakoff-Höhe.",
+        "VALIDATION_ACCURACY_FAILED": "Die GPS-Geschwindigkeitsgenauigkeit überschreitet im Validierungsfenster den Grenzwert.",
+        "VALIDATION_ACCURACY_UNKNOWN": "Die GPS-Geschwindigkeitsgenauigkeit ist im Validierungsfenster nicht vollständig bekannt.",
+        "GROUND_LEVEL_ESTIMATED": "Die Bodenhöhe wurde geschätzt; AGL- und Fenstergrenzen sind nicht offiziell belastbar.",
+        "LOW_SAMPLE_RATE": "Die Samplingrate ist für einen belastbaren Regel-Score zu niedrig.",
+    }
+    for reason in sorted(reasons):
+        text = mapping.get(reason)
+        if text:
+            lines.append(text)
+    return lines
+
+
 def _build_fs2_quality_issue_lines(notes: dict[str, Any]) -> list[str]:
     if not isinstance(notes, dict):
         return []
@@ -7570,10 +7659,11 @@ def _build_fs2_quality_issue_lines(notes: dict[str, Any]) -> list[str]:
 def _build_hot_zone_assessment(
     *,
     notes: dict[str, Any],
+    metrics: dict[str, Any],
     scorecard: dict[str, Any],
     chart: dict[str, Any],
 ) -> dict[str, Any]:
-    eval_end = _effective_eval_window_end_s(notes=notes, chart=chart)
+    eval_end = effective_eval_window_end_s(metrics=metrics, notes=notes, chart_data=chart)
     if eval_end is None:
         curve_end = _to_float(notes.get("curve_window_end_s"))
         eval_end = 25.0 if curve_end is None else float(curve_end)
@@ -8213,10 +8303,17 @@ def _annotate_best_jump(jumps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not jumps:
         return jumps
     eligible = [item for item in jumps if _is_jump_eligible_for_best(item)]
-    pool = eligible if eligible else jumps
+    for jump in jumps:
+        jump["is_best"] = False
+    if not eligible:
+        return jumps
     best_jump = max(
-        pool,
-        key=lambda item: float(item["best_3s_vVert_kmh"]) if item["best_3s_vVert_kmh"] is not None else float("-inf"),
+        eligible,
+        key=lambda item: (
+            float(item["rule_based_3s_score"])
+            if item.get("rule_based_3s_score") is not None
+            else float("-inf")
+        ),
     )
     best_id = best_jump["jump_id"]
     for jump in jumps:
@@ -8226,7 +8323,20 @@ def _annotate_best_jump(jumps: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _is_jump_eligible_for_best(jump: dict[str, Any]) -> bool:
     flags = _parse_quality_flags(jump.get("quality_flags"))
-    return "EARLY_JUMP_END" not in flags
+    return bool(
+        jump.get("rule_score_status") in {None, "valid"}
+        and _to_float(jump.get("rule_based_3s_score")) is not None
+        and not flags
+        & {
+            "EARLY_JUMP_END",
+            "SPEED_SPIKE",
+            "TIME_GAPS",
+            "NO_CLEAR_EXIT",
+            "INVALID_EXIT_ALTITUDE",
+            "LOW_GPS_FIX",
+            "HIGH_SPEED_ACCURACY_ERROR",
+        }
+    )
 
 
 def _pick_best_history_reference(jumper_name: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -8248,13 +8358,13 @@ def _pick_best_history_reference(jumper_name: str) -> tuple[dict[str, Any] | Non
         if _is_clean_reference_jump(row, report):
             clean_candidates.append(pair)
 
-    pool = clean_candidates if clean_candidates else fallback_candidates
+    pool = clean_candidates
     if not pool:
         return None, None
 
     def _sort_key(item: tuple[dict[str, Any], dict[str, Any]]) -> tuple[float, float]:
         row, report = item
-        speed = _to_float(report.get("metrics", {}).get("best_3s_vVert_kmh"))
+        speed = _to_float(report.get("metrics", {}).get("rule_based_3s_score"))
         return (
             float("-inf") if speed is None else float(speed),
             _t0_sort_key(row.get("t0_utc")),
@@ -8265,22 +8375,10 @@ def _pick_best_history_reference(jumper_name: str) -> tuple[dict[str, Any] | Non
 
 
 def _is_clean_reference_jump(jump_row: dict[str, Any], report: dict[str, Any]) -> bool:
-    disallowed_flags = {
-        "EARLY_JUMP_END",
-        "SPEED_SPIKE",
-        "TIME_GAPS",
-        "NO_CLEAR_EXIT",
-        "INVALID_EXIT_ALTITUDE",
-        "LOW_GPS_FIX",
-        "HIGH_SPEED_ACCURACY_ERROR",
-    }
     flags = _parse_quality_flags(jump_row.get("quality_flags"))
-    if flags & disallowed_flags:
-        return False
     notes = report.get("notes", {}) if isinstance(report.get("notes"), dict) else {}
-    if bool(notes.get("analysis_blocked")):
-        return False
-    if bool(notes.get("t0_review_required")):
+    metrics = report.get("metrics", {}) if isinstance(report.get("metrics"), dict) else {}
+    if not is_reference_eligible(metrics=metrics, notes=notes, quality_flags=flags):
         return False
     if not _has_complete_reference_window(report, start_s=0.0, end_s=25.0):
         return False
@@ -8353,7 +8451,9 @@ def _parse_quality_flags(raw_flags: Any) -> set[str]:
 def _coach_status(report: dict[str, Any]) -> dict[str, str]:
     scorecard = report.get("scorecard", {})
     notes = report.get("notes", {})
+    metrics = report.get("metrics", {})
     quality_issues = _build_quality_issue_lines(report.get("quality_flags", []))
+    quality_issues.extend(_build_rule_score_issue_lines(metrics))
     phase_statuses = {
         str(row.get("name") or ""): str(row.get("target_status") or "")
         for row in _phase_rows_for_report(report)
@@ -8364,6 +8464,8 @@ def _coach_status(report: dict[str, Any]) -> dict[str, str]:
         return {"level": "red", "label": "Rot", "reason": "Sprung endet zu früh / Daten unplausibel"}
     if bool(notes.get("t0_review_required")):
         return {"level": "red", "label": "Rot", "reason": "Absprungzeit unsicher"}
+    if metrics.get("rule_score_status") == "invalid":
+        return {"level": "red", "label": "Rot", "reason": "Kein gültiger Regel-Score"}
     if scorecard.get("kipp_risiko") == "hoch" or scorecard.get("hot_zone") == "kritisch":
         return {"level": "red", "label": "Rot", "reason": "Instabile schnelle Phase"}
 

@@ -13,7 +13,7 @@
         <div><span class="label">Aktueller Sprung</span><span>{{ base_report.jump.file_name }}</span></div>
         <div><span class="label">Springer</span><span>{{ base_report.jump.jumper_name }}</span></div>
         <div><span class="label">t0 UTC</span><span>{{ base_report.jump.t0_utc }}</span></div>
-        <div><span class="label">3s Max</span><span>{{ "%.2f"|format(base_summary.best_3s_vVert_kmh) }} km/h</span></div>
+        <div><span class="label">Regel-Score</span><span>{{ "%.2f"|format(base_summary.rule_based_3s_score) if base_summary.rule_based_3s_score is not none else "-" }} km/h ({{ base_summary.rule_score_status or "unbekannt" }})</span></div>
     </div>
 </section>
 
@@ -22,7 +22,7 @@
         <h2>Schnellvergleich</h2>
         <a class="btn" href="/jumps/{{ jump_id }}/compare?preset=best">Mit bestem Sprung vergleichen</a>
     </div>
-    <p class="muted">Der schnellere Sprung wird automatisch als Referenz gesetzt. Delta bedeutet immer: Vergleichssprung minus Referenz.</p>
+    <p class="muted">Der höhere gültige Regel-Score wird als Referenz gesetzt. Nur wenn beide Regel-Scores ungültig sind, dient das Training-3s-Max zur technischen Sortierung. Delta bedeutet: Vergleich minus Referenz.</p>
 </section>
 
 <section class="panel">
@@ -34,7 +34,7 @@
                 <option value="">Bitte wählen</option>
                 {% for jump in same_candidates %}
                 <option value="{{ jump.jump_id }}" {% if selected_compare_jump_id == jump.jump_id %}selected{% endif %}>
-                    {{ jump.file_name }} | {{ jump.t0_utc }} | 3s {{ "%.2f"|format(jump.best_3s_vVert_kmh) }}
+                    {{ jump.file_name }} | {{ jump.t0_utc }} | Regel {{ "%.2f"|format(jump.rule_based_3s_score) if jump.rule_based_3s_score is not none else "-" }} ({{ jump.rule_score_status or "unbekannt" }})
                 </option>
                 {% endfor %}
             </select>
@@ -52,7 +52,7 @@
                 <option value="">Bitte wählen</option>
                 {% for jump in other_candidates %}
                 <option value="{{ jump.jump_id }}" {% if selected_compare_jump_id == jump.jump_id %}selected{% endif %}>
-                    {{ jump.jumper_name }} | {{ jump.file_name }} | {{ jump.t0_utc }} | 3s {{ "%.2f"|format(jump.best_3s_vVert_kmh) }}
+                    {{ jump.jumper_name }} | {{ jump.file_name }} | {{ jump.t0_utc }} | Regel {{ "%.2f"|format(jump.rule_based_3s_score) if jump.rule_based_3s_score is not none else "-" }} ({{ jump.rule_score_status or "unbekannt" }})
                 </option>
                 {% endfor %}
             </select>
@@ -70,7 +70,7 @@
 {% if compare_result %}
 <section class="panel">
     <h2>Vergleich im Klartext</h2>
-    <p class="muted">Beim Vergleich wird der schnellere Sprung automatisch als Referenz gesetzt und die Auswertung neu berechnet.</p>
+    <p class="muted">Beim Vergleich wird der Sprung mit dem höheren gültigen Regel-Score als Referenz gesetzt und die Auswertung neu berechnet.</p>
     {% for line in compare_result.brief.basis_lines %}
     <p class="muted">{{ line }}</p>
     {% endfor %}

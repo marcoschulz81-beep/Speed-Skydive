@@ -28,7 +28,11 @@
     <div class="panel-head">
         <h2>{{ group.jumper_name }}</h2>
         <div class="actions">
-            <span class="chip">Bester Sprung: {{ "%.2f"|format(group.best_score) }} km/h ({{ group.best_file_name }})</span>
+            {% if group.best_score is not none %}
+            <span class="chip">Bester gültiger Regel-Score: {{ "%.2f"|format(group.best_score) }} km/h ({{ group.best_file_name }})</span>
+            {% else %}
+            <span class="chip">Noch kein gültiger Regel-Score</span>
+            {% endif %}
             <a class="btn secondary" href="/jumpers/{{ group.jumper_name | urlencode }}?view={{ view_mode or 'expert' }}">Springer-Detail</a>
         </div>
     </div>
@@ -42,7 +46,7 @@
             <tr>
                 <th>Ampel</th>
                 <th>Sprung</th>
-                <th>3s Max</th>
+                <th>Regel-Score</th>
                 <th>Zum besten Sprung</th>
                 <th>Was war gut?</th>
                 <th>Was war nicht gut?</th>
@@ -65,7 +69,12 @@
                     <div><span class="best-badge">Bester Sprung</span></div>
                     {% endif %}
                 </td>
-                <td>{{ "%.2f"|format(jump.best_3s_vVert_kmh) }} km/h</td>
+                <td>
+                    {% if jump.rule_based_3s_score is not none %}
+                    {{ "%.2f"|format(jump.rule_based_3s_score) }} km/h<br>
+                    {% else %}-<br>{% endif %}
+                    <span class="muted">{{ jump.rule_score_status or "unbekannt" }}</span>
+                </td>
                 <td>
                     {% if jump.is_best %}
                         Referenz

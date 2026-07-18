@@ -8,18 +8,18 @@ from app.main import (
     _build_ai_coaching_payload,
     _build_coaching_snapshot,
     _build_fs2_quality_issue_lines,
-    _build_jump_brief_summary,
     _build_jump_brief_simple,
-    _build_phase_rows_with_reference,
-    _build_scorecard_rows,
+    _build_jump_brief_summary,
     _build_jumper_stability_reference,
     _build_jumper_timing_reference,
-    _build_tip_follow_up,
     _build_jumper_trend_rows,
+    _build_phase_rows_with_reference,
+    _build_scorecard_rows,
+    _build_tip_follow_up,
     _harmonize_action_texts,
-    _phase_rows_for_report,
     _jumper_overview_simple_status,
     _normalize_view_mode,
+    _phase_rows_for_report,
     _render_simple_glossary,
     _tip_focus_from_previous,
     _tip_follow_status,
@@ -1183,8 +1183,9 @@ def test_fs2_quality_issue_lines_only_for_non_stable_labels():
 
 def test_jumper_trend_rows_detect_better_and_worse_developments():
     records = [
-        {
-            "best_3s_kmh": 440.0,
+            {
+                "best_3s_kmh": 440.0,
+                "rule_score_kmh": 438.0,
             "exit_score": 82,
             "dive_score": 79,
             "main_accel_score": 79,
@@ -1195,8 +1196,9 @@ def test_jumper_trend_rows_detect_better_and_worse_developments():
             "stability_score": 61,
             "angle_turns_20_25": 6.0,
         },
-        {
-            "best_3s_kmh": 438.0,
+            {
+                "best_3s_kmh": 438.0,
+                "rule_score_kmh": 436.0,
             "exit_score": 81,
             "dive_score": 78,
             "main_accel_score": 78,
@@ -1207,8 +1209,9 @@ def test_jumper_trend_rows_detect_better_and_worse_developments():
             "stability_score": 60,
             "angle_turns_20_25": 7.0,
         },
-        {
-            "best_3s_kmh": 430.0,
+            {
+                "best_3s_kmh": 430.0,
+                "rule_score_kmh": 428.0,
             "exit_score": 75,
             "dive_score": 79,
             "main_accel_score": 79,
@@ -1219,8 +1222,9 @@ def test_jumper_trend_rows_detect_better_and_worse_developments():
             "stability_score": 63,
             "angle_turns_20_25": 3.5,
         },
-        {
-            "best_3s_kmh": 428.0,
+            {
+                "best_3s_kmh": 428.0,
+                "rule_score_kmh": 426.0,
             "exit_score": 74,
             "dive_score": 80,
             "main_accel_score": 80,
@@ -1236,10 +1240,10 @@ def test_jumper_trend_rows_detect_better_and_worse_developments():
     rows = _build_jumper_trend_rows(records)
     by_name = {row["name"]: row for row in rows}
 
-    assert by_name["Top-Speed"]["status"] == "schlechter"
+    assert by_name["Regel-Score"]["status"] == "schlechter"
     assert by_name["Hot-Zone Aufbau"]["status"] == "besser"
     assert by_name["Korrekturen 20-25s"]["status"] == "besser"
-    assert by_name["Top-Speed"]["earlier_better_text"].startswith("Top-Speed war früher besser")
+    assert by_name["Regel-Score"]["earlier_better_text"].startswith("Regel-Score war früher besser")
 
 
 def test_jumper_stability_reference_builds_stable_and_unstable_lines():
@@ -1312,6 +1316,23 @@ def test_jumper_stability_reference_builds_stable_and_unstable_lines():
             "vhor_min_20_25": 23.0,
             "angle_turns_20_25": 6.0,
         },
+        {
+            "analysis_blocked": False,
+            "stability_score": 64,
+            "hot_score": 63,
+            "build_score": 63,
+            "vvert_10s": 242.0,
+            "vvert_15s": 330.0,
+            "vvert_20s": 410.0,
+            "angle_10s": 67.0,
+            "angle_15s": 78.0,
+            "angle_20s": 85.0,
+            "gain_10_20": 168.0,
+            "gain_10_15": 88.0,
+            "gain_15_20": 80.0,
+            "vhor_min_20_25": 26.0,
+            "angle_turns_20_25": 4.0,
+        },
     ]
 
     ref = _build_jumper_stability_reference(records)
@@ -1333,6 +1354,7 @@ def test_jumper_timing_reference_uses_stable_personal_anchors():
         {
             "analysis_blocked": False,
             "best_3s_kmh": 430.0 + idx,
+            "rule_score_kmh": 428.0 + idx,
             "best_3s_start_s": 20.0 + idx * 0.3,
             "best_3s_end_s": 23.0 + idx * 0.3,
             "angle_75_time_s": 8.0 + idx * 0.2,
@@ -1359,8 +1381,8 @@ def test_jumper_timing_reference_uses_stable_personal_anchors():
     assert ref["basis_count"] == 5
     assert ref["confidence"] == "medium"
     assert ref["source"] == "stable_control"
-    assert ref["best_reference_kmh"] == 434.0
-    assert ref["top3_avg_kmh"] == 433.0
+    assert ref["best_reference_kmh"] == 432.0
+    assert ref["top3_avg_kmh"] == 431.0
     assert ref["anchors"]["angle_82_time_s"]["median"] == 13.4
     assert any("82 Grad" in line for line in ref["summary_lines"])
     assert any("Decel/Recovery" in line for line in ref["summary_lines"])
@@ -1464,10 +1486,11 @@ def test_tip_focus_from_previous_uses_weak_scores_and_tip_keywords():
     ]
 
 
-def test_tip_follow_status_classifies_implemented_partial_open():
-    assert _tip_follow_status(score_delta=8, positive_hits=2, negative_hits=0)[0] == "umgesetzt"
-    assert _tip_follow_status(score_delta=2, positive_hits=1, negative_hits=0)[0] == "teilweise"
-    assert _tip_follow_status(score_delta=-7, positive_hits=0, negative_hits=2)[0] == "offen"
+def test_tip_follow_status_uses_evidence_states_without_forced_partial():
+    assert _tip_follow_status(score_delta=8, positive_hits=2, negative_hits=0)[0] == "verbessert"
+    assert _tip_follow_status(score_delta=0, positive_hits=0, negative_hits=0)[0] == "unveraendert"
+    assert _tip_follow_status(score_delta=-7, positive_hits=0, negative_hits=2)[0] == "verschlechtert"
+    assert _tip_follow_status(score_delta=1, positive_hits=1, negative_hits=1)[0] == "uneindeutig"
 
 
 def test_tip_follow_up_uses_structured_goal_metrics_before_text_fallback():
@@ -1517,7 +1540,7 @@ def test_tip_follow_up_uses_structured_goal_metrics_before_text_fallback():
     )
 
     assert follow_up["available"] is True
-    assert follow_up["entries"][0]["status_key"] == "umgesetzt"
+    assert follow_up["entries"][0]["status_key"] == "verbessert"
     assert follow_up["entries"][0]["goal_text"] == "Im Aufbau nicht zu schnell maximal steil werden."
     assert "Winkel +10s" in follow_up["entries"][0]["detail"]
     assert "Winkel +15s" in follow_up["entries"][0]["detail"]
@@ -1704,7 +1727,7 @@ def test_tip_follow_up_prefers_saved_coaching_snapshot_goal():
     assert follow_up["available"] is True
     assert follow_up["snapshot_used"] is True
     assert follow_up["snapshot_source"] == "ai+feedback"
-    assert follow_up["entries"][0]["status_key"] == "umgesetzt"
+    assert follow_up["entries"][0]["status_key"] == "verbessert"
     assert follow_up["entries"][0]["goal_text"] == "Kompaktere Haltung nur kleiner testen."
     assert "Risiko-Score" in follow_up["entries"][0]["detail"]
     assert "Im Aufbau flacher bleiben" not in follow_up["entries"][0]["goal_text"]
@@ -1853,7 +1876,7 @@ def test_tip_follow_up_compacts_duplicate_structured_goals_and_flags_quality():
 
     assert follow_up["available"] is True
     assert len(follow_up["entries"]) == 2
-    assert follow_up["entries"][0]["status_key"] == "gemischt"
+    assert follow_up["entries"][0]["status_key"] == "uneindeutig"
     assert follow_up["entries"][1]["phase"] == "Hot-Zone Aufbau"
     assert "ähnliche" in follow_up["entries"][1]["detail"]
     assert "Zeitlücken" in follow_up["quality_note"]

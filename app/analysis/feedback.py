@@ -7,7 +7,6 @@ from typing import Any
 from app.analysis.lateral import analyze_lateral_dynamics
 from app.text_utils import normalize_german_text
 
-
 _BODY_COMPACT_KEYS = {"arms_closer", "shoulders_compact", "legs_narrow", "head_quiet"}
 
 

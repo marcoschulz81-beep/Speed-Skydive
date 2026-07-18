@@ -345,7 +345,18 @@ def test_pipeline_outputs_core_metrics():
     notes = result["report"]["notes"]
 
     assert jump["sample_rate_hz"] >= 4.9
+    assert jump["analysis_version"] == "1.1.0"
+    assert jump["ground_elevation_source"] == "manual"
+    assert jump["breakoff_altitude_agl_m"] == 1700.0
     assert metrics["best_3s_vVert_kmh"] > 430
+    assert metrics["best_3s_end_s"] - metrics["best_3s_start_s"] == 3.0
+    assert metrics["analysis_version"] == "1.1.0"
+    assert metrics["rule_score_status"] in {"valid", "estimated", "invalid"}
+    assert metrics["validation_window_start_s"] is not None
+    assert metrics["validation_window_end_s"] == metrics["performance_window_end_s"]
+    assert metrics["validation_window_start_s"] <= metrics["validation_window_end_s"]
+    if metrics["rule_score_status"] == "valid":
+        assert json.loads(metrics["rule_score_reasons"]) == []
     assert len(fixpoints) == 5
     assert all(point["vVert_kmh"] is not None for point in fixpoints[:3])
     assert len(phases) == 5
@@ -368,6 +379,24 @@ def test_pipeline_outputs_core_metrics():
     assert "t0_confidence" in notes
     assert "t0_uncertainty_s" in notes
     assert "pw_start_s_from_t0" in notes
+
+
+def test_performance_window_is_invalid_when_exit_is_below_breakoff() -> None:
+    result = analyze_flysight_csv(
+        content=_build_synthetic_csv(),
+        file_name="below-breakoff.csv",
+        jumper_name="Marlene",
+        ground_elevation_m=3000.0,
+        breakoff_altitude_agl_m=1707.0,
+    )
+
+    metrics = result["metrics_record"]
+    assert metrics["performance_window_start_s"] is not None
+    assert metrics["performance_window_end_s"] is None
+    assert metrics["validation_window_start_s"] is None
+    assert metrics["validation_window_end_s"] is None
+    assert metrics["rule_score_status"] == "invalid"
+    assert "PERFORMANCE_WINDOW_INCOMPLETE" in json.loads(metrics["rule_score_reasons"])
 
 
 def test_manual_t0_override_reanchors_report_and_keeps_auto_reference():

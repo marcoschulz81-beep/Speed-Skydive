@@ -51,6 +51,7 @@ def save_analysis_result(
             file_name=jump["file_name"],
             raw_start_time_utc=jump["raw_start_time_utc"],
             source_file_sha256=source_file_sha256,
+            analysis_signature=str(jump.get("analysis_signature") or "legacy"),
         )
         if duplicate_id is not None:
             if source_file_sha256:
@@ -77,17 +78,19 @@ def save_analysis_result(
     return jump["jump_id"], False
 
 
-def find_duplicate_jump_by_source_hash(*, jumper_name: str, source_file_sha256: str) -> str | None:
+def find_duplicate_jump_by_source_hash(
+    *, jumper_name: str, source_file_sha256: str, analysis_signature: str = "legacy"
+) -> str | None:
     if not source_file_sha256:
         return None
     with get_connection() as conn:
         row = conn.execute(
             """
             SELECT jump_id FROM jumps
-            WHERE jumper_name = ? AND source_file_sha256 = ?
+            WHERE jumper_name = ? AND source_file_sha256 = ? AND analysis_signature = ?
             LIMIT 1
             """,
-            (jumper_name, source_file_sha256),
+            (jumper_name, source_file_sha256, analysis_signature),
         ).fetchone()
     return None if row is None else str(row["jump_id"])
 
@@ -289,15 +292,16 @@ def _find_duplicate_jump_id(
     file_name: str,
     raw_start_time_utc: str,
     source_file_sha256: str | None,
+    analysis_signature: str,
 ) -> str | None:
     if source_file_sha256:
         row = conn.execute(
             """
             SELECT jump_id FROM jumps
-            WHERE jumper_name = ? AND source_file_sha256 = ?
+            WHERE jumper_name = ? AND source_file_sha256 = ? AND analysis_signature = ?
             LIMIT 1
             """,
-            (jumper_name, source_file_sha256),
+            (jumper_name, source_file_sha256, analysis_signature),
         ).fetchone()
         if row is not None:
             return str(row["jump_id"])
@@ -305,10 +309,10 @@ def _find_duplicate_jump_id(
     row = conn.execute(
         """
         SELECT jump_id FROM jumps
-        WHERE jumper_name = ? AND file_name = ? AND raw_start_time_utc = ?
+        WHERE jumper_name = ? AND file_name = ? AND raw_start_time_utc = ? AND analysis_signature = ?
         LIMIT 1
         """,
-        (jumper_name, file_name, raw_start_time_utc),
+        (jumper_name, file_name, raw_start_time_utc, analysis_signature),
     ).fetchone()
     return None if row is None else str(row["jump_id"])
 
@@ -330,9 +334,10 @@ def _insert_analysis_result(
         """
         INSERT INTO jumps (
             jump_id, jumper_name, file_name, device_type, is_reference_only, jump_context, source_file_sha256, source_file_path, raw_start_time_utc, t0_utc,
-            exit_altitude_msl_m, exit_altitude_agl_m, ground_elevation_m, is_valid_altitude,
+            exit_altitude_msl_m, exit_altitude_agl_m, ground_elevation_m, ground_elevation_source,
+            breakoff_altitude_agl_m, analysis_version, analysis_signature, is_valid_altitude,
             sample_rate_hz, quality_score, quality_flags
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             jump["jump_id"],
@@ -348,6 +353,10 @@ def _insert_analysis_result(
             jump["exit_altitude_msl_m"],
             jump["exit_altitude_agl_m"],
             jump["ground_elevation_m"],
+            jump.get("ground_elevation_source", "estimated"),
+            jump.get("breakoff_altitude_agl_m", 1707.0),
+            jump.get("analysis_version", "legacy"),
+            jump.get("analysis_signature", "legacy"),
             jump["is_valid_altitude"],
             jump["sample_rate_hz"],
             jump["quality_score"],
@@ -397,9 +406,11 @@ def _insert_analysis_result(
             jump_id, best_3s_start_s, best_3s_end_s, best_3s_vVert_mps, best_3s_vVert_kmh,
             best_3s_vHor_kmh, best_3s_angle_deg, training_3s_max_from_t0, rule_based_3s_score,
             rule_based_3s_score_mps, performance_window_start_s, performance_window_end_s,
-            validation_window_quality, hot_zone_start_s, hot_zone_end_s, negative_risk_score,
+            validation_window_quality, validation_window_start_s, validation_window_end_s,
+            rule_score_status, rule_score_reasons, analysis_version,
+            hot_zone_start_s, hot_zone_end_s, negative_risk_score,
             notes, fixpoints_json, phases_json, scorecard_json, tips_json, quality_flags
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             metrics["jump_id"],
@@ -415,6 +426,11 @@ def _insert_analysis_result(
             metrics["performance_window_start_s"],
             metrics["performance_window_end_s"],
             metrics["validation_window_quality"],
+            metrics.get("validation_window_start_s"),
+            metrics.get("validation_window_end_s"),
+            metrics.get("rule_score_status", "estimated"),
+            metrics.get("rule_score_reasons", "[]"),
+            metrics.get("analysis_version", "legacy"),
             metrics["hot_zone_start_s"],
             metrics["hot_zone_end_s"],
             metrics["negative_risk_score"],
@@ -450,7 +466,9 @@ def list_recent_jumps(limit: int = 30) -> list[dict[str, Any]]:
                 j.quality_flags,
                 j.is_valid_altitude,
                 m.best_3s_vVert_kmh,
-                m.rule_based_3s_score
+                m.rule_based_3s_score,
+                m.rule_score_status,
+                m.analysis_version
             FROM jumps j
             JOIN metrics m ON m.jump_id = j.jump_id
             WHERE j.is_reference_only = 0
@@ -489,7 +507,9 @@ def list_jumps_for_jumper(jumper_name: str) -> list[dict[str, Any]]:
                 j.sample_rate_hz,
                 j.is_valid_altitude,
                 m.best_3s_vVert_kmh,
-                m.rule_based_3s_score
+                m.rule_based_3s_score,
+                m.rule_score_status,
+                m.analysis_version
             FROM jumps j
             JOIN metrics m ON m.jump_id = j.jump_id
             WHERE j.jumper_name = ?
@@ -516,6 +536,7 @@ def get_jump_summary(jump_id: str) -> dict[str, Any] | None:
                 j.is_valid_altitude,
                 m.best_3s_vVert_kmh,
                 m.rule_based_3s_score,
+                m.rule_score_status,
                 m.negative_risk_score
             FROM jumps j
             JOIN metrics m ON m.jump_id = j.jump_id
@@ -536,7 +557,15 @@ def get_jump_source_metadata(jump_id: str) -> dict[str, Any] | None:
                 jumper_name,
                 file_name,
                 source_file_sha256,
-                source_file_path
+                source_file_path,
+                jump_context,
+                is_reference_only,
+                t0_utc,
+                ground_elevation_m,
+                ground_elevation_source,
+                breakoff_altitude_agl_m,
+                analysis_version,
+                analysis_signature
             FROM jumps
             WHERE jump_id = ?
             LIMIT 1
@@ -562,14 +591,23 @@ def get_best_jump_for_jumper(
                     j.jump_context,
                     j.t0_utc,
                     m.best_3s_vVert_kmh,
-                    m.rule_based_3s_score
+                    m.rule_based_3s_score,
+                    m.rule_score_status
                 FROM jumps j
                 JOIN metrics m ON m.jump_id = j.jump_id
                 WHERE j.jumper_name = ?
                   AND j.jump_id != ?
                   AND j.is_reference_only = 0
+                  AND m.rule_score_status = 'valid'
+                  AND m.rule_based_3s_score IS NOT NULL
                   AND j.quality_flags NOT LIKE '%EARLY_JUMP_END%'
-                ORDER BY m.best_3s_vVert_kmh DESC, j.t0_utc DESC, j.created_at DESC
+                  AND j.quality_flags NOT LIKE '%SPEED_SPIKE%'
+                  AND j.quality_flags NOT LIKE '%TIME_GAPS%'
+                  AND j.quality_flags NOT LIKE '%NO_CLEAR_EXIT%'
+                  AND j.quality_flags NOT LIKE '%INVALID_EXIT_ALTITUDE%'
+                  AND j.quality_flags NOT LIKE '%HIGH_SPEED_ACCURACY_ERROR%'
+                  AND j.quality_flags NOT LIKE '%LOW_GPS_FIX%'
+                ORDER BY m.rule_based_3s_score DESC, j.t0_utc DESC, j.created_at DESC
                 LIMIT 1
                 """,
                 (jumper_name, exclude_jump_id),
@@ -584,13 +622,22 @@ def get_best_jump_for_jumper(
                     j.jump_context,
                     j.t0_utc,
                     m.best_3s_vVert_kmh,
-                    m.rule_based_3s_score
+                    m.rule_based_3s_score,
+                    m.rule_score_status
                 FROM jumps j
                 JOIN metrics m ON m.jump_id = j.jump_id
                 WHERE j.jumper_name = ?
                   AND j.is_reference_only = 0
+                  AND m.rule_score_status = 'valid'
+                  AND m.rule_based_3s_score IS NOT NULL
                   AND j.quality_flags NOT LIKE '%EARLY_JUMP_END%'
-                ORDER BY m.best_3s_vVert_kmh DESC, j.t0_utc DESC, j.created_at DESC
+                  AND j.quality_flags NOT LIKE '%SPEED_SPIKE%'
+                  AND j.quality_flags NOT LIKE '%TIME_GAPS%'
+                  AND j.quality_flags NOT LIKE '%NO_CLEAR_EXIT%'
+                  AND j.quality_flags NOT LIKE '%INVALID_EXIT_ALTITUDE%'
+                  AND j.quality_flags NOT LIKE '%HIGH_SPEED_ACCURACY_ERROR%'
+                  AND j.quality_flags NOT LIKE '%LOW_GPS_FIX%'
+                ORDER BY m.rule_based_3s_score DESC, j.t0_utc DESC, j.created_at DESC
                 LIMIT 1
                 """,
                 (jumper_name,),
@@ -613,14 +660,22 @@ def get_best_external_reference(
                 j.jump_context,
                 j.t0_utc,
                 m.best_3s_vVert_kmh,
-                m.rule_based_3s_score
+                m.rule_based_3s_score,
+                m.rule_score_status
             FROM jumps j
             JOIN metrics m ON m.jump_id = j.jump_id
             WHERE j.jump_id != ?
               AND j.jumper_name != ?
+              AND m.rule_score_status = 'valid'
+              AND m.rule_based_3s_score IS NOT NULL
               AND j.quality_flags NOT LIKE '%EARLY_JUMP_END%'
               AND j.quality_flags NOT LIKE '%SPEED_SPIKE%'
-            ORDER BY m.best_3s_vVert_kmh DESC, j.t0_utc DESC, j.created_at DESC
+              AND j.quality_flags NOT LIKE '%TIME_GAPS%'
+              AND j.quality_flags NOT LIKE '%NO_CLEAR_EXIT%'
+              AND j.quality_flags NOT LIKE '%INVALID_EXIT_ALTITUDE%'
+              AND j.quality_flags NOT LIKE '%HIGH_SPEED_ACCURACY_ERROR%'
+              AND j.quality_flags NOT LIKE '%LOW_GPS_FIX%'
+            ORDER BY m.rule_based_3s_score DESC, j.t0_utc DESC, j.created_at DESC
             LIMIT 1
             """,
             (current_jump_id, current_jumper_name),
@@ -636,6 +691,7 @@ def list_top_global_references(
     hard_flags = [
         "EARLY_JUMP_END",
         "SPEED_SPIKE",
+        "TIME_GAPS",
         "NO_CLEAR_EXIT",
         "INVALID_EXIT_ALTITUDE",
         "HIGH_SPEED_ACCURACY_ERROR",
@@ -643,6 +699,7 @@ def list_top_global_references(
     ]
 
     where_lines = [
+        "j.quality_flags NOT LIKE ?",
         "j.quality_flags NOT LIKE ?",
         "j.quality_flags NOT LIKE ?",
         "j.quality_flags NOT LIKE ?",
@@ -669,11 +726,14 @@ def list_top_global_references(
             j.quality_flags,
             j.is_reference_only,
             m.best_3s_vVert_kmh,
-            m.rule_based_3s_score
+            m.rule_based_3s_score,
+            m.rule_score_status
         FROM jumps j
         JOIN metrics m ON m.jump_id = j.jump_id
         WHERE {' AND '.join(where_lines)}
-        ORDER BY m.best_3s_vVert_kmh DESC, j.t0_utc DESC, j.created_at DESC
+          AND m.rule_score_status = 'valid'
+          AND m.rule_based_3s_score IS NOT NULL
+        ORDER BY m.rule_based_3s_score DESC, j.t0_utc DESC, j.created_at DESC
         LIMIT ?
     """
 
@@ -694,7 +754,8 @@ def list_compare_candidates(current_jump_id: str) -> list[dict[str, Any]]:
                 j.t0_utc,
                 j.quality_score,
                 m.best_3s_vVert_kmh,
-                m.rule_based_3s_score
+                m.rule_based_3s_score,
+                m.rule_score_status
             FROM jumps j
             JOIN metrics m ON m.jump_id = j.jump_id
             WHERE j.jump_id != ?
@@ -744,6 +805,17 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
 
     jump_dict = dict(jump)
     metrics_dict = dict(metrics)
+    raw_rule_reasons = metrics_dict.get("rule_score_reasons")
+    if isinstance(raw_rule_reasons, str):
+        try:
+            parsed_rule_reasons = json.loads(raw_rule_reasons)
+        except json.JSONDecodeError:
+            parsed_rule_reasons = []
+        metrics_dict["rule_score_reasons"] = (
+            parsed_rule_reasons if isinstance(parsed_rule_reasons, list) else []
+        )
+    metrics_dict.setdefault("rule_score_status", "estimated")
+    metrics_dict.setdefault("analysis_version", jump_dict.get("analysis_version", "legacy"))
     notes = json.loads(metrics_dict["notes"]) if metrics_dict.get("notes") else {}
     fixpoints = json.loads(metrics_dict["fixpoints_json"])
     phases = json.loads(metrics_dict["phases_json"])

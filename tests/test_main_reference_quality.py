@@ -6,6 +6,7 @@ from app.main import _has_complete_reference_window, _is_clean_reference_jump
 def _report_with_times(times: list[float]) -> dict[str, object]:
     return {
         "chart_data": {"time_s": times},
+        "metrics": {"rule_based_3s_score": 430.0, "rule_score_status": "valid"},
         "notes": {"analysis_blocked": False, "t0_review_required": False},
     }
 
@@ -35,4 +36,3 @@ def test_clean_reference_jump_requires_complete_window():
 
     assert _is_clean_reference_jump(jump_row, incomplete_report) is False
     assert _is_clean_reference_jump(jump_row, complete_report) is True
-

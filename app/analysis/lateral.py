@@ -142,6 +142,9 @@ def analyze_lateral_dynamics(
 
     return {
         "available": True,
+        "zone_type": "lateral_hot_zone",
+        "reference_frame": "ground_relative",
+        "wind_corrected": False,
         "axis_source": axis_source,
         "axis_unit_n": float(u_forward[0]),
         "axis_unit_e": float(u_forward[1]),

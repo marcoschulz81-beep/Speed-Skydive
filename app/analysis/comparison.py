@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.analysis.evaluation import RULE_SCORE_VALID, angle_distance_to_target
 from app.config import TECHNICAL_PHASE_SPECS
 
 
@@ -12,7 +13,7 @@ def build_jump_comparison(
 ) -> dict[str, Any]:
     """
     Compare two jump reports.
-    The faster jump (best_3s_vVert_kmh) is always used as reference.
+    The faster jump by rule score is used as reference; training max is a fallback.
     Delta is always: comparison - reference.
     """
     reference_report, comparison_report = _order_reports_by_speed(left_report=left_report, right_report=right_report)
@@ -23,16 +24,16 @@ def build_jump_comparison(
 
     summary = [
         _summary_row(
-            label="3s Max (Training)",
-            key="best_3s_vVert_kmh",
+            label="Rule Score",
+            key="rule_based_3s_score",
             unit="km/h",
             better_when="higher",
             reference=reference_metrics,
             comparison=comparison_metrics,
         ),
         _summary_row(
-            label="Rule Score",
-            key="rule_based_3s_score",
+            label="3s Max (Training)",
+            key="best_3s_vVert_kmh",
             unit="km/h",
             better_when="higher",
             reference=reference_metrics,
@@ -137,12 +138,16 @@ def build_jump_comparison(
             "file_name": reference_jump["file_name"],
             "t0_utc": reference_jump["t0_utc"],
             "best_3s_vVert_kmh": _num(reference_metrics.get("best_3s_vVert_kmh")),
+            "rule_based_3s_score": _num(reference_metrics.get("rule_based_3s_score")),
+            "rule_score_status": reference_metrics.get("rule_score_status"),
         },
         "comparison": {
             "jump_id": comparison_jump["jump_id"],
             "file_name": comparison_jump["file_name"],
             "t0_utc": comparison_jump["t0_utc"],
             "best_3s_vVert_kmh": _num(comparison_metrics.get("best_3s_vVert_kmh")),
+            "rule_based_3s_score": _num(comparison_metrics.get("rule_based_3s_score")),
+            "rule_score_status": comparison_metrics.get("rule_score_status"),
         },
         "summary": summary,
         "fixpoint_rows": fixpoint_rows,
@@ -193,18 +198,22 @@ def _build_insights(
 ) -> list[str]:
     insights: list[str] = []
 
-    score_row = next((row for row in summary if row["label"] == "3s Max (Training)"), None)
+    score_row = next((row for row in summary if row["label"] == "Rule Score"), None)
+    score_label = "Regel-Score"
+    if score_row is None or score_row["delta"] is None:
+        score_row = next((row for row in summary if row["label"] == "3s Max (Training)"), None)
+        score_label = "Training-3s-Max"
     if score_row and score_row["delta"] is not None:
         if score_row["delta"] > 0:
             insights.append(
-                f"{comparison_name} ist beim 3s-Max um {score_row['delta']:.2f} km/h schneller als die Referenz."
+                f"{comparison_name} ist beim {score_label} um {score_row['delta']:.2f} km/h schneller als die Referenz."
             )
         elif score_row["delta"] < 0:
             insights.append(
-                f"{comparison_name} ist beim 3s-Max um {abs(score_row['delta']):.2f} km/h langsamer als die Referenz."
+                f"{comparison_name} ist beim {score_label} um {abs(score_row['delta']):.2f} km/h langsamer als die Referenz."
             )
         else:
-            insights.append("3s-Max ist in beiden Sprüngen gleich.")
+            insights.append(f"{score_label} ist in beiden Sprüngen gleich.")
 
     vvert_rows = [row for row in fixpoint_rows if row.get("delta_vVert_kmh") is not None]
     if vvert_rows:
@@ -258,11 +267,11 @@ def _num(value: Any) -> float | None:
 
 
 def _delta(left: Any, right: Any) -> float | None:
-    l = _num(left)
-    r = _num(right)
-    if l is None or r is None:
+    left_value = _num(left)
+    right_value = _num(right)
+    if left_value is None or right_value is None:
         return None
-    return round(r - l, 3)
+    return round(right_value - left_value, 3)
 
 
 def _order_reports_by_speed(
@@ -270,8 +279,20 @@ def _order_reports_by_speed(
     left_report: dict[str, Any],
     right_report: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    left_speed = _num(left_report.get("metrics", {}).get("best_3s_vVert_kmh"))
-    right_speed = _num(right_report.get("metrics", {}).get("best_3s_vVert_kmh"))
+    left_metrics = left_report.get("metrics", {})
+    right_metrics = right_report.get("metrics", {})
+    left_rule = _num(left_metrics.get("rule_based_3s_score"))
+    right_rule = _num(right_metrics.get("rule_based_3s_score"))
+    left_status = left_metrics.get("rule_score_status")
+    right_status = right_metrics.get("rule_score_status")
+    left_valid = left_rule is not None and (left_status == RULE_SCORE_VALID or left_status is None)
+    right_valid = right_rule is not None and (right_status == RULE_SCORE_VALID or right_status is None)
+
+    if left_valid != right_valid:
+        return (left_report, right_report) if left_valid else (right_report, left_report)
+
+    left_speed = left_rule if left_valid else _num(left_metrics.get("best_3s_vVert_kmh"))
+    right_speed = right_rule if right_valid else _num(right_metrics.get("best_3s_vVert_kmh"))
 
     if left_speed is None and right_speed is None:
         return left_report, right_report
@@ -310,16 +331,20 @@ def _build_both_sides_strengths(
 
     angle_rows = [row for row in fixpoint_rows if row.get("left_angle_deg") is not None and row.get("right_angle_deg") is not None]
     for row in angle_rows:
-        ref_dist = abs(float(row["left_angle_deg"]) - 84.0)
-        cmp_dist = abs(float(row["right_angle_deg"]) - 84.0)
+        ref_dist = angle_distance_to_target(row["left_angle_deg"], float(row["t_rel_s"]))
+        cmp_dist = angle_distance_to_target(row["right_angle_deg"], float(row["t_rel_s"]))
+        if ref_dist is None or cmp_dist is None:
+            continue
         if ref_dist + 0.8 < cmp_dist:
             reference_strengths.append(
                 f"{reference_name}: bei +{row['t_rel_s']}s näher am Zielwinkel."
             )
             break
     for row in angle_rows:
-        ref_dist = abs(float(row["left_angle_deg"]) - 84.0)
-        cmp_dist = abs(float(row["right_angle_deg"]) - 84.0)
+        ref_dist = angle_distance_to_target(row["left_angle_deg"], float(row["t_rel_s"]))
+        cmp_dist = angle_distance_to_target(row["right_angle_deg"], float(row["t_rel_s"]))
+        if ref_dist is None or cmp_dist is None:
+            continue
         if cmp_dist + 0.8 < ref_dist:
             comparison_strengths.append(
                 f"{comparison_name}: bei +{row['t_rel_s']}s näher am Zielwinkel."
@@ -479,19 +504,32 @@ def _build_compare_brief(
     ref_metrics = reference_report["metrics"]
     cmp_metrics = comparison_report["metrics"]
 
-    ref_3s = _num(ref_metrics.get("best_3s_vVert_kmh"))
-    cmp_3s = _num(cmp_metrics.get("best_3s_vVert_kmh"))
+    ref_rule_valid = ref_metrics.get("rule_score_status") in {None, RULE_SCORE_VALID}
+    cmp_rule_valid = cmp_metrics.get("rule_score_status") in {None, RULE_SCORE_VALID}
+    ref_3s = _num(ref_metrics.get("rule_based_3s_score")) if ref_rule_valid else None
+    cmp_3s = _num(cmp_metrics.get("rule_based_3s_score")) if cmp_rule_valid else None
+    score_label = "Regel-Score"
+    if ref_3s is None or cmp_3s is None:
+        ref_3s = _num(ref_metrics.get("best_3s_vVert_kmh"))
+        cmp_3s = _num(cmp_metrics.get("best_3s_vVert_kmh"))
+        score_label = "Training-3s-Max (technische Sortierung)"
     delta_3s = None if ref_3s is None or cmp_3s is None else float(cmp_3s - ref_3s)
 
+    if ref_rule_valid and cmp_rule_valid:
+        reference_basis = "höherer gültiger Regel-Score"
+    elif ref_rule_valid:
+        reference_basis = "einziger gültiger Regel-Score"
+    else:
+        reference_basis = "Training-3s-Max; beide Regel-Scores nicht gültig"
     basis_lines = [
-        f"Referenz (schneller): {ref_jump['file_name']} ({ref_jump['t0_utc']}).",
+        f"Referenz ({reference_basis}): {ref_jump['file_name']} ({ref_jump['t0_utc']}).",
         f"Vergleich: {cmp_jump['file_name']} ({cmp_jump['t0_utc']}).",
     ]
 
     key_facts: list[str] = []
     if delta_3s is not None:
         key_facts.append(
-            f"3s-Max: Referenz {ref_3s:.1f} km/h, Vergleich {cmp_3s:.1f} km/h (Delta {delta_3s:+.1f})."
+            f"{score_label}: Referenz {ref_3s:.1f} km/h, Vergleich {cmp_3s:.1f} km/h (Delta {delta_3s:+.1f})."
         )
 
     worst_vvert = _pick_fixpoint_row(fixpoint_rows, key="delta_vVert_kmh", direction="min")

@@ -163,6 +163,24 @@ def test_jump_context_storage_update_and_replace_preserves_context(tmp_path, mon
     assert get_jump_summary("jump-a")["jump_context"] == "training"
 
 
+def test_duplicate_hash_is_scoped_to_analysis_signature(tmp_path, monkeypatch):
+    db_path = tmp_path / "speed_skydive.db"
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+    init_db()
+
+    first = _minimal_result(jump_id="signature-a")
+    first["jump_record"].update({"analysis_version": "1.1.0", "analysis_signature": "signature-a"})
+    first["metrics_record"]["analysis_version"] = "1.1.0"
+    second = _minimal_result(jump_id="signature-b")
+    second["jump_record"].update({"analysis_version": "1.1.0", "analysis_signature": "signature-b"})
+    second["metrics_record"]["analysis_version"] = "1.1.0"
+
+    first_id, first_duplicate = save_analysis_result(first, source_file_sha256="same-source")
+    second_id, second_duplicate = save_analysis_result(second, source_file_sha256="same-source")
+
+    assert (first_id, first_duplicate) == ("signature-a", False)
+    assert (second_id, second_duplicate) == ("signature-b", False)
+
 def test_jump_feedback_storage_update_remove_and_replace_preserves_feedback(tmp_path, monkeypatch):
     db_path = tmp_path / "speed_skydive.db"
     monkeypatch.setattr(database, "DATABASE_PATH", db_path)

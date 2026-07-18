@@ -6,10 +6,10 @@ from typing import Any
 
 import numpy as np
 
+from app.analysis.evaluation import effective_eval_window_end_s
+from app.analysis.lateral import analyze_lateral_dynamics
 from app.config import TECHNICAL_PHASE_SPECS
 from app.text_utils import normalize_german_text
-
-from app.analysis.lateral import analyze_lateral_dynamics
 
 
 def build_jump_review(
@@ -81,7 +81,6 @@ def build_jump_review(
     gain_10_15 = None if start_vvert is None or vvert_15_raw is None else (vvert_15_raw - start_vvert)
     gain_15_20 = None if vvert_15_raw is None or vvert_20 is None else (vvert_20 - vvert_15_raw)
     vhor_24 = _num(fp24.get("vHor_kmh")) if fp24 else None
-    vhor_28 = _num(fp28.get("vHor_kmh")) if fp28 else None
     early_acc_mean, early_acc_peak = _early_acc_stats(chart_data, start_s=0.0, end_s=6.0)
 
     happened: list[str] = []
@@ -104,7 +103,9 @@ def build_jump_review(
     hot_zone_end_num = _num(metrics.get("hot_zone_end_s"))
     pw_end_num = _num(metrics.get("performance_window_end_s"))
     decel_start_num = _num(notes.get("decel_start_s"))
-    eval_end_s = _effective_eval_window_end_s(notes=notes, chart_data=chart_data)
+    eval_end_s = effective_eval_window_end_s(
+        metrics=metrics, notes=notes, chart_data=chart_data
+    )
     window_supports_20 = True
     if eval_end_s is not None and eval_end_s < 19.5:
         window_supports_20 = False
@@ -1766,28 +1767,6 @@ def _forward_eval_end_s(*, decel_start_s: float | None, fallback_end_s: float | 
     if decel_start_s is not None and decel_start_s >= 8.0:
         return float(decel_start_s)
     return fallback_end_s
-
-
-def _effective_eval_window_end_s(*, notes: dict[str, Any], chart_data: dict[str, Any]) -> float | None:
-    candidates: list[float] = []
-    for key in ["decel_start_s", "performance_window_end_s", "canopy_open_s"]:
-        value = _num(notes.get(key))
-        if value is not None and value >= 8.0:
-            candidates.append(float(value))
-    curve_end = _num(notes.get("curve_window_end_s"))
-    if curve_end is not None and curve_end >= 8.0:
-        candidates.append(float(curve_end))
-
-    times = [_num(item) for item in (chart_data.get("time_s", []) or [])]
-    max_time = max((float(v) for v in times if v is not None), default=None)
-    if max_time is not None and max_time >= 8.0 and not candidates:
-        candidates.append(float(max_time))
-    if not candidates:
-        return None
-    end_s = float(min(candidates))
-    if max_time is not None:
-        end_s = min(end_s, float(max_time))
-    return end_s if end_s >= 8.0 else None
 
 
 def _technical_phase_status_map(technical_assessment: dict[str, Any]) -> dict[str, str]:

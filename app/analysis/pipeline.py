@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from dataclasses import dataclass
@@ -10,17 +11,28 @@ import numpy as np
 import pandas as pd
 
 from app.analysis.curve_window import detect_curve_window
+from app.analysis.evaluation import (
+    REFERENCE_HARD_FLAGS,
+    RULE_SCORE_ESTIMATED,
+    RULE_SCORE_INVALID,
+    RULE_SCORE_VALID,
+)
 from app.config import (
+    ANALYSIS_VERSION,
     DEFAULT_BREAKOFF_ALTITUDE_AGL_M,
     FIXPOINT_SECONDS,
     MAX_SACC_MPS,
     MAX_VALID_EXIT_ALTITUDE_AGL_M,
     MIN_NUM_SV,
     MIN_SAMPLE_RATE_HZ,
+    NEGATIVE_RISK_LOOKBACK_S,
     PERFORMANCE_WINDOW_VERTICAL_DROP_M,
     REQUIRED_COLUMNS,
+    SCORING_GRID_STEP_S,
+    SCORING_WINDOW_DURATION_S,
     TARGET_ANGLE_BANDS,
     TECHNICAL_PHASE_SPECS,
+    VALIDATION_WINDOW_VERTICAL_DROP_M,
 )
 
 
@@ -44,7 +56,7 @@ def _read_csv(content: bytes) -> pd.DataFrame:
         df = _read_flysight2_track(raw)
     else:
         try:
-            df = pd.read_csv(StringIO(raw))
+            df = pd.read_csv(StringIO(raw), low_memory=False)
         except Exception as exc:  # pragma: no cover - pandas errors are noisy
             raise AnalysisError(f"CSV konnte nicht gelesen werden: {exc}") from exc
 
@@ -876,57 +888,80 @@ def _calc_derived(df: pd.DataFrame, t_abs_s: np.ndarray, t0_abs_s: float, ground
     return out
 
 
-def _window_mean(
+def _time_weighted_window_mean(
     t_rel: np.ndarray,
     values: np.ndarray,
     start_s: float,
     end_s: float,
-    step_s: float = 0.1,
+    step_s: float = SCORING_GRID_STEP_S,
 ) -> float:
     if end_s <= start_s or len(t_rel) < 2:
         return float("nan")
-    grid = np.arange(start_s, end_s + step_s, step_s)
-    if len(grid) < 2:
-        return float("nan")
+    interval_count = max(1, int(round((end_s - start_s) / step_s)))
+    grid = np.linspace(start_s, end_s, interval_count + 1, dtype=float)
     series = np.interp(grid, t_rel, values)
-    return float(series.mean())
+    return float(np.trapezoid(series, grid) / (end_s - start_s))
+
+
+def _gap_intervals(t_rel: np.ndarray) -> list[tuple[float, float]]:
+    finite = np.asarray(t_rel, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if len(finite) < 3:
+        return []
+    dt = np.diff(finite)
+    median_dt = float(np.nanmedian(dt))
+    threshold = max(median_dt * 2.5, 0.6)
+    return [
+        (float(finite[idx]), float(finite[idx + 1]))
+        for idx, delta in enumerate(dt)
+        if float(delta) > threshold
+    ]
+
+
+def _window_crosses_gap(*, start_s: float, end_s: float, gaps: list[tuple[float, float]]) -> bool:
+    return any(gap_start < end_s and gap_end > start_s for gap_start, gap_end in gaps)
 
 
 def _best_3s_window(df: pd.DataFrame, start_limit: float, end_limit: float | None = None) -> WindowResult | None:
-    post = df[df["t_rel_s"] >= start_limit]
-    if end_limit is not None:
-        post = post[post["t_rel_s"] <= end_limit]
-    if post.empty:
+    if df.empty:
         return None
-
-    t_rel = post["t_rel_s"].to_numpy()
-    if t_rel[-1] - t_rel[0] < 3.0:
+    ordered = df.sort_values("t_rel_s")
+    t_rel = ordered["t_rel_s"].to_numpy(dtype=float)
+    if len(t_rel) < 2:
         return None
-
-    grid_step = 0.1
-    grid = np.arange(t_rel[0], t_rel[-1] + grid_step, grid_step)
-    vvert = np.interp(grid, t_rel, post["vVert_mps"].to_numpy())
-    vhor = np.interp(grid, t_rel, post["vHor_kmh"].to_numpy())
-    angle = np.interp(grid, t_rel, post["angle_deg"].to_numpy())
-
-    w = int(round(3.0 / grid_step))
-    if len(grid) <= w:
+    available_start = max(float(t_rel[0]), float(start_limit))
+    available_end = float(t_rel[-1]) if end_limit is None else min(float(t_rel[-1]), float(end_limit))
+    duration = float(SCORING_WINDOW_DURATION_S)
+    step = float(SCORING_GRID_STEP_S)
+    first_start = float(np.ceil((available_start - 1e-9) / step) * step)
+    last_start = float(np.floor((available_end - duration + 1e-9) / step) * step)
+    if last_start < first_start:
         return None
-
-    kernel = np.ones(w) / w
-    means = np.convolve(vvert, kernel, mode="valid")
-    idx = int(np.argmax(means))
-    start = float(grid[idx])
-    end = float(start + 3.0)
-
-    return WindowResult(
-        start_s=start,
-        end_s=end,
-        avg_vvert_mps=float(means[idx]),
-        avg_vvert_kmh=float(means[idx] * 3.6),
-        avg_vhor_kmh=_window_mean(grid, vhor, start, end),
-        avg_angle_deg=_window_mean(grid, angle, start, end),
-    )
+    vvert = ordered["vVert_mps"].to_numpy(dtype=float)
+    vhor = ordered["vHor_kmh"].to_numpy(dtype=float)
+    angle = ordered["angle_deg"].to_numpy(dtype=float)
+    gaps = _gap_intervals(t_rel)
+    best: WindowResult | None = None
+    candidate_count = int(round((last_start - first_start) / step)) + 1
+    for offset in range(candidate_count):
+        start = round(first_start + offset * step, 10)
+        end = round(start + duration, 10)
+        if _window_crosses_gap(start_s=start, end_s=end, gaps=gaps):
+            continue
+        avg_vvert_mps = _time_weighted_window_mean(t_rel, vvert, start, end)
+        if not np.isfinite(avg_vvert_mps):
+            continue
+        candidate = WindowResult(
+            start_s=float(start),
+            end_s=float(end),
+            avg_vvert_mps=float(avg_vvert_mps),
+            avg_vvert_kmh=float(avg_vvert_mps * 3.6),
+            avg_vhor_kmh=_time_weighted_window_mean(t_rel, vhor, start, end),
+            avg_angle_deg=_time_weighted_window_mean(t_rel, angle, start, end),
+        )
+        if best is None or candidate.avg_vvert_mps > best.avg_vvert_mps:
+            best = candidate
+    return best
 
 
 def _slice_analysis_window(
@@ -1048,14 +1083,30 @@ def _phase_stats(df: pd.DataFrame, spec: dict[str, Any], end_limit_s: float | No
             "target_status": "nicht belastbar",
             "comment": "Nicht genug Daten in dieser Phase.",
         }
-    avg_vvert = float(seg["vVert_kmh"].mean())
-    avg_vhor = float(seg["vHor_kmh"].mean())
-    avg_angle = float(seg["angle_deg"].mean())
+    t_values = df["t_rel_s"].to_numpy(dtype=float)
+    avg_vvert = _time_weighted_window_mean(
+        t_values,
+        df["vVert_kmh"].to_numpy(dtype=float),
+        start_s,
+        end_s,
+    )
+    avg_vhor = _time_weighted_window_mean(
+        t_values,
+        df["vHor_kmh"].to_numpy(dtype=float),
+        start_s,
+        end_s,
+    )
+    avg_angle = _time_weighted_window_mean(
+        t_values,
+        df["angle_deg"].to_numpy(dtype=float),
+        start_s,
+        end_s,
+    )
     max_vvert = float(seg["vVert_kmh"].max())
-    start_vvert = float(seg["vVert_kmh"].iloc[0])
-    end_vvert = float(seg["vVert_kmh"].iloc[-1])
-    start_angle = float(seg["angle_deg"].iloc[0])
-    end_angle = float(seg["angle_deg"].iloc[-1])
+    start_vvert = float(np.interp(start_s, t_values, df["vVert_kmh"].to_numpy(dtype=float)))
+    end_vvert = float(np.interp(end_s, t_values, df["vVert_kmh"].to_numpy(dtype=float)))
+    start_angle = float(np.interp(start_s, t_values, df["angle_deg"].to_numpy(dtype=float)))
+    end_angle = float(np.interp(end_s, t_values, df["angle_deg"].to_numpy(dtype=float)))
     min_angle = float(seg["angle_deg"].min())
     max_angle = float(seg["angle_deg"].max())
     return {
@@ -1237,19 +1288,26 @@ def _negative_risk(df: pd.DataFrame) -> tuple[float, dict[str, Any]]:
     vvert = post["vVert_kmh"].to_numpy()
     time_s = post["t_rel_s"].to_numpy()
 
-    rolling_max = pd.Series(vhor).rolling(12, min_periods=1).max().to_numpy()
+    rolling_max = np.empty_like(vhor, dtype=float)
+    for idx, current_t in enumerate(time_s):
+        lookback_mask = (time_s >= current_t - NEGATIVE_RISK_LOOKBACK_S) & (time_s <= current_t)
+        rolling_max[idx] = float(np.max(vhor[lookback_mask]))
     dip_ratio = np.where(rolling_max > 1e-6, (rolling_max - vhor) / rolling_max, 0.0)
     dip_idx = int(np.argmax(dip_ratio))
     dip_value = float(dip_ratio[dip_idx])
 
     rebound = 0.0
-    if dip_idx < len(vhor) - 5:
-        future_max = float(np.max(vhor[dip_idx + 1 : dip_idx + 12]))
+    if dip_idx < len(vhor) - 1:
+        future_mask = (time_s > time_s[dip_idx]) & (
+            time_s <= time_s[dip_idx] + NEGATIVE_RISK_LOOKBACK_S
+        )
+        future_max = float(np.max(vhor[future_mask])) if bool(np.any(future_mask)) else float(vhor[dip_idx])
         if vhor[dip_idx] > 1e-6:
             rebound = (future_max - float(vhor[dip_idx])) / float(vhor[dip_idx])
 
-    angle_near_vertical = float(np.max(angle[max(0, dip_idx - 4) : min(len(angle), dip_idx + 8)]))
-    local_vvert = vvert[max(0, dip_idx - 4) : min(len(vvert), dip_idx + 8)]
+    local_mask = (time_s >= time_s[dip_idx] - 0.4) & (time_s <= time_s[dip_idx] + 0.8)
+    angle_near_vertical = float(np.max(angle[local_mask]))
+    local_vvert = vvert[local_mask]
     vvert_unrest = float(np.std(local_vvert)) if len(local_vvert) else 0.0
 
     score = 0.0
@@ -1492,6 +1550,107 @@ def _generate_tips(
     return tips[:5]
 
 
+def _first_upward_threshold_crossing_time(
+    *,
+    time_s: np.ndarray,
+    values: np.ndarray,
+    threshold: float,
+    minimum_time_s: float = 0.0,
+) -> float | None:
+    candidates = np.where((time_s >= minimum_time_s) & (values >= threshold))[0]
+    if not len(candidates):
+        return None
+    idx = int(candidates[0])
+    if idx <= 0 or values[idx - 1] >= threshold or time_s[idx - 1] < minimum_time_s:
+        return float(time_s[idx])
+    value_delta = float(values[idx] - values[idx - 1])
+    if abs(value_delta) < 1e-9:
+        return float(time_s[idx])
+    ratio = (threshold - float(values[idx - 1])) / value_delta
+    return float(time_s[idx - 1] + ratio * (time_s[idx] - time_s[idx - 1]))
+
+
+def _first_altitude_crossing_time(
+    *,
+    time_s: np.ndarray,
+    altitude_m: np.ndarray,
+    start_s: float,
+    target_altitude_m: float,
+) -> float | None:
+    if len(time_s) < 2:
+        return None
+    start_altitude = float(np.interp(start_s, time_s, altitude_m))
+    if start_altitude <= target_altitude_m:
+        return float(start_s)
+    candidates = np.where((time_s >= start_s) & (altitude_m <= target_altitude_m))[0]
+    if not len(candidates):
+        return None
+    idx = int(candidates[0])
+    previous_time = float(start_s) if idx <= 0 or time_s[idx - 1] < start_s else float(time_s[idx - 1])
+    previous_altitude = (
+        start_altitude
+        if idx <= 0 or time_s[idx - 1] < start_s
+        else float(altitude_m[idx - 1])
+    )
+    current_time = float(time_s[idx])
+    current_altitude = float(altitude_m[idx])
+    altitude_delta = current_altitude - previous_altitude
+    if abs(altitude_delta) < 1e-9:
+        return current_time
+    ratio = (target_altitude_m - previous_altitude) / altitude_delta
+    return float(previous_time + ratio * (current_time - previous_time))
+
+
+def _analysis_signature(
+    *,
+    ground_elevation_m: float,
+    ground_elevation_source: str,
+    breakoff_altitude_agl_m: float,
+    manual_t0_utc: str | None,
+) -> str:
+    payload = {
+        "analysis_version": ANALYSIS_VERSION,
+        "ground_elevation_m": round(float(ground_elevation_m), 3),
+        "ground_elevation_source": str(ground_elevation_source),
+        "breakoff_altitude_agl_m": round(float(breakoff_altitude_agl_m), 3),
+        "manual_t0_utc": str(manual_t0_utc or ""),
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _rule_score_assessment(
+    *,
+    rule_best: WindowResult | None,
+    ground_estimated: bool,
+    performance_window_complete: bool,
+    validation_quality: float | None,
+    validation_missing_accuracy: bool,
+    validation_failed: bool,
+    quality_flags: list[str],
+) -> tuple[str, list[str]]:
+    invalid_reasons: list[str] = []
+    estimated_reasons: list[str] = []
+    if rule_best is None:
+        invalid_reasons.append("NO_RULE_WINDOW")
+    if not performance_window_complete:
+        invalid_reasons.append("PERFORMANCE_WINDOW_INCOMPLETE")
+    if validation_failed:
+        invalid_reasons.append("VALIDATION_ACCURACY_FAILED")
+    if ground_estimated:
+        estimated_reasons.append("GROUND_LEVEL_ESTIMATED")
+    if validation_quality is None or validation_missing_accuracy:
+        estimated_reasons.append("VALIDATION_ACCURACY_UNKNOWN")
+
+    invalid_flag_set = set(quality_flags) & (set(REFERENCE_HARD_FLAGS) | {"LOW_SAMPLE_RATE"})
+    invalid_reasons.extend(sorted(invalid_flag_set))
+    if invalid_reasons:
+        return RULE_SCORE_INVALID, sorted(set(invalid_reasons + estimated_reasons))
+    if estimated_reasons:
+        return RULE_SCORE_ESTIMATED, sorted(set(estimated_reasons))
+    return RULE_SCORE_VALID, []
+
+
 def analyze_flysight_csv(
     *,
     content: bytes,
@@ -1501,6 +1660,13 @@ def analyze_flysight_csv(
     breakoff_altitude_agl_m: float | None,
     manual_t0_utc: str | None = None,
 ) -> dict[str, Any]:
+    resolved_breakoff_altitude_agl_m = (
+        float(DEFAULT_BREAKOFF_ALTITUDE_AGL_M)
+        if breakoff_altitude_agl_m is None
+        else float(breakoff_altitude_agl_m)
+    )
+    if not np.isfinite(resolved_breakoff_altitude_agl_m) or resolved_breakoff_altitude_agl_m <= 0.0:
+        raise AnalysisError("Breakoff-Höhe muss eine positive Zahl sein.")
     df = _read_csv(content)
     df, unit_normalization = _normalize_import_units(df)
     df, leading_gap_repair = _repair_leading_orphan_samples(df)
@@ -1545,9 +1711,11 @@ def analyze_flysight_csv(
         quality_flags.append("NO_CLEAR_EXIT")
 
     ground_estimated = False
+    ground_elevation_source = "manual"
     if ground_elevation_m is None:
         ground_elevation_m = float(df["hMSL"].quantile(0.02))
         ground_estimated = True
+        ground_elevation_source = "estimated"
         quality_flags.append("NO_GROUND_LEVEL")
 
     data = _calc_derived(df, t_abs_s, t0_abs_s, ground_elevation_m)
@@ -1571,44 +1739,80 @@ def analyze_flysight_csv(
     if best_training is None:
         raise AnalysisError("3-Sekunden-Fenster konnte nicht bestimmt werden.")
 
-    vel_d = df["velD"].to_numpy()
-    pw_candidates = np.where((vel_d >= 10.0) & (t_abs_s >= t0_abs_s))[0]
-    pw_start_idx = int(pw_candidates[0]) if len(pw_candidates) else None
-    performance_window_start_s = None
+    relative_time_s = t_abs_s - t0_abs_s
+    vel_d = df["velD"].to_numpy(dtype=float)
+    performance_window_start_s = _first_upward_threshold_crossing_time(
+        time_s=relative_time_s,
+        values=vel_d,
+        threshold=10.0,
+        minimum_time_s=0.0,
+    )
     performance_window_start_utc = None
-    if pw_start_idx is not None:
-        performance_window_start_s = float(t_abs_s[pw_start_idx] - t0_abs_s)
+    if performance_window_start_s is not None:
+        pw_start_idx = int(np.searchsorted(relative_time_s, performance_window_start_s, side="left"))
+        pw_start_idx = min(pw_start_idx, len(df) - 1)
         performance_window_start_utc = df["time"].iloc[pw_start_idx].isoformat()
 
     performance_window_end_s = None
+    validation_window_start_s = None
+    validation_window_end_s = None
     window_quality = None
     rule_best = None
+    performance_window_complete = False
+    validation_missing_accuracy = False
+    validation_failed = False
 
     if performance_window_start_s is not None:
-        breakoff = breakoff_altitude_agl_m or DEFAULT_BREAKOFF_ALTITUDE_AGL_M
-        start_alt_agl = float(np.interp(performance_window_start_s, post["t_rel_s"], post["hAGL_m"]))
-        end_alt_agl = max(start_alt_agl - PERFORMANCE_WINDOW_VERTICAL_DROP_M, breakoff)
-
-        below = post[(post["t_rel_s"] >= performance_window_start_s) & (post["hAGL_m"] <= end_alt_agl)]
-        if not below.empty:
-            performance_window_end_s = float(below["t_rel_s"].iloc[0])
-        else:
-            performance_window_end_s = float(post["t_rel_s"].max())
-
-        in_window = post[
-            (post["t_rel_s"] >= performance_window_start_s) & (post["t_rel_s"] <= performance_window_end_s)
-        ]
-        if not in_window.empty:
-            valid_ratio = (
-                ((in_window["gpsFix"] == 3) & (in_window["sAcc"] < MAX_SACC_MPS)).sum() / len(in_window)
+        post_time = post["t_rel_s"].to_numpy(dtype=float)
+        post_altitude = post["hAGL_m"].to_numpy(dtype=float)
+        start_alt_agl = float(np.interp(performance_window_start_s, post_time, post_altitude))
+        if start_alt_agl > resolved_breakoff_altitude_agl_m:
+            end_alt_agl = max(
+                start_alt_agl - PERFORMANCE_WINDOW_VERTICAL_DROP_M,
+                resolved_breakoff_altitude_agl_m,
             )
-            window_quality = round(float(valid_ratio), 3)
+            crossing_time = _first_altitude_crossing_time(
+                time_s=post_time,
+                altitude_m=post_altitude,
+                start_s=performance_window_start_s,
+                target_altitude_m=end_alt_agl,
+            )
+            if crossing_time is not None:
+                performance_window_end_s = float(crossing_time)
+                performance_window_complete = True
+            else:
+                performance_window_end_s = float(post_time[-1])
 
-        rule_best = _best_3s_window(
-            post,
-            start_limit=performance_window_start_s,
-            end_limit=performance_window_end_s,
-        )
+            validation_window_end_s = performance_window_end_s
+            performance_end_altitude = float(np.interp(performance_window_end_s, post_time, post_altitude))
+            validation_start_altitude = performance_end_altitude + VALIDATION_WINDOW_VERTICAL_DROP_M
+            validation_window_start_s = _first_altitude_crossing_time(
+                time_s=post_time,
+                altitude_m=post_altitude,
+                start_s=performance_window_start_s,
+                target_altitude_m=validation_start_altitude,
+            )
+            if validation_window_start_s is None:
+                validation_window_start_s = performance_window_start_s
+
+            validation_window = post[
+                (post["t_rel_s"] >= validation_window_start_s)
+                & (post["t_rel_s"] <= validation_window_end_s)
+            ]
+            if not validation_window.empty:
+                sacc = pd.to_numeric(validation_window["sAcc"], errors="coerce")
+                finite_sacc = sacc[np.isfinite(sacc.to_numpy(dtype=float))]
+                validation_missing_accuracy = len(finite_sacc) != len(validation_window)
+                if len(finite_sacc):
+                    valid_count = int((finite_sacc < MAX_SACC_MPS).sum())
+                    window_quality = round(float(valid_count / len(validation_window)), 3)
+                    validation_failed = bool((finite_sacc >= MAX_SACC_MPS).any())
+
+            rule_best = _best_3s_window(
+                post,
+                start_limit=performance_window_start_s,
+                end_limit=performance_window_end_s,
+            )
 
     curve_window = detect_curve_window(post, sample_rate_hz=sample_rate_hz)
     fs2_track_summary = _build_fs2_track_summary(
@@ -1616,12 +1820,15 @@ def analyze_flysight_csv(
         curve_window=curve_window,
         device_type=device_type,
     )
+    effective_curve_end_s = float(curve_window["curve_window_end_s"])
+    if performance_window_end_s is not None and performance_window_end_s >= 8.0:
+        effective_curve_end_s = min(effective_curve_end_s, float(performance_window_end_s))
     analysis_post = _slice_analysis_window(
         post,
         start_s=float(curve_window["curve_window_start_s"]),
-        end_s=float(curve_window["curve_window_end_s"]),
+        end_s=effective_curve_end_s,
     )
-    gap_eval_end_s = min(25.0, float(curve_window["curve_window_end_s"]))
+    gap_eval_end_s = min(25.0, effective_curve_end_s)
     gap_eval_post = _slice_analysis_window(
         post,
         start_s=float(curve_window["curve_window_start_s"]),
@@ -1630,7 +1837,16 @@ def analyze_flysight_csv(
     if "SPEED_SPIKE" in quality_flags and not _has_speed_spike_in_window(gap_eval_post):
         quality_flags = [flag for flag in quality_flags if flag != "SPEED_SPIKE"]
         quality_score = min(100.0, float(quality_score) + 10.0)
-    if _has_time_gaps_in_window(gap_eval_post, time_col="t_rel_s"):
+    rule_gap_post = (
+        _slice_analysis_window(
+            post,
+            start_s=float(performance_window_start_s),
+            end_s=float(performance_window_end_s),
+        )
+        if performance_window_start_s is not None and performance_window_end_s is not None
+        else gap_eval_post
+    )
+    if _has_time_gaps_in_window(rule_gap_post, time_col="t_rel_s"):
         quality_flags.append("TIME_GAPS")
         quality_score = max(0.0, float(quality_score) - 12.0)
     early_end_reason = _detect_early_end_issue(post=post, curve_window=curve_window)
@@ -1638,6 +1854,17 @@ def analyze_flysight_csv(
     if analysis_blocked:
         quality_flags.append("EARLY_JUMP_END")
         quality_score = max(0.0, float(quality_score) - 35.0)
+
+    quality_flags = sorted(set(quality_flags))
+    rule_score_status, rule_score_reasons = _rule_score_assessment(
+        rule_best=rule_best,
+        ground_estimated=ground_estimated,
+        performance_window_complete=performance_window_complete,
+        validation_quality=window_quality,
+        validation_missing_accuracy=validation_missing_accuracy,
+        validation_failed=validation_failed,
+        quality_flags=quality_flags,
+    )
 
     fixpoints = _fixpoints(post)
 
@@ -1648,7 +1875,8 @@ def analyze_flysight_csv(
         if float(phase_spec["start_s"]) <= phase_end_limit
     ]
 
-    hot_start, hot_end, hot_label, hot_reason = _detect_hot_zone(analysis_post, best_training)
+    primary_window = rule_best or best_training
+    hot_start, hot_end, hot_label, hot_reason = _detect_hot_zone(analysis_post, primary_window)
     neg_score, neg_details = _negative_risk(analysis_post)
 
     exit_profile = _compute_exit_profile(post=post, sample_rate_hz=sample_rate_hz, fixpoints=fixpoints)
@@ -1656,7 +1884,7 @@ def analyze_flysight_csv(
         fixpoints,
         hot_label,
         neg_details["label"],
-        best_training,
+        primary_window,
         exit_profile,
         phases=phases,
     )
@@ -1727,6 +1955,12 @@ def analyze_flysight_csv(
             }
         )
 
+    analysis_signature = _analysis_signature(
+        ground_elevation_m=float(ground_elevation_m),
+        ground_elevation_source=ground_elevation_source,
+        breakoff_altitude_agl_m=resolved_breakoff_altitude_agl_m,
+        manual_t0_utc=manual_t0_utc,
+    )
     jump_record = {
         "jump_id": jump_id,
         "jumper_name": jumper_name.strip(),
@@ -1737,6 +1971,10 @@ def analyze_flysight_csv(
         "exit_altitude_msl_m": round(exit_altitude_msl, 2),
         "exit_altitude_agl_m": None if exit_altitude_agl is None else round(exit_altitude_agl, 2),
         "ground_elevation_m": None if ground_elevation_m is None else round(float(ground_elevation_m), 2),
+        "ground_elevation_source": ground_elevation_source,
+        "breakoff_altitude_agl_m": round(resolved_breakoff_altitude_agl_m, 2),
+        "analysis_version": ANALYSIS_VERSION,
+        "analysis_signature": analysis_signature,
         "is_valid_altitude": 1 if is_valid_altitude else 0,
         "sample_rate_hz": round(sample_rate_hz, 3),
         "quality_score": round(quality_score, 2),
@@ -1761,6 +1999,17 @@ def analyze_flysight_csv(
         "hot_zone_reason": hot_reason,
         "negative_details": neg_details["details"],
         "ground_level_estimated": ground_estimated,
+        "ground_elevation_source": ground_elevation_source,
+        "breakoff_altitude_agl_m": round(resolved_breakoff_altitude_agl_m, 2),
+        "analysis_version": ANALYSIS_VERSION,
+        "rule_score_status": rule_score_status,
+        "rule_score_reasons": rule_score_reasons,
+        "validation_window_start_s": (
+            None if validation_window_start_s is None else round(validation_window_start_s, 3)
+        ),
+        "validation_window_end_s": (
+            None if validation_window_end_s is None else round(validation_window_end_s, 3)
+        ),
         "agl_note": "AGL approximiert" if ground_estimated else "AGL aus Ground Elevation berechnet",
         "curve_window_start_s": curve_window["curve_window_start_s"],
         "curve_window_end_s": curve_window["curve_window_end_s"],
@@ -1788,6 +2037,15 @@ def analyze_flysight_csv(
         "performance_window_start_s": None if performance_window_start_s is None else round(performance_window_start_s, 2),
         "performance_window_end_s": None if performance_window_end_s is None else round(performance_window_end_s, 2),
         "validation_window_quality": window_quality,
+        "validation_window_start_s": (
+            None if validation_window_start_s is None else round(validation_window_start_s, 2)
+        ),
+        "validation_window_end_s": (
+            None if validation_window_end_s is None else round(validation_window_end_s, 2)
+        ),
+        "rule_score_status": rule_score_status,
+        "rule_score_reasons": json.dumps(rule_score_reasons),
+        "analysis_version": ANALYSIS_VERSION,
         "hot_zone_start_s": hot_start,
         "hot_zone_end_s": hot_end,
         "negative_risk_score": round(neg_score, 2),
@@ -1826,3 +2084,5 @@ def analyze_flysight_csv(
         "sample_records": sample_records,
         "report": report,
     }
+    SCORING_GRID_STEP_S,
+    SCORING_WINDOW_DURATION_S,

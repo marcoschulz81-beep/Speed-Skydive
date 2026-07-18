@@ -1,6 +1,6 @@
 # Speed-Skydive Analyzer
 
-Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Fokus auf Techniktraining und regelnahe 3s-Wertung.
+Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Fokus auf Techniktraining und eine nachvollziehbare 3s-Wertung. Aktuelle App- und Analyseversion: `1.1.0`.
 
 ## Enthaltene Funktionen
 
@@ -13,7 +13,9 @@ Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Foku
   - relative Zeitachse
 - Fixpunkte `+10/+15/+20/+24/+28s` per linearer Interpolation
 - Bestes zusammenhaengendes 3s-Fenster (zeitkontinuierlich) aus `t0`-Bezug
-- Regelnaher 3s-Score im Performance Window (`velD >= 10m/s`, Höhenverlust/Breakoff)
+- Regel-Score als zeitgewichtetes, exakt 3,0 Sekunden langes Fenster auf einem festen 0,1s-Raster
+- Performance Window ab dem interpolierten `velD >= 10m/s`-Zeitpunkt bis Höhenverlust/Breakoff (Standard `1707 m AGL`)
+- Separates Validierungsfenster über die letzten `1006 m` mit GPS-Genauigkeitsprüfung
 - Phasenmodell (Start, Beschleunigung, Max-Speed, Ende)
 - Hot-Zone-Erkennung und Negativ/Kippen-Heuristik
 - Qualitätsflags + Qualitätsscore
@@ -21,7 +23,7 @@ Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Foku
 - Optionales Sprungfeedback als Freitext beim Upload oder spaeter im Report
 - Gespeicherter Coaching-Fokus fuer den Rueckblick im naechsten Sprung
 - Speicherung pro Springer in SQLite (jumps/samples/metrics)
-- HTML-Report mit Kurven + PDF-Export
+- HTML-Report mit interaktiven Kurven
 - Vergleichsansicht je Springer
 
 ## Tech-Stack
@@ -31,7 +33,6 @@ Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Foku
 - Pandas/Numpy (Analyse)
 - Plotly.js (Kurven in UI)
 - SQLite (Persistenz)
-- fpdf2 (PDF-Report)
 
 ## Start
 
@@ -39,7 +40,7 @@ Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Foku
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+python -m uvicorn app.main:app --reload
 ```
 
 Danach: `http://127.0.0.1:8000`
@@ -82,9 +83,10 @@ Damit werden Springer mit aehnlicher Geschwindigkeit nicht automatisch gleich be
 
 ### Regel-/Coachingfenster und Top-Speed
 
-Fuer Coaching und Bewertung wird zwischen regelnahem Score und allgemeinem Trainingspeak unterschieden:
+Fuer Coaching und Bewertung wird zwischen Regel-Score und allgemeinem Trainingspeak unterschieden:
 
 - `rule_based_3s_score` bleibt die primaere Speed-Leistung fuer Bewertung, Vergleich und Leistungsprofil.
+- `rule_score_status` kennzeichnet den Wert als `valid`, `estimated` oder `invalid`; nur `valid` darf Rankings, persoenliche Lernprofile und Modelltraining beeinflussen.
 - `best_3s_vVert_kmh` bleibt sichtbar, ist aber ein allgemeiner Top-Speed/Trainingspeak und kann spaeter liegen.
 - Die technische 3s-Fenster-Qualitaet bewertet primaer das regel-/coachingrelevante Performance-Fenster.
 - Ein Speed-Drop nach einem 3s-Fenster wird nur als Problem gewertet, wenn er vor `decel_start` liegt und noch ein belastbarer Folgezeitraum vorhanden ist.
@@ -97,7 +99,7 @@ Damit kann die Software weiterhin echte Faelle erkennen, in denen es den Springe
 
 Die automatische `t0`-Erkennung bleibt der Standard. In der Expertenansicht werden zusaetzlich Startprobe, Performance-Window, t0-Confidence und Datenhinweise sichtbar gemacht. Wenn ein Sprung offensichtlich falsch ausgerichtet ist, kann der Absprung manuell als aktuelle Kurvenzeit gesetzt werden. Dann wird nur dieser Sprung aus der gecachten Original-CSV neu ausgewertet; die automatische t0-Erkennung bleibt als Referenz in den Notes gespeichert.
 
-Vergleiche zeigen die Ausrichtungsbasis beider Spruenge. `vHor` ist dabei die waagerechte GPS-Geschwindigkeit ueber Grund und aktuell nicht windkorrigiert.
+Vergleiche zeigen die Ausrichtungsbasis beider Spruenge. `vHor` und die seitliche Hot-Zone sind GPS-Werte ueber Grund, aktuell nicht windkorrigiert und keine direkte Messung der Koerperausrichtung.
 
 ### Sprungfeedback
 
@@ -156,7 +158,7 @@ Fuer lokale Entwicklung kann `.env.example` als Vorlage fuer eine lokale `.env` 
 $env:AI_COACHING_ENABLED="true"
 $env:AI_COACHING_MODEL="gpt-5-mini"
 $env:OPENAI_API_KEY="sk-..."
-uvicorn app.main:app --reload
+python -m uvicorn app.main:app --reload
 ```
 
 Hinweise:
@@ -171,8 +173,32 @@ Hinweise:
 ## Tests
 
 ```powershell
-pytest
+python -m pytest
+python -m ruff check .
+python -m mypy app/analysis/evaluation.py app/analysis/potential.py scripts
 ```
+
+## Analyseversion 1.1.0
+
+- Der Regel-Score, Referenzen, Rankings und persoenliche Lernprofile nutzen nur saubere Spruenge mit Status `valid`.
+- Das experimentelle Potenzialmodell startet ab genau zehn sauberen historischen Spruengen. Der aktuelle Sprung wird vor dem Training entfernt, Ziel ist der Regel-Score und die Modellguete wird per Leave-one-out ausserhalb der jeweiligen Trainingsmenge geprueft.
+- Trainings-3s, Regel-Score, Phasenmittel und Winkel verwenden dieselbe zeitgewichtete Interpolation; 3s-Kandidaten liegen auf einem globalen 0,1s-Raster und duerfen keine Datenluecken ueberspannen.
+- Die technische Auswertungsgrenze ist fuer Review, Lernlogik, Hot-Zone und Vergleiche zentral definiert.
+- Bodenhoehenquelle, Breakoff, Analyseversion, Validierungsfenster und Gruende fuer nicht gueltige Regel-Scores werden gespeichert und im Expertenreport ausgewiesen.
+- Uploads sind standardmaessig auf 25 MiB begrenzt (`MAX_UPLOAD_BYTES`). Inline-JSON wird gegen das Verlassen des Script-Kontexts escaped.
+- Coaching-Snapshots bleiben bis zum Go-live bewusst aktualisierbar. Eine Reanalyse entfernt den alten Snapshot; beim erneuten Oeffnen wird er mit der aktuellen Logik neu erzeugt.
+
+### Bestehende Daten neu berechnen
+
+Vorher immer eine Kopie von `speed_skydive.db` ausserhalb des Repositories anlegen. Danach:
+
+```powershell
+python -m scripts.reprocess_analysis --dry-run
+python -m scripts.reprocess_analysis
+python -m scripts.audit_database
+```
+
+Die Reanalyse behaelt Sprung-ID, Kontext, Referenzstatus, Feedback, gespeicherte manuelle Bodenhoehe, Breakoff und einen manuell gesetzten t0 bei. Veraltete Coaching-Snapshots werden absichtlich verworfen. Das Audit prueft Versionen, Fenstergrenzen, Score-Status und Foreign Keys.
 
 ## Neue Version: Kontext und Leistungsprofil
 
@@ -180,7 +206,7 @@ pytest
 - Falls die Markierung beim Upload vergessen wurde, kann sie spaeter im Sprungreport geaendert werden.
 - Die Markierung aendert keine Speed-Berechnung. Sie dient fuer Verlauf, Filter, Profil und spaetere Auswertungen.
 - Pro Springer wird automatisch ein Leistungsprofil berechnet:
-  - primaer aus dem regelnahen 3s-Score, falls vorhanden
+  - ausschliesslich aus gueltigen Regel-Scores
   - zusaetzlich aus dem Training-3s-Max als Vergleichswert
   - mit Top-1/Top-3/Top-5/Top-10-Durchschnitten
   - mit Profil-Vertrauen je nach Anzahl gueltiger Spruenge
@@ -202,13 +228,13 @@ pytest
 
 ## Coaching-Snapshots und Umsetzung letzter Fokus
 
-Der Rueckblick `Umsetzung letzter Fokus` nutzt ab dieser Version den tatsaechlich gespeicherten Coaching-Fokus des vorherigen Reports.
+Der Rueckblick `Umsetzung letzter Fokus` nutzt den tatsaechlich gespeicherten Coaching-Fokus des vorherigen Reports.
 
 - Beim Oeffnen eines Expertenreports wird ein Coaching-Snapshot gespeichert.
 - Der Snapshot enthaelt den angezeigten Fokus und passende Zielmetriken.
 - Beim naechsten Report wird zuerst dieser gespeicherte Fokus ausgewertet.
 - Falls ein alter Report noch keinen Snapshot hat oder ein Ziel nicht messbar ist, greift der bestehende Fallback.
-- Die einfache Ansicht ueberschreibt den Experten-Snapshot nicht.
+- Die einfache Ansicht ueberschreibt den Experten-Snapshot nicht. Die Expertenansicht darf den Snapshot vor dem Go-live mit der aktuellen Logik aktualisieren.
 
 Dadurch bewertet der Rueckblick das, was dem Springer wirklich als naechster Fokus gezeigt wurde, statt Ziele live aus der aktuellen Regelanalyse des alten Sprungs neu zusammenzubauen.
 
@@ -231,17 +257,3 @@ Dadurch bewertet der Rueckblick das, was dem Springer wirklich als naechster Fok
 - `metrics`: 3s-Score, Window, Hot-Zone, Risiko, Fixpunkte, Phasen, Tipps
 - `jump_feedback`: optionaler Freitext pro Sprung fuer subjektiven Trainingskontext
 - `coaching_snapshots`: gespeicherter Coaching-Fokus pro Sprung fuer den Rueckblick
-
-## GitHub-Setup
-
-```powershell
-git init
-git add .
-git commit -m "Initial commit: Speed-Skydive analyzer"
-```
-
-Optional mit GitHub CLI:
-
-```powershell
-gh repo create speed-skydive-analyzer --public --source . --remote origin --push
-```

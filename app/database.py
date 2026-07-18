@@ -42,6 +42,10 @@ def init_db() -> None:
                 exit_altitude_msl_m REAL NOT NULL,
                 exit_altitude_agl_m REAL,
                 ground_elevation_m REAL,
+                ground_elevation_source TEXT NOT NULL DEFAULT 'estimated',
+                breakoff_altitude_agl_m REAL NOT NULL DEFAULT 1707.0,
+                analysis_version TEXT NOT NULL DEFAULT 'legacy',
+                analysis_signature TEXT NOT NULL DEFAULT 'legacy',
                 is_valid_altitude INTEGER NOT NULL,
                 sample_rate_hz REAL NOT NULL,
                 quality_score REAL NOT NULL,
@@ -95,6 +99,11 @@ def init_db() -> None:
                 performance_window_start_s REAL,
                 performance_window_end_s REAL,
                 validation_window_quality REAL,
+                validation_window_start_s REAL,
+                validation_window_end_s REAL,
+                rule_score_status TEXT NOT NULL DEFAULT 'estimated',
+                rule_score_reasons TEXT NOT NULL DEFAULT '[]',
+                analysis_version TEXT NOT NULL DEFAULT 'legacy',
                 hot_zone_start_s REAL,
                 hot_zone_end_s REAL,
                 negative_risk_score REAL NOT NULL,
@@ -144,8 +153,59 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE jumps ADD COLUMN jump_context TEXT NOT NULL DEFAULT 'unknown'"
             )
-        conn.execute("DROP INDEX IF EXISTS idx_jumps_source_file_sha256_unique")
+        if "ground_elevation_source" not in columns:
+            conn.execute(
+                "ALTER TABLE jumps ADD COLUMN ground_elevation_source TEXT NOT NULL DEFAULT 'estimated'"
+            )
+        if "breakoff_altitude_agl_m" not in columns:
+            conn.execute(
+                "ALTER TABLE jumps ADD COLUMN breakoff_altitude_agl_m REAL NOT NULL DEFAULT 1707.0"
+            )
+        if "analysis_version" not in columns:
+            conn.execute(
+                "ALTER TABLE jumps ADD COLUMN analysis_version TEXT NOT NULL DEFAULT 'legacy'"
+            )
+        if "analysis_signature" not in columns:
+            conn.execute(
+                "ALTER TABLE jumps ADD COLUMN analysis_signature TEXT NOT NULL DEFAULT 'legacy'"
+            )
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_jumps_jumper_hash_unique ON jumps(jumper_name, source_file_sha256)"
+            """
+            UPDATE jumps
+            SET ground_elevation_source = CASE
+                WHEN quality_flags LIKE '%NO_GROUND_LEVEL%' THEN 'estimated'
+                ELSE 'manual'
+            END
+            WHERE analysis_version = 'legacy'
+            """
+        )
+        metric_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(metrics)").fetchall()
+        }
+        if "validation_window_start_s" not in metric_columns:
+            conn.execute("ALTER TABLE metrics ADD COLUMN validation_window_start_s REAL")
+        if "validation_window_end_s" not in metric_columns:
+            conn.execute("ALTER TABLE metrics ADD COLUMN validation_window_end_s REAL")
+        if "rule_score_status" not in metric_columns:
+            conn.execute(
+                "ALTER TABLE metrics ADD COLUMN rule_score_status TEXT NOT NULL DEFAULT 'estimated'"
+            )
+        if "rule_score_reasons" not in metric_columns:
+            conn.execute(
+                "ALTER TABLE metrics ADD COLUMN rule_score_reasons TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "analysis_version" not in metric_columns:
+            conn.execute(
+                "ALTER TABLE metrics ADD COLUMN analysis_version TEXT NOT NULL DEFAULT 'legacy'"
+            )
+        conn.execute(
+            "UPDATE metrics SET rule_score_status = 'estimated' WHERE analysis_version = 'legacy'"
+        )
+        conn.execute("DROP INDEX IF EXISTS idx_jumps_source_file_sha256_unique")
+        conn.execute("DROP INDEX IF EXISTS idx_jumps_jumper_hash_unique")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_jumps_jumper_hash_signature_unique "
+            "ON jumps(jumper_name, source_file_sha256, analysis_signature)"
         )
         conn.commit()

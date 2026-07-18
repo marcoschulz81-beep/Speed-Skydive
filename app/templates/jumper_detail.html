@@ -22,8 +22,8 @@
         <div class="score-box">
             <span class="k">Gesamtbild</span>
             <p>
-                {{ jumper_summary.jump_count }} Sprünge ausgewertet.<br>
-                Bester Sprung:
+                {{ jumper_summary.jump_count }} Sprünge vorhanden, {{ jumper_summary.learning_jump_count }} sauber für Lernen/Profil.<br>
+                Bester gültiger Regel-Score:
                 {% if jumper_summary.best_speed_kmh is not none %}
                     {{ "%.2f"|format(jumper_summary.best_speed_kmh) }} km/h
                 {% else %}
@@ -81,8 +81,8 @@
         <div class="score-box">
             <span class="k">Gesamtbild</span>
             <p>
-                Datenbasis: {{ jumper_summary.jump_count }} Sprünge.<br>
-                Schnellster Sprung:
+                Datenbasis: {{ jumper_summary.jump_count }} Sprünge, davon {{ jumper_summary.learning_jump_count }} sauber und {{ jumper_summary.excluded_learning_jump_count }} ausgeschlossen.<br>
+                Bester gültiger Regel-Score:
                 {% if jumper_summary.best_speed_kmh is not none %}
                     {{ "%.2f"|format(jumper_summary.best_speed_kmh) }} km/h
                 {% else %}
@@ -217,7 +217,7 @@
                 <th>Datei</th>
                 <th>Kontext</th>
                 <th>Datum</th>
-                <th>Speed</th>
+                <th>Regel-Score</th>
                 <th>Detail</th>
             </tr>
             {% else %}
@@ -248,7 +248,7 @@
                 <td>{{ jump_context_label(jump.jump_context) }}</td>
                 <td>{{ jump.t0_utc }}</td>
                 {% if (view_mode or 'expert') == 'simple' %}
-                <td>{{ "%.2f"|format(jump.best_3s_vVert_kmh) }} km/h</td>
+                <td>{{ "%.2f"|format(jump.rule_based_3s_score) if jump.rule_based_3s_score is not none and jump.rule_score_status == "valid" else "-" }} km/h</td>
                 <td><a href="/jumps/{{ jump.jump_id }}?view={{ view_mode or 'expert' }}">Report</a></td>
                 {% else %}
                 <td>{{ "%.2f"|format(jump.best_3s_vVert_kmh) }}</td>
@@ -274,7 +274,7 @@
                 <option value="">Bitte wählen</option>
                 {% for jump in jumps %}
                 <option value="{{ jump.jump_id }}" {% if left_jump_id == jump.jump_id %}selected{% endif %}>
-                    {{ jump.file_name }} | {{ jump_context_label(jump.jump_context) }} | {{ jump.t0_utc }} | 3s {{ "%.2f"|format(jump.best_3s_vVert_kmh) }}{% if jump.is_best %} | BEST{% endif %}
+                    {{ jump.file_name }} | {{ jump_context_label(jump.jump_context) }} | {{ jump.t0_utc }} | Regel {{ "%.2f"|format(jump.rule_based_3s_score) if jump.rule_based_3s_score is not none else "-" }} ({{ jump.rule_score_status or "unbekannt" }}){% if jump.is_best %} | BEST{% endif %}
                 </option>
                 {% endfor %}
             </select>
@@ -285,7 +285,7 @@
                 <option value="">Bitte wählen</option>
                 {% for jump in jumps %}
                 <option value="{{ jump.jump_id }}" {% if right_jump_id == jump.jump_id %}selected{% endif %}>
-                    {{ jump.file_name }} | {{ jump_context_label(jump.jump_context) }} | {{ jump.t0_utc }} | 3s {{ "%.2f"|format(jump.best_3s_vVert_kmh) }}{% if jump.is_best %} | BEST{% endif %}
+                    {{ jump.file_name }} | {{ jump_context_label(jump.jump_context) }} | {{ jump.t0_utc }} | Regel {{ "%.2f"|format(jump.rule_based_3s_score) if jump.rule_based_3s_score is not none else "-" }} ({{ jump.rule_score_status or "unbekannt" }}){% if jump.is_best %} | BEST{% endif %}
                 </option>
                 {% endfor %}
             </select>
@@ -301,7 +301,7 @@
 {% if compare_result %}
 <section class="panel">
     <h2>Vergleich im Klartext</h2>
-    <p class="muted">Beim Vergleich wird der schnellere Sprung automatisch als Referenz gesetzt und die Auswertung neu berechnet.</p>
+    <p class="muted">Beim Vergleich wird der höhere gültige Regel-Score als Referenz gesetzt und die Auswertung neu berechnet.</p>
     {% for line in compare_result.brief.basis_lines %}
     <p class="muted">{{ line }}</p>
     {% endfor %}
@@ -539,15 +539,15 @@ const bestId = (jumps.find(j => j.is_best) || {}).jump_id;
 Plotly.newPlot("chart-trend", [
     {
         x: sorted.map(j => j.t0_utc),
-        y: sorted.map(j => j.best_3s_vVert_kmh),
+        y: sorted.map(j => j.rule_score_status === "valid" ? j.rule_based_3s_score : null),
         type: "scatter",
         mode: "lines",
         line: {color: "#2ecc71", width: 2},
-        name: "3s Max"
+        name: "gültiger Regel-Score"
     },
     {
         x: sorted.map(j => j.t0_utc),
-        y: sorted.map(j => j.best_3s_vVert_kmh),
+        y: sorted.map(j => j.rule_score_status === "valid" ? j.rule_based_3s_score : null),
         type: "scatter",
         mode: "markers",
         marker: {
@@ -562,7 +562,7 @@ Plotly.newPlot("chart-trend", [
     plot_bgcolor: "#11161c",
     font: {color: "#dce3ea", size: 12},
     xaxis: {title: "t0 UTC", gridcolor: "#1f2933"},
-    yaxis: {title: "3s Max [km/h]", gridcolor: "#1f2933"}
+    yaxis: {title: "Regel-Score [km/h]", gridcolor: "#1f2933"}
 }, {displayModeBar: false});
 
 {% if compare_result %}

@@ -12,6 +12,7 @@ def _report(
     rule_score: float,
     risk: float,
     quality: float,
+    rule_status: str = "valid",
 ) -> dict:
     return {
         "jump": {
@@ -23,6 +24,7 @@ def _report(
         "metrics": {
             "best_3s_vVert_kmh": three_s,
             "rule_based_3s_score": rule_score,
+            "rule_score_status": rule_status,
             "negative_risk_score": risk,
         },
         "fixpoints": [
@@ -116,3 +118,31 @@ def test_build_jump_comparison_limits_chart_to_curve_window():
     assert max(charts["left"]["time_s"]) <= 30.0
     assert max(charts["right"]["time_s"]) <= 30.0
     assert charts["x_axis_end_s"] == 30.0
+
+
+def test_valid_rule_score_outranks_invalid_higher_training_peak() -> None:
+    valid = _report(
+        jump_id="valid",
+        file_name="valid.csv",
+        t0_utc="2024-01-01T10:00:00Z",
+        three_s=390.0,
+        rule_score=385.0,
+        risk=20.0,
+        quality=90.0,
+        rule_status="valid",
+    )
+    invalid = _report(
+        jump_id="invalid",
+        file_name="invalid.csv",
+        t0_utc="2024-01-02T10:00:00Z",
+        three_s=520.0,
+        rule_score=515.0,
+        risk=50.0,
+        quality=50.0,
+        rule_status="invalid",
+    )
+
+    comparison = build_jump_comparison(left_report=valid, right_report=invalid)
+
+    assert comparison["reference"]["jump_id"] == "valid"
+    assert "einziger gültiger Regel-Score" in comparison["brief"]["basis_lines"][0]
