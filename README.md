@@ -1,10 +1,11 @@
 # Speed-Skydive Analyzer
 
-Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Fokus auf Techniktraining und eine nachvollziehbare 3s-Wertung. Aktuelle App- und Analyseversion: `1.1.0`.
+Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Fokus auf Techniktraining und eine nachvollziehbare 3s-Wertung. Aktuelle App-Version: `1.2.0`; unveränderte Score-Engine: `1.1.0`.
 
 ## Enthaltene Funktionen
 
 - CSV-Upload (FlySight 1 kompatibel) inkl. Pflichtspalten-Validierung
+- Lokale Dropzone-Erkennung mit Kataloghöhe, Konfidenz, Prüfliste und manueller Korrektur
 - Automatische `t0`-Erkennung (Absprungzeitpunkt) mit Plausibilitaetspruefung
 - Berechnung pro Sample:
   - vertikale/horizontale/gesamte Geschwindigkeit
@@ -170,12 +171,30 @@ Hinweise:
 - Die KI darf keine Messwerte erfinden und ersetzt weder Speed-Berechnung noch Ranking.
 - Im Expertenmodus wird ein Hinweis angezeigt, falls KI aktiviert ist, aber nicht erzeugt werden konnte.
 
+## Dropzone-Katalog
+
+Der lokale, versionierte Dropzone-Katalog wird beim Upload ohne synchronen Internetzugriff verwendet.
+Nur eindeutige `trusted`- oder `verified`-Treffer werden automatisch zugeordnet. Manuell eingegebene
+Bodenhöhen behalten Vorrang; Kandidaten, Mehrdeutigkeiten und unbekannte Orte werden nur protokolliert.
+
+```powershell
+python -m scripts.dropzone_catalog --json
+python -m scripts.dropzone_catalog --apply --observe-history --json
+python -m scripts.dropzone_catalog --audit --json
+python -m scripts.dropzone_catalog --audit-matches --json
+```
+
+Der Report zeigt Platz, Landezone, Entfernung, Konfidenz und Zuordnungsart. In der Expertenansicht
+kann eine Dropzone manuell bestätigt oder die automatische Erkennung erneut ausgeführt werden.
+Katalogmethodik: `docs/dropzone-catalog-2026.07.18.md`; Rollout und Validierung:
+`docs/validation-v1.2.0.md`.
+
 ## Tests
 
 ```powershell
 python -m pytest
 python -m ruff check .
-python -m mypy app/analysis/evaluation.py app/analysis/potential.py scripts
+python -m mypy app/analysis/evaluation.py app/analysis/potential.py app/services/dropzone_matching.py scripts
 ```
 
 ## Analyseversion 1.1.0
@@ -199,6 +218,14 @@ python -m scripts.audit_database
 ```
 
 Die Reanalyse behaelt Sprung-ID, Kontext, Referenzstatus, Feedback, gespeicherte manuelle Bodenhoehe, Breakoff und einen manuell gesetzten t0 bei. Veraltete Coaching-Snapshots werden absichtlich verworfen. Das Audit prueft Versionen, Fenstergrenzen, Score-Status und Foreign Keys.
+
+Für den konservativen Dropzone-Rollout wird zuerst geprüft und erst danach geschrieben:
+
+```powershell
+python -m scripts.reprocess_analysis --dry-run --dropzone-rollout --json
+python -m scripts.reprocess_analysis --dropzone-rollout --json
+python -m scripts.dropzone_catalog --audit-matches --json
+```
 
 ## Neue Version: Kontext und Leistungsprofil
 

@@ -497,6 +497,15 @@ def test_expert_ai_template_keeps_rule_based_training_tips_visible():
     assert "{% for item in jump_brief.actions %}" in ai_branch
 
 
+def test_report_template_exposes_dropzone_evidence_and_manual_correction():
+    template = Path("app/templates/jump_detail.html").read_text(encoding="utf-8")
+
+    assert "report.dropzone" in template
+    assert "dropzone_assignment_confidence" in template
+    assert 'action="/jumps/{{ jump_id }}/dropzone?view={{ vm }}"' in template
+    assert "Automatisch neu erkennen" in template
+
+
 def test_jump_brief_summary_harmonizes_redundant_training_tips():
     report = {
         "jump": {"file_name": "redundant-tips.csv"},

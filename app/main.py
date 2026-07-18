@@ -21,7 +21,7 @@ from app.analysis.comparison import build_jump_comparison
 from app.analysis.evaluation import effective_eval_window_end_s, is_reference_eligible
 from app.analysis.feedback import build_feedback_coaching_context, build_feedback_training_profile
 from app.analysis.lateral import analyze_lateral_dynamics
-from app.analysis.pipeline import AnalysisError, analyze_flysight_csv
+from app.analysis.pipeline import AnalysisError
 from app.analysis.potential import build_speed_potential_preview
 from app.analysis.review import build_jump_review
 from app.config import (
@@ -40,6 +40,7 @@ from app.config import (
 )
 from app.database import init_db
 from app.services.ai_coach import AI_COACHING_SCHEMA_VERSION, generate_ai_coaching_texts
+from app.services.dropzone_matching import analyze_flysight_with_dropzone, list_dropzone_choices
 from app.services.storage import (
     VALID_JUMP_CONTEXTS,
     delete_jump,
@@ -500,7 +501,7 @@ async def analyze_upload(
 
     source_hash = hashlib.sha256(content).hexdigest()
     try:
-        result = analyze_flysight_csv(
+        result = analyze_flysight_with_dropzone(
             content=content,
             file_name=uploaded_file_name,
             jumper_name=jumper,
@@ -706,6 +707,7 @@ def jump_detail(
             "quality_flags_json": _safe_json_dumps(report["quality_flags"]),
             "quality_issue_lines": quality_issue_lines,
             "t0_diagnostics": t0_diagnostics,
+            "dropzone_options": list_dropzone_choices() if view_mode == _VIEW_MODE_EXPERT else [],
             "message": message,
             "error": error,
             "view_mode": view_mode,
@@ -736,16 +738,22 @@ def reprocess_t0(jump_id: str, view: str | None = None):
             content=content,
         )
         ground_elevation_m = (
-            None
-            if report["jump"].get("ground_elevation_source") == "estimated"
-            else report["jump"].get("ground_elevation_m")
+            report["jump"].get("ground_elevation_m")
+            if report["jump"].get("ground_elevation_source") == "manual"
+            else None
         )
-        new_result = analyze_flysight_csv(
+        manual_dropzone_id = (
+            report["jump"].get("dropzone_id")
+            if report["jump"].get("dropzone_assignment_source") == "catalog_manual"
+            else None
+        )
+        new_result = analyze_flysight_with_dropzone(
             content=content,
             file_name=report["jump"]["file_name"],
             jumper_name=report["jump"]["jumper_name"],
             ground_elevation_m=ground_elevation_m,
             breakoff_altitude_agl_m=report["jump"].get("breakoff_altitude_agl_m"),
+            manual_dropzone_id=manual_dropzone_id,
         )
         replace_analysis_result(
             jump_id=jump_id,
@@ -804,16 +812,22 @@ def manual_t0(
             content=content,
         )
         ground_elevation_m = (
-            None
-            if report["jump"].get("ground_elevation_source") == "estimated"
-            else report["jump"].get("ground_elevation_m")
+            report["jump"].get("ground_elevation_m")
+            if report["jump"].get("ground_elevation_source") == "manual"
+            else None
         )
-        new_result = analyze_flysight_csv(
+        manual_dropzone_id = (
+            report["jump"].get("dropzone_id")
+            if report["jump"].get("dropzone_assignment_source") == "catalog_manual"
+            else None
+        )
+        new_result = analyze_flysight_with_dropzone(
             content=content,
             file_name=report["jump"]["file_name"],
             jumper_name=report["jump"]["jumper_name"],
             ground_elevation_m=ground_elevation_m,
             breakoff_altitude_agl_m=report["jump"].get("breakoff_altitude_agl_m"),
+            manual_dropzone_id=manual_dropzone_id,
             manual_t0_utc=manual_t0_utc,
         )
         replace_analysis_result(
@@ -832,6 +846,93 @@ def manual_t0(
 
     ok_msg = f"Absprung wurde manuell auf aktuelle Kurvenzeit {rel_s:+.1f}s gesetzt und neu ausgewertet."
     return RedirectResponse(url=f"/jumps/{jump_id}?view={view_mode}&message={quote_plus(ok_msg)}", status_code=303)
+
+
+@app.post("/jumps/{jump_id}/dropzone")
+def update_jump_dropzone_route(
+    jump_id: str,
+    dropzone_id: str = Form(...),
+    view: str | None = None,
+):
+    view_mode = _normalize_view_mode(view)
+    report = get_jump_report(jump_id)
+    source_meta = get_jump_source_metadata(jump_id)
+    if report is None or source_meta is None:
+        raise HTTPException(status_code=404, detail="Sprung nicht gefunden.")
+
+    selected = str(dropzone_id or "").strip()
+    manual_dropzone_id = None if selected in {"", "auto"} else selected
+    if manual_dropzone_id is not None:
+        valid_ids = {str(item["dropzone_id"]) for item in list_dropzone_choices()}
+        if manual_dropzone_id not in valid_ids:
+            msg = "Die gewählte Dropzone ist nicht im aktiven Katalog vorhanden."
+            return RedirectResponse(
+                url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(msg)}",
+                status_code=303,
+            )
+
+    source_path = _resolve_source_file_for_jump(source_meta)
+    if source_path is None or not source_path.exists():
+        msg = "Original-CSV nicht gefunden. Bitte Datei erneut hochladen."
+        return RedirectResponse(
+            url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(msg)}",
+            status_code=303,
+        )
+
+    try:
+        content = source_path.read_bytes()
+        source_hash = hashlib.sha256(content).hexdigest()
+        cached_path = _cache_uploaded_file(
+            source_hash=source_hash,
+            original_name=report["jump"]["file_name"],
+            content=content,
+        )
+        notes = report.get("notes") or {}
+        manual_t0_utc = report["jump"].get("t0_utc") if notes.get("t0_manual_override") else None
+        manual_ground = (
+            report["jump"].get("ground_elevation_m")
+            if report["jump"].get("ground_elevation_source") == "manual"
+            else None
+        )
+        new_result = analyze_flysight_with_dropzone(
+            content=content,
+            file_name=report["jump"]["file_name"],
+            jumper_name=report["jump"]["jumper_name"],
+            ground_elevation_m=manual_ground,
+            breakoff_altitude_agl_m=report["jump"].get("breakoff_altitude_agl_m"),
+            manual_t0_utc=manual_t0_utc,
+            manual_dropzone_id=manual_dropzone_id,
+        )
+        replace_analysis_result(
+            jump_id=jump_id,
+            result=new_result,
+            jump_context=str(report["jump"].get("jump_context") or "unknown"),
+            is_reference_only=bool(report["jump"].get("is_reference_only")),
+            source_file_sha256=source_hash,
+            source_file_path=str(cached_path),
+        )
+        _clear_derived_caches()
+    except AnalysisError as exc:
+        return RedirectResponse(
+            url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(str(exc))}",
+            status_code=303,
+        )
+    except Exception as exc:  # pragma: no cover
+        msg = f"Unerwarteter Dropzone-Reanalysefehler: {exc}"
+        return RedirectResponse(
+            url=f"/jumps/{jump_id}?view={view_mode}&error={quote_plus(msg)}",
+            status_code=303,
+        )
+
+    match = new_result.get("dropzone_match") or {}
+    if match.get("status") in {"accepted", "manual"}:
+        ok_msg = f"Dropzone {match.get('dropzone_name')} wurde gespeichert und der Sprung neu ausgewertet."
+    else:
+        ok_msg = "Keine sichere Dropzone erkannt; die bisherige automatische Bodenhöhenschätzung wird verwendet."
+    return RedirectResponse(
+        url=f"/jumps/{jump_id}?view={view_mode}&message={quote_plus(ok_msg)}",
+        status_code=303,
+    )
 
 
 @app.post("/jumps/{jump_id}/context")

@@ -70,6 +70,31 @@
             {% endif %}
         </div>
         <div><span class="label">t0 UTC</span><span>{{ report.jump.t0_utc }}</span></div>
+        <div>
+            <span class="label">Dropzone</span>
+            {% if report.dropzone %}
+            <span>{{ report.dropzone.name }} ({{ report.dropzone.country_code }})</span>
+            {% if vm == "expert" %}
+            <span class="meta-note">
+                {{ report.dropzone.zone_name or "Landezone" }};
+                {{ report.jump.dropzone_distance_m if report.jump.dropzone_distance_m is not none else "-" }} m;
+                Konfidenz {{ report.jump.dropzone_assignment_confidence if report.jump.dropzone_assignment_confidence is not none else "-" }};
+                {{ "manuell bestätigt" if report.jump.dropzone_assignment_source == "catalog_manual" else "automatisch erkannt" }}
+            </span>
+            {% endif %}
+            {% elif report.dropzone_match %}
+            <span>Nicht sicher zugeordnet</span>
+            {% if vm == "expert" %}
+            <span class="meta-note">
+                Status {{ report.dropzone_match.match_status }}{% if report.dropzone_match.details.dropzone_name %};
+                nächster Vorschlag {{ report.dropzone_match.details.dropzone_name }}{% endif %}{% if report.dropzone_match.nearest_distance_m is not none %};
+                {{ report.dropzone_match.nearest_distance_m }} m entfernt{% endif %}
+            </span>
+            {% endif %}
+            {% else %}
+            <span>Noch nicht geprüft</span>
+            {% endif %}
+        </div>
         {% if vm == "expert" %}
         <div><span class="label">Samplingrate</span><span>{{ report.jump.sample_rate_hz }} Hz</span></div>
         <div><span class="label">Exit MSL</span><span>{{ report.jump.exit_altitude_msl_m }} m</span></div>
@@ -78,6 +103,19 @@
         <div><span class="label">Breakoff AGL</span><span>{{ report.jump.breakoff_altitude_agl_m }} m</span></div>
         <div><span class="label">Analyseversion</span><span>{{ report.metrics.analysis_version or report.jump.analysis_version or "legacy" }}</span></div>
         <div><span class="label">Gültige Exit-Höhe</span><span>{{ "Ja" if report.jump.is_valid_altitude else "Nein" }}</span></div>
+        <div>
+            <span class="label">Dropzone korrigieren</span>
+            <form method="post" action="/jumps/{{ jump_id }}/dropzone?view={{ vm }}" class="context-form">
+                <select name="dropzone_id" aria-label="Dropzone auswählen">
+                    <option value="auto" {% if report.jump.dropzone_assignment_source != "catalog_manual" %}selected{% endif %}>Automatisch neu erkennen</option>
+                    {% for option in dropzone_options %}
+                    <option value="{{ option.dropzone_id }}" {% if report.jump.dropzone_assignment_source == "catalog_manual" and option.dropzone_id == report.jump.dropzone_id %}selected{% endif %}>{{ option.name }} ({{ option.country_code }}, {{ option.status }})</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" class="btn secondary">Übernehmen &amp; neu berechnen</button>
+            </form>
+            <span class="meta-note">Manuelle Auswahl darf auch einen Kandidaten bestätigen; eine manuell eingegebene Bodenhöhe behält Vorrang.</span>
+        </div>
         {% endif %}
     </div>
 </section>

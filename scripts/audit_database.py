@@ -30,19 +30,32 @@ def audit_database() -> dict[str, Any]:
                 """
                 SELECT j.jump_id, j.jumper_name, j.file_name, j.analysis_version AS jump_version,
                        j.quality_flags AS jump_flags, j.ground_elevation_source,
-                       j.breakoff_altitude_agl_m, m.analysis_version AS metric_version,
+                       j.breakoff_altitude_agl_m, j.dropzone_id, j.dropzone_zone_id,
+                       j.dropzone_revision, j.dropzone_assignment_source,
+                       j.dropzone_assignment_confidence, j.dropzone_distance_m,
+                       d.status AS dropzone_status, m.analysis_version AS metric_version,
                        m.best_3s_start_s, m.best_3s_end_s, m.rule_based_3s_score,
                        m.rule_score_status, m.rule_score_reasons,
                        m.performance_window_start_s, m.performance_window_end_s,
                        m.validation_window_start_s, m.validation_window_end_s
-                FROM jumps j JOIN metrics m ON m.jump_id = j.jump_id
+                FROM jumps j
+                JOIN metrics m ON m.jump_id = j.jump_id
+                LEFT JOIN dropzones d ON d.dropzone_id = j.dropzone_id
                 ORDER BY j.t0_utc ASC
                 """
             ).fetchall()
         ]
         counts = {
             table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
-            for table in ("jumps", "metrics", "samples", "jump_feedback", "coaching_snapshots")
+            for table in (
+                "jumps",
+                "metrics",
+                "samples",
+                "jump_feedback",
+                "coaching_snapshots",
+                "dropzone_match_attempts",
+                "dropzone_observations",
+            )
         }
 
     status_counts: Counter[str] = Counter()
@@ -76,8 +89,38 @@ def audit_database() -> dict[str, Any]:
             issues.append(f"{jump_id}: Validierung beginnt vor Performance-Fenster")
         if pw_end is not None and val_end is not None and float(val_end) > float(pw_end) + 0.02:
             issues.append(f"{jump_id}: Validierung endet nach Performance-Fenster")
-        if row.get("ground_elevation_source") not in {"manual", "estimated"}:
+        if row.get("ground_elevation_source") not in {
+            "manual",
+            "estimated",
+            "dropzone_catalog",
+            "dropzone_manual",
+        }:
             issues.append(f"{jump_id}: unbekannte Bodenhöhenquelle")
+        dropzone_id = row.get("dropzone_id")
+        assignment_source = row.get("dropzone_assignment_source")
+        confidence = row.get("dropzone_assignment_confidence")
+        if dropzone_id:
+            if not row.get("dropzone_zone_id") or not row.get("dropzone_revision"):
+                issues.append(f"{jump_id}: unvollständige Dropzone-Zuordnung")
+            if assignment_source not in {"catalog_auto", "catalog_manual"}:
+                issues.append(f"{jump_id}: unbekannte Dropzone-Zuordnungsquelle")
+            if confidence is None or not 0.0 <= float(confidence) <= 1.0:
+                issues.append(f"{jump_id}: ungültige Dropzone-Konfidenz")
+            if assignment_source == "catalog_auto" and row.get("dropzone_status") not in {"trusted", "verified"}:
+                issues.append(f"{jump_id}: automatische Zuordnung zu nicht freigegebener Dropzone")
+            if row.get("ground_elevation_source") == "estimated":
+                issues.append(f"{jump_id}: zugeordnete Dropzone mit geschätzter Bodenhöhe")
+        elif any(
+            row.get(key) is not None
+            for key in (
+                "dropzone_zone_id",
+                "dropzone_revision",
+                "dropzone_assignment_source",
+                "dropzone_assignment_confidence",
+                "dropzone_distance_m",
+            )
+        ):
+            issues.append(f"{jump_id}: Zuordnungsdetails ohne Dropzone")
         if row.get("breakoff_altitude_agl_m") is None or float(row["breakoff_altitude_agl_m"]) <= 0:
             issues.append(f"{jump_id}: ungültige Breakoff-Höhe")
 

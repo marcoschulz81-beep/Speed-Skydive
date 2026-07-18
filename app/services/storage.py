@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import sqlite3
 from statistics import median
 from typing import Any
 
@@ -78,6 +79,13 @@ def save_analysis_result(
     return jump["jump_id"], False
 
 
+def save_dropzone_match_attempt(jump_id: str, match: dict[str, Any]) -> None:
+    """Persist a shadow-mode result without changing the stored jump analysis."""
+    with get_connection() as conn:
+        _insert_dropzone_match(conn=conn, jump_id=jump_id, match=match)
+        conn.commit()
+
+
 def find_duplicate_jump_by_source_hash(
     *, jumper_name: str, source_file_sha256: str, analysis_signature: str = "legacy"
 ) -> str | None:
@@ -116,6 +124,10 @@ def replace_analysis_result(
         feedback_text = _fetch_jump_feedback_text(conn=conn, jump_id=jump_id)
         resolved_context = normalize_jump_context(
             jump_context if jump_context is not None else (None if existing is None else existing["jump_context"])
+        )
+        conn.execute(
+            "DELETE FROM dropzone_observations WHERE jump_id = ? AND source_kind = 'historical_gps'",
+            (jump_id,),
         )
         conn.execute("DELETE FROM jumps WHERE jump_id = ?", (jump_id,))
         _insert_analysis_result(
@@ -336,8 +348,10 @@ def _insert_analysis_result(
             jump_id, jumper_name, file_name, device_type, is_reference_only, jump_context, source_file_sha256, source_file_path, raw_start_time_utc, t0_utc,
             exit_altitude_msl_m, exit_altitude_agl_m, ground_elevation_m, ground_elevation_source,
             breakoff_altitude_agl_m, analysis_version, analysis_signature, is_valid_altitude,
-            sample_rate_hz, quality_score, quality_flags
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            sample_rate_hz, quality_score, quality_flags, dropzone_id, dropzone_zone_id,
+            dropzone_revision, dropzone_assignment_source, dropzone_assignment_confidence,
+            dropzone_distance_m
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             jump["jump_id"],
@@ -361,6 +375,12 @@ def _insert_analysis_result(
             jump["sample_rate_hz"],
             jump["quality_score"],
             jump["quality_flags"],
+            jump.get("dropzone_id"),
+            jump.get("dropzone_zone_id"),
+            jump.get("dropzone_revision"),
+            jump.get("dropzone_assignment_source"),
+            jump.get("dropzone_assignment_confidence"),
+            jump.get("dropzone_distance_m"),
         ),
     )
 
@@ -440,6 +460,117 @@ def _insert_analysis_result(
             metrics["scorecard_json"],
             metrics["tips_json"],
             metrics["quality_flags"],
+        ),
+    )
+    _insert_dropzone_match(conn=conn, jump_id=str(jump["jump_id"]), match=result.get("dropzone_match"))
+
+
+def _insert_dropzone_match(*, conn, jump_id: str, match: Any) -> None:
+    if not isinstance(match, dict):
+        return
+    observation = match.get("observation") if isinstance(match.get("observation"), dict) else None
+    details = dict(match.get("details") or {})
+    details["dropzone_name"] = match.get("dropzone_name")
+    details["zone_name"] = match.get("zone_name")
+    details["dropzone_status"] = match.get("dropzone_status")
+    conn.execute(
+        """
+        INSERT INTO dropzone_match_attempts (
+            attempt_id, jump_id, algorithm_version, catalog_version, match_status,
+            assignment_source, observed_at, latitude, longitude, ground_elevation_m,
+            altitude_mad_m, coordinate_p95_radius_m, sample_count, duration_s,
+            nearest_dropzone_id, nearest_zone_id, nearest_distance_m,
+            second_distance_m, confidence, details_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(attempt_id) DO UPDATE SET
+            catalog_version = excluded.catalog_version,
+            match_status = excluded.match_status,
+            assignment_source = excluded.assignment_source,
+            observed_at = excluded.observed_at,
+            latitude = excluded.latitude,
+            longitude = excluded.longitude,
+            ground_elevation_m = excluded.ground_elevation_m,
+            altitude_mad_m = excluded.altitude_mad_m,
+            coordinate_p95_radius_m = excluded.coordinate_p95_radius_m,
+            sample_count = excluded.sample_count,
+            duration_s = excluded.duration_s,
+            nearest_dropzone_id = excluded.nearest_dropzone_id,
+            nearest_zone_id = excluded.nearest_zone_id,
+            nearest_distance_m = excluded.nearest_distance_m,
+            second_distance_m = excluded.second_distance_m,
+            confidence = excluded.confidence,
+            details_json = excluded.details_json,
+            created_at = CURRENT_TIMESTAMP
+        """,
+        (
+            f"match-{jump_id}-{match['algorithm_version']}",
+            jump_id,
+            match["algorithm_version"],
+            match.get("catalog_version"),
+            match["status"],
+            match.get("assignment_source"),
+            None if observation is None else observation.get("observed_at"),
+            None if observation is None else observation.get("latitude"),
+            None if observation is None else observation.get("longitude"),
+            None if observation is None else observation.get("ground_elevation_m"),
+            None if observation is None else observation.get("altitude_mad_m"),
+            None if observation is None else observation.get("coordinate_p95_radius_m"),
+            None if observation is None else observation.get("sample_count"),
+            None if observation is None else observation.get("duration_s"),
+            match.get("dropzone_id"),
+            match.get("zone_id"),
+            match.get("distance_m"),
+            match.get("second_distance_m"),
+            match.get("confidence"),
+            json.dumps(details, ensure_ascii=False, sort_keys=True),
+        ),
+    )
+    if observation is None or not match.get("dropzone_id"):
+        return
+    quality_status = "accepted" if match["status"] in {"accepted", "manual"} else "candidate"
+    conn.execute(
+        """
+        INSERT INTO dropzone_observations (
+            observation_id, dropzone_id, jump_id, observed_at, latitude, longitude,
+            ground_elevation_m, altitude_mad_m, sample_count, duration_s,
+            source_kind, quality_status, details_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'historical_gps', ?, ?)
+        ON CONFLICT(observation_id) DO UPDATE SET
+            dropzone_id = excluded.dropzone_id,
+            jump_id = excluded.jump_id,
+            observed_at = excluded.observed_at,
+            latitude = excluded.latitude,
+            longitude = excluded.longitude,
+            ground_elevation_m = excluded.ground_elevation_m,
+            altitude_mad_m = excluded.altitude_mad_m,
+            sample_count = excluded.sample_count,
+            duration_s = excluded.duration_s,
+            quality_status = excluded.quality_status,
+            details_json = excluded.details_json
+        """,
+        (
+            f"match-jump-{jump_id}-{match['algorithm_version']}",
+            match["dropzone_id"],
+            jump_id,
+            observation["observed_at"],
+            observation["latitude"],
+            observation["longitude"],
+            observation["ground_elevation_m"],
+            observation["altitude_mad_m"],
+            observation["sample_count"],
+            observation["duration_s"],
+            quality_status,
+            json.dumps(
+                {
+                    "algorithm": match["algorithm_version"],
+                    "distance_to_zone_m": match.get("distance_m"),
+                    "coordinate_p95_radius_m": observation.get("coordinate_p95_radius_m"),
+                    "match_status": match["status"],
+                    "confidence": match.get("confidence"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
         ),
     )
 
@@ -565,7 +696,13 @@ def get_jump_source_metadata(jump_id: str) -> dict[str, Any] | None:
                 ground_elevation_source,
                 breakoff_altitude_agl_m,
                 analysis_version,
-                analysis_signature
+                analysis_signature,
+                dropzone_id,
+                dropzone_zone_id,
+                dropzone_revision,
+                dropzone_assignment_source,
+                dropzone_assignment_confidence,
+                dropzone_distance_m
             FROM jumps
             WHERE jump_id = ?
             LIMIT 1
@@ -799,6 +936,34 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
             """,
             (jump_id,),
         ).fetchall()
+        dropzone = conn.execute(
+            """
+            SELECT d.*, z.name AS zone_name, z.zone_kind,
+                   GROUP_CONCAT(o.name, ' | ') AS operator_names
+            FROM jumps j
+            JOIN dropzones d ON d.dropzone_id = j.dropzone_id
+            LEFT JOIN dropzone_zones z ON z.zone_id = j.dropzone_zone_id
+            LEFT JOIN dropzone_operator_assignments a
+                ON a.dropzone_id = d.dropzone_id AND a.status = 'active'
+            LEFT JOIN dropzone_operators o ON o.operator_id = a.operator_id
+            WHERE j.jump_id = ?
+            GROUP BY d.dropzone_id, z.zone_id
+            LIMIT 1
+            """,
+            (jump_id,),
+        ).fetchone()
+        try:
+            dropzone_match = conn.execute(
+                """
+                SELECT * FROM dropzone_match_attempts
+                WHERE jump_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (jump_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            dropzone_match = None
 
     if jump is None or metrics is None:
         return None
@@ -822,6 +987,14 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
     scorecard = json.loads(metrics_dict["scorecard_json"])
     tips = json.loads(metrics_dict["tips_json"])
     quality_flags = json.loads(jump_dict["quality_flags"])
+    dropzone_payload = None if dropzone is None else dict(dropzone)
+    dropzone_match_payload = None if dropzone_match is None else dict(dropzone_match)
+    if dropzone_match_payload is not None:
+        try:
+            match_details = json.loads(str(dropzone_match_payload.get("details_json") or "{}"))
+        except json.JSONDecodeError:
+            match_details = {}
+        dropzone_match_payload["details"] = match_details if isinstance(match_details, dict) else {}
     coaching_snapshot_payload: dict[str, Any] = {"available": False}
     if coaching_snapshot is not None:
         try:
@@ -881,6 +1054,8 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
         "scorecard": scorecard,
         "tips": tips,
         "quality_flags": quality_flags,
+        "dropzone": dropzone_payload,
+        "dropzone_match": dropzone_match_payload,
         "chart_data": chart_data,
         "feedback": (
             {"available": False, "text": "", "created_at": None, "updated_at": None}

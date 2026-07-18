@@ -586,8 +586,8 @@ def _detect_t0(df: pd.DataFrame, t_abs_s: np.ndarray, sample_rate_hz: float) -> 
     search_end = max(search_start + min_run + future_window + 1, peak_idx + int(round(sample_rate_hz * 0.4)))
     search_end = min(search_end, len(df) - future_window - 1)
 
-    strict_mask = np.zeros(len(df), dtype=bool)
-    soft_mask = np.zeros(len(df), dtype=bool)
+    strict_mask: np.ndarray = np.zeros(len(df), dtype=bool)
+    soft_mask: np.ndarray = np.zeros(len(df), dtype=bool)
     candidate_details: dict[int, tuple[float, float, float, float, float, float]] = {}
     max_i = max(search_start + 1, search_end)
     for i in range(search_start, max_i):
@@ -608,7 +608,8 @@ def _detect_t0(df: pd.DataFrame, t_abs_s: np.ndarray, sample_rate_hz: float) -> 
         fut_drop = float(fut_slice["hDropRate"].median())
         drop_gain = fut_drop - pre_drop
 
-        acc_now = float(smooth.at[i, "accVert"])
+        acc_value: Any = smooth.at[i, "accVert"]
+        acc_now = float(acc_value)
 
         cond_speed = fut_vel >= max(10.0, pre_vel + 8.0) and vel_gain >= 8.0
         cond_acc = acc_now >= 2.2
@@ -1659,6 +1660,7 @@ def analyze_flysight_csv(
     ground_elevation_m: float | None,
     breakoff_altitude_agl_m: float | None,
     manual_t0_utc: str | None = None,
+    ground_elevation_source_override: str | None = None,
 ) -> dict[str, Any]:
     resolved_breakoff_altitude_agl_m = (
         float(DEFAULT_BREAKOFF_ALTITUDE_AGL_M)
@@ -1711,7 +1713,7 @@ def analyze_flysight_csv(
         quality_flags.append("NO_CLEAR_EXIT")
 
     ground_estimated = False
-    ground_elevation_source = "manual"
+    ground_elevation_source = str(ground_elevation_source_override or "manual")
     if ground_elevation_m is None:
         ground_elevation_m = float(df["hMSL"].quantile(0.02))
         ground_estimated = True

@@ -4,7 +4,7 @@
 {% set vm = view_mode if view_mode in ["simple", "expert"] else "expert" %}
 <section class="panel">
     <h1>FlySight CSV auswerten</h1>
-    <p class="muted">Upload pro Sprung, Speicherung unter Springername, automatischer Trainingsreport.</p>
+    <p class="muted">Upload pro Sprung, automatische Dropzone-Erkennung, Speicherung unter Springername und Trainingsreport.</p>
 
     {% if message %}
     <div class="flash success">{{ message }}</div>
@@ -29,7 +29,7 @@
         </label>
         <label>
             <span>Ground Elevation (MSL, m)</span>
-            <input type="text" name="ground_elevation_m" placeholder="optional">
+            <input type="text" name="ground_elevation_m" placeholder="optional; überschreibt Dropzone-Höhe">
         </label>
         <label>
             <span>Breakoff Altitude (AGL, m)</span>

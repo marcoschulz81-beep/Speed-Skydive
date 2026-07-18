@@ -133,6 +133,190 @@ def init_db() -> None:
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(jump_id) REFERENCES jumps(jump_id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS dropzones (
+                dropzone_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                country_code TEXT NOT NULL,
+                region TEXT,
+                locality TEXT,
+                icao_code TEXT,
+                airport_ident TEXT,
+                latitude REAL NOT NULL CHECK(latitude BETWEEN -90.0 AND 90.0),
+                longitude REAL NOT NULL CHECK(longitude BETWEEN -180.0 AND 180.0),
+                match_radius_m REAL NOT NULL DEFAULT 1500.0 CHECK(match_radius_m > 0.0),
+                ground_elevation_m REAL,
+                published_elevation_m REAL,
+                ground_elevation_uncertainty_m REAL,
+                ground_elevation_source TEXT,
+                status TEXT NOT NULL DEFAULT 'candidate'
+                    CHECK(status IN ('candidate', 'trusted', 'verified', 'inactive')),
+                catalog_revision INTEGER NOT NULL DEFAULT 1 CHECK(catalog_revision >= 1),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_dropzones_country_airport_ident
+            ON dropzones(country_code, airport_ident)
+            WHERE airport_ident IS NOT NULL AND airport_ident <> '';
+            CREATE INDEX IF NOT EXISTS idx_dropzones_status_country
+            ON dropzones(status, country_code);
+            CREATE INDEX IF NOT EXISTS idx_dropzones_coordinates
+            ON dropzones(latitude, longitude);
+
+            CREATE TABLE IF NOT EXISTS dropzone_zones (
+                zone_id TEXT PRIMARY KEY,
+                dropzone_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                zone_kind TEXT NOT NULL DEFAULT 'landing'
+                    CHECK(zone_kind IN ('primary', 'landing', 'alternate', 'historical')),
+                latitude REAL NOT NULL CHECK(latitude BETWEEN -90.0 AND 90.0),
+                longitude REAL NOT NULL CHECK(longitude BETWEEN -180.0 AND 180.0),
+                match_radius_m REAL NOT NULL DEFAULT 1500.0 CHECK(match_radius_m > 0.0),
+                ground_elevation_m REAL,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active', 'candidate', 'inactive')),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(dropzone_id) REFERENCES dropzones(dropzone_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dropzone_zones_dropzone
+            ON dropzone_zones(dropzone_id);
+            CREATE INDEX IF NOT EXISTS idx_dropzone_zones_coordinates
+            ON dropzone_zones(latitude, longitude);
+
+            CREATE TABLE IF NOT EXISTS dropzone_operators (
+                operator_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                country_code TEXT NOT NULL,
+                website_url TEXT,
+                status TEXT NOT NULL DEFAULT 'listed'
+                    CHECK(status IN ('listed', 'confirmed', 'inactive')),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS dropzone_operator_assignments (
+                dropzone_id TEXT NOT NULL,
+                operator_id TEXT NOT NULL,
+                is_primary INTEGER NOT NULL DEFAULT 0 CHECK(is_primary IN (0, 1)),
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active', 'candidate', 'inactive')),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(dropzone_id, operator_id),
+                FOREIGN KEY(dropzone_id) REFERENCES dropzones(dropzone_id) ON DELETE CASCADE,
+                FOREIGN KEY(operator_id) REFERENCES dropzone_operators(operator_id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dropzone_operator_assignments_operator
+            ON dropzone_operator_assignments(operator_id);
+
+            CREATE TABLE IF NOT EXISTS dropzone_sources (
+                source_id TEXT PRIMARY KEY,
+                dropzone_id TEXT,
+                zone_id TEXT,
+                operator_id TEXT,
+                source_kind TEXT NOT NULL
+                    CHECK(source_kind IN (
+                        'directory', 'official', 'airport_registry', 'terrain',
+                        'historical_gps', 'manual'
+                    )),
+                source_name TEXT NOT NULL,
+                source_url TEXT,
+                source_ref TEXT,
+                trust_level TEXT NOT NULL DEFAULT 'supporting'
+                    CHECK(trust_level IN ('discovery', 'supporting', 'primary')),
+                supports_fields_json TEXT NOT NULL DEFAULT '[]',
+                details_json TEXT NOT NULL DEFAULT '{}',
+                retrieved_at TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(dropzone_id) REFERENCES dropzones(dropzone_id) ON DELETE CASCADE,
+                FOREIGN KEY(zone_id) REFERENCES dropzone_zones(zone_id) ON DELETE CASCADE,
+                FOREIGN KEY(operator_id) REFERENCES dropzone_operators(operator_id) ON DELETE CASCADE,
+                CHECK(dropzone_id IS NOT NULL OR zone_id IS NOT NULL OR operator_id IS NOT NULL)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dropzone_sources_dropzone
+            ON dropzone_sources(dropzone_id);
+            CREATE INDEX IF NOT EXISTS idx_dropzone_sources_operator
+            ON dropzone_sources(operator_id);
+            CREATE INDEX IF NOT EXISTS idx_dropzone_sources_kind
+            ON dropzone_sources(source_kind);
+
+            CREATE TABLE IF NOT EXISTS dropzone_observations (
+                observation_id TEXT PRIMARY KEY,
+                dropzone_id TEXT NOT NULL,
+                jump_id TEXT,
+                observed_at TEXT,
+                latitude REAL NOT NULL CHECK(latitude BETWEEN -90.0 AND 90.0),
+                longitude REAL NOT NULL CHECK(longitude BETWEEN -180.0 AND 180.0),
+                ground_elevation_m REAL,
+                altitude_mad_m REAL,
+                sample_count INTEGER,
+                duration_s REAL,
+                source_kind TEXT NOT NULL DEFAULT 'historical_gps',
+                quality_status TEXT NOT NULL DEFAULT 'candidate'
+                    CHECK(quality_status IN ('candidate', 'accepted', 'rejected')),
+                details_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(dropzone_id) REFERENCES dropzones(dropzone_id) ON DELETE CASCADE,
+                FOREIGN KEY(jump_id) REFERENCES jumps(jump_id) ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dropzone_observations_dropzone
+            ON dropzone_observations(dropzone_id);
+            CREATE INDEX IF NOT EXISTS idx_dropzone_observations_jump
+            ON dropzone_observations(jump_id);
+
+            CREATE TABLE IF NOT EXISTS dropzone_match_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                jump_id TEXT NOT NULL,
+                algorithm_version TEXT NOT NULL,
+                catalog_version TEXT,
+                match_status TEXT NOT NULL
+                    CHECK(match_status IN (
+                        'accepted', 'manual', 'candidate', 'ambiguous', 'unmatched',
+                        'low_confidence', 'insufficient', 'unavailable'
+                    )),
+                assignment_source TEXT,
+                observed_at TEXT,
+                latitude REAL CHECK(latitude IS NULL OR latitude BETWEEN -90.0 AND 90.0),
+                longitude REAL CHECK(longitude IS NULL OR longitude BETWEEN -180.0 AND 180.0),
+                ground_elevation_m REAL,
+                altitude_mad_m REAL,
+                coordinate_p95_radius_m REAL,
+                sample_count INTEGER,
+                duration_s REAL,
+                nearest_dropzone_id TEXT,
+                nearest_zone_id TEXT,
+                nearest_distance_m REAL,
+                second_distance_m REAL,
+                confidence REAL CHECK(confidence IS NULL OR confidence BETWEEN 0.0 AND 1.0),
+                details_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(jump_id) REFERENCES jumps(jump_id) ON DELETE CASCADE,
+                FOREIGN KEY(nearest_dropzone_id) REFERENCES dropzones(dropzone_id) ON DELETE SET NULL,
+                FOREIGN KEY(nearest_zone_id) REFERENCES dropzone_zones(zone_id) ON DELETE SET NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_dropzone_match_attempts_jump_algorithm
+            ON dropzone_match_attempts(jump_id, algorithm_version);
+            CREATE INDEX IF NOT EXISTS idx_dropzone_match_attempts_status
+            ON dropzone_match_attempts(match_status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_dropzone_match_attempts_coordinates
+            ON dropzone_match_attempts(latitude, longitude);
+
+            CREATE TABLE IF NOT EXISTS dropzone_catalog_metadata (
+                catalog_key TEXT PRIMARY KEY,
+                catalog_version TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL,
+                dropzone_count INTEGER NOT NULL,
+                operator_count INTEGER NOT NULL,
+                imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                audit_json TEXT NOT NULL DEFAULT '{}'
+            );
             """
         )
 
@@ -169,6 +353,22 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE jumps ADD COLUMN analysis_signature TEXT NOT NULL DEFAULT 'legacy'"
             )
+        if "dropzone_id" not in columns:
+            conn.execute(
+                "ALTER TABLE jumps ADD COLUMN dropzone_id TEXT REFERENCES dropzones(dropzone_id) ON DELETE SET NULL"
+            )
+        if "dropzone_zone_id" not in columns:
+            conn.execute(
+                "ALTER TABLE jumps ADD COLUMN dropzone_zone_id TEXT REFERENCES dropzone_zones(zone_id) ON DELETE SET NULL"
+            )
+        if "dropzone_revision" not in columns:
+            conn.execute("ALTER TABLE jumps ADD COLUMN dropzone_revision INTEGER")
+        if "dropzone_assignment_source" not in columns:
+            conn.execute("ALTER TABLE jumps ADD COLUMN dropzone_assignment_source TEXT")
+        if "dropzone_assignment_confidence" not in columns:
+            conn.execute("ALTER TABLE jumps ADD COLUMN dropzone_assignment_confidence REAL")
+        if "dropzone_distance_m" not in columns:
+            conn.execute("ALTER TABLE jumps ADD COLUMN dropzone_distance_m REAL")
         conn.execute(
             """
             UPDATE jumps
@@ -207,5 +407,8 @@ def init_db() -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_jumps_jumper_hash_signature_unique "
             "ON jumps(jumper_name, source_file_sha256, analysis_signature)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jumps_dropzone_id ON jumps(dropzone_id)"
         )
         conn.commit()

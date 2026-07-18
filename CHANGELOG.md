@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.0 - 2026-07-18
+
+### Dropzone-Katalog
+
+- Versionierten Seed mit 89 physischen Sprungplätzen, 91 Landezonen, 81 deutschen Betreibern und 346 feldbezogenen Quellenbelegen ergänzt.
+- Eigenständiges Datenmodell für Dropzones, Zonen, Betreiber, Zuordnungen, Quellen, historische GNSS-Beobachtungen und Katalog-Metadaten eingeführt.
+- Reproduzierbaren Validierungs-, Import- und Audit-Befehl ergänzt; Seed-Import ist idempotent und schützt manuell verifizierte Bodenhöhen.
+- Strenge lokale Upload-Erkennung auf Basis stabiler Boden-GNSS-Sequenzen ergänzt; automatische Nutzung ist auf eindeutige `trusted`/`verified`-Treffer bis 750 m und mindestens 0,75 Konfidenz begrenzt.
+- Match-Versuche mit Algorithmus- und Katalogversion, Position, Höhe, Streuung, Entfernung, Konfidenz und Status revisionssicher gespeichert; unbekannte, mehrdeutige und unsichere Orte bleiben in einer lokalen Prüfliste.
+- Manuelle Bodenhöhen behalten Vorrang. Dropzones können im Expertenreport manuell bestätigt oder erneut automatisch erkannt werden.
+- 349 von 363 Altsprüngen sicher zugeordnet; 338 manuelle Bodenhöhen unverändert bewahrt, elf alte Schätzwerte durch Kataloghöhen ersetzt und 14 unzureichende Sequenzen unverändert belassen.
+- Regel-Score-Zahlen blieben unverändert; durch gesicherte Bodenhöhen wechselten neun Status von `estimated` zu `valid` und einer von `invalid` zu `valid`.
+- 84 Einträge als `trusted` und fünf bewusst als `candidate` klassifiziert; alle Integritäts- und Quellenabdeckungsprüfungen sind fehlerfrei.
+
+### Versionierung
+
+- App-Version auf `1.2.0` erhöht. Die mathematisch unveränderte Score-Engine bleibt korrekt als Analyseversion `1.1.0` gekennzeichnet; Dropzone, Katalogrevision und Zuordnungsart sind separat Teil der Analysesignatur.
+
 ## 1.1.0 - 2026-07-18
 
 ### Geändert
