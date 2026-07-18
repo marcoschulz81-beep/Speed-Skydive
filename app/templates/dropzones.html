@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}Dropzones | Speed-Skydive Analyzer{% endblock %}
+{% block content %}
+{% set vm = view_mode if view_mode in ["simple", "expert"] else "expert" %}
+<section class="panel">
+    <div class="panel-head">
+        <div>
+            <h1>Dropzone-Katalog</h1>
+            <p class="muted">Geprüfte Stammdaten, Bodenhöhen und Zuordnungsabdeckung des lokalen Katalogs.</p>
+        </div>
+        {% if directory.metadata %}
+        <span class="catalog-version">Katalog {{ directory.metadata.catalog_version }}</span>
+        {% endif %}
+    </div>
+
+    <div class="catalog-summary" aria-label="Katalog-Zusammenfassung">
+        <div class="score-box">
+            <span class="k">Dropzones</span>
+            <span class="v">{{ directory.total_count }}</span>
+            <span class="m">{{ directory.filtered_count }} in der aktuellen Auswahl</span>
+        </div>
+        <div class="score-box">
+            <span class="k">Vertrauenswürdig</span>
+            <span class="v">{{ directory.status_counts.get("trusted", 0) }}</span>
+            <span class="m">Für eindeutige automatische Zuordnung freigegeben</span>
+        </div>
+        <div class="score-box">
+            <span class="k">Verifiziert</span>
+            <span class="v">{{ directory.status_counts.get("verified", 0) }}</span>
+            <span class="m">Manuell abgesicherte Katalogdaten</span>
+        </div>
+        <div class="score-box">
+            <span class="k">Kandidaten</span>
+            <span class="v">{{ directory.status_counts.get("candidate", 0) }}</span>
+            <span class="m">Werden nicht automatisch zugeordnet</span>
+        </div>
+    </div>
+</section>
+
+<section class="panel">
+    <h2>Dropzones finden</h2>
+    <form class="catalog-filter" method="get" action="/dropzones">
+        <input type="hidden" name="view" value="{{ vm }}">
+        <label>
+            <span>Suche</span>
+            <input type="text" name="q" value="{{ directory.filters.query }}" placeholder="Name, Ort, ICAO oder Betreiber">
+        </label>
+        <label>
+            <span>Land</span>
+            <select name="country">
+                <option value="">Alle Länder</option>
+                {% for country in directory.countries %}
+                <option value="{{ country.country_code }}" {% if country.country_code == directory.filters.country_code %}selected{% endif %}>
+                    {{ country.country_code }} ({{ country.dropzone_count }})
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            <span>Status</span>
+            <select name="status">
+                <option value="">Alle Status</option>
+                {% for key in ["verified", "trusted", "candidate", "inactive"] %}
+                {% if directory.status_counts.get(key, 0) %}
+                <option value="{{ key }}" {% if key == directory.filters.status %}selected{% endif %}>
+                    {{ dropzone_status_labels.get(key, key) }} ({{ directory.status_counts.get(key, 0) }})
+                </option>
+                {% endif %}
+                {% endfor %}
+            </select>
+        </label>
+        <div class="catalog-filter-actions">
+            <button type="submit">Filtern</button>
+            <a class="btn secondary" href="/dropzones?view={{ vm }}">Zurücksetzen</a>
+        </div>
+    </form>
+</section>
+
+<section class="panel">
+    <div class="panel-head">
+        <h2>Ergebnisse</h2>
+        <span class="muted result-count">{{ directory.filtered_count }} Einträge</span>
+    </div>
+    {% if directory["items"] %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Dropzone</th>
+                <th>Ort</th>
+                <th>Status</th>
+                <th>Bodenhöhe</th>
+                <th>Betreiber</th>
+                <th>Nachweise</th>
+                <th>Sprünge</th>
+                <th>Detail</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for item in directory["items"] %}
+            <tr>
+                <td>
+                    <strong>{{ item.name }}</strong><br>
+                    <span class="muted">{{ item.icao_code or item.airport_ident or item.dropzone_id }}</span>
+                </td>
+                <td>
+                    {{ item.locality or item.region or "-" }}<br>
+                    <span class="muted">{{ item.country_code }}</span>
+                </td>
+                <td><span class="status-badge status-{{ item.status }}">{{ dropzone_status_labels.get(item.status, item.status) }}</span></td>
+                <td>
+                    {% if item.ground_elevation_m is not none %}
+                    {{ "%.1f"|format(item.ground_elevation_m) }} m MSL
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td>{{ item.operator_names or "-" }}</td>
+                <td>{{ item.source_count }} Quellen<br><span class="muted">{{ item.zone_count }} Zonen</span></td>
+                <td>{{ item.assigned_jump_count }}</td>
+                <td><a href="/dropzones/{{ item.dropzone_id | urlencode }}?view={{ vm }}">Ansehen</a></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted empty-state">Für diese Filter wurden keine Dropzones gefunden.</p>
+    {% endif %}
+</section>
+{% endblock %}

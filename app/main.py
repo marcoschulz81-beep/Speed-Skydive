@@ -40,6 +40,7 @@ from app.config import (
 )
 from app.database import init_db
 from app.services.ai_coach import AI_COACHING_SCHEMA_VERSION, generate_ai_coaching_texts
+from app.services.dropzone_directory import get_dropzone_detail, list_dropzones
 from app.services.dropzone_matching import analyze_flysight_with_dropzone, list_dropzone_choices
 from app.services.storage import (
     VALID_JUMP_CONTEXTS,
@@ -160,6 +161,53 @@ _PROFILE_CONFIDENCE_LABELS = {
     "medium": "mittel",
     "good": "gut",
     "stable": "stabil",
+}
+_DROPZONE_STATUS_LABELS = {
+    "candidate": "Kandidat",
+    "trusted": "Vertrauenswürdig",
+    "verified": "Verifiziert",
+    "inactive": "Inaktiv",
+}
+_ZONE_KIND_LABELS = {
+    "primary": "Primärzone",
+    "landing": "Landezone",
+    "alternate": "Ausweichzone",
+    "historical": "Historische Zone",
+}
+_ZONE_STATUS_LABELS = {"active": "Aktiv", "candidate": "Kandidat", "inactive": "Inaktiv"}
+_OPERATOR_STATUS_LABELS = {"listed": "Gelistet", "confirmed": "Bestätigt", "inactive": "Inaktiv"}
+_SOURCE_KIND_LABELS = {
+    "directory": "Verzeichnis",
+    "official": "Offizielle Quelle",
+    "airport_registry": "Flugplatzregister",
+    "terrain": "Geländemodell",
+    "historical_gps": "Historische GNSS-Daten",
+    "manual": "Manuelle Prüfung",
+}
+_TRUST_LEVEL_LABELS = {
+    "discovery": "Fundstelle",
+    "supporting": "Stützend",
+    "primary": "Primärbeleg",
+}
+_ASSIGNMENT_SOURCE_LABELS = {
+    "catalog_auto": "Automatisch",
+    "catalog_manual": "Manuell bestätigt",
+    "unknown": "Unbekannt",
+}
+_MATCH_STATUS_LABELS = {
+    "accepted": "Akzeptiert",
+    "manual": "Manuell",
+    "candidate": "Kandidat",
+    "ambiguous": "Mehrdeutig",
+    "unmatched": "Ohne Treffer",
+    "low_confidence": "Niedrige Konfidenz",
+    "insufficient": "Daten unzureichend",
+    "unavailable": "Nicht verfügbar",
+}
+_OBSERVATION_QUALITY_LABELS = {
+    "candidate": "Kandidat",
+    "accepted": "Akzeptiert",
+    "rejected": "Verworfen",
 }
 
 _SIMPLE_GLOSSARY_ITEMS: list[tuple[str, str]] = [
@@ -453,6 +501,54 @@ def index(
             "jumpers": jumpers,
             "show_jumpers_panel": show_jumpers_panel,
             "jumper_overview": _build_jumpers_overview(jumpers) if show_jumpers_panel else [],
+            "needs_plotly": False,
+        },
+    )
+
+
+@app.get("/dropzones")
+def dropzone_directory(
+    request: Request,
+    q: str | None = None,
+    country: str | None = None,
+    status: str | None = None,
+    view: str | None = None,
+):
+    view_mode = _normalize_view_mode(view)
+    directory = list_dropzones(query=q, country_code=country, status=status)
+    return templates.TemplateResponse(
+        request,
+        "dropzones.html",
+        {
+            "directory": directory,
+            "view_mode": view_mode,
+            "dropzone_status_labels": _DROPZONE_STATUS_LABELS,
+            "needs_plotly": False,
+        },
+    )
+
+
+@app.get("/dropzones/{dropzone_id}")
+def dropzone_detail(request: Request, dropzone_id: str, view: str | None = None):
+    view_mode = _normalize_view_mode(view)
+    detail = get_dropzone_detail(dropzone_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Dropzone nicht gefunden.")
+    return templates.TemplateResponse(
+        request,
+        "dropzone_detail.html",
+        {
+            "detail": detail,
+            "view_mode": view_mode,
+            "dropzone_status_labels": _DROPZONE_STATUS_LABELS,
+            "zone_kind_labels": _ZONE_KIND_LABELS,
+            "zone_status_labels": _ZONE_STATUS_LABELS,
+            "operator_status_labels": _OPERATOR_STATUS_LABELS,
+            "source_kind_labels": _SOURCE_KIND_LABELS,
+            "trust_level_labels": _TRUST_LEVEL_LABELS,
+            "assignment_source_labels": _ASSIGNMENT_SOURCE_LABELS,
+            "match_status_labels": _MATCH_STATUS_LABELS,
+            "observation_quality_labels": _OBSERVATION_QUALITY_LABELS,
             "needs_plotly": False,
         },
     )

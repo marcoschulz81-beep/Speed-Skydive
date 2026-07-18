@@ -1,11 +1,12 @@
 # Speed-Skydive Analyzer
 
-Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Fokus auf Techniktraining und eine nachvollziehbare 3s-Wertung. Aktuelle App-Version: `1.2.0`; unveränderte Score-Engine: `1.1.0`.
+Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Fokus auf Techniktraining und eine nachvollziehbare 3s-Wertung. Aktuelle App-Version: `1.3.0`; unveränderte Score-Engine: `1.1.0`.
 
 ## Enthaltene Funktionen
 
 - CSV-Upload (FlySight 1 kompatibel) inkl. Pflichtspalten-Validierung
 - Lokale Dropzone-Erkennung mit Kataloghöhe, Konfidenz, Prüfliste und manueller Korrektur
+- Schreibgeschützter Dropzone-Katalog in der UI mit Filtern, Detaildaten, Quellen und aggregierten Zuordnungswerten
 - Automatische `t0`-Erkennung (Absprungzeitpunkt) mit Plausibilitaetspruefung
 - Berechnung pro Sample:
   - vertikale/horizontale/gesamte Geschwindigkeit
@@ -186,15 +187,19 @@ python -m scripts.dropzone_catalog --audit-matches --json
 
 Der Report zeigt Platz, Landezone, Entfernung, Konfidenz und Zuordnungsart. In der Expertenansicht
 kann eine Dropzone manuell bestätigt oder die automatische Erkennung erneut ausgeführt werden.
+Über den Navigationspunkt **Dropzones** öffnet `/dropzones` die schreibgeschützte Katalogübersicht.
+Sie kann nach Name, Ort, ICAO-Kennung, Betreiber, Land und Status gefiltert werden. Die Detailseite
+`/dropzones/{dropzone_id}` zeigt Höhenbelege, Zonen, Betreiber, Quellen sowie ausschließlich
+aggregierte Zuordnungs- und GNSS-Beobachtungswerte ohne Springernamen oder einzelne Sprung-IDs.
 Katalogmethodik: `docs/dropzone-catalog-2026.07.18.md`; Rollout und Validierung:
-`docs/validation-v1.2.0.md`.
+`docs/validation-v1.2.0.md` und `docs/validation-v1.3.0.md`.
 
 ## Tests
 
 ```powershell
 python -m pytest
 python -m ruff check .
-python -m mypy app/analysis/evaluation.py app/analysis/potential.py app/services/dropzone_matching.py scripts
+python -m mypy app/analysis/evaluation.py app/analysis/potential.py app/services/dropzone_matching.py app/services/dropzone_directory.py scripts
 ```
 
 ## Analyseversion 1.1.0

@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block title %}{{ detail.dropzone.name }} | Dropzones{% endblock %}
+{% block content %}
+{% set vm = view_mode if view_mode in ["simple", "expert"] else "expert" %}
+{% set item = detail.dropzone %}
+<section class="panel">
+    <div class="breadcrumb"><a href="/dropzones?view={{ vm }}">Dropzone-Katalog</a> <span>/</span> {{ item.name }}</div>
+    <div class="panel-head catalog-detail-head">
+        <div>
+            <h1>{{ item.name }}</h1>
+            <p class="muted">{{ item.locality or item.region or "Ort nicht angegeben" }}, {{ item.country_code }}</p>
+        </div>
+        <span class="status-badge status-{{ item.status }}">{{ dropzone_status_labels.get(item.status, item.status) }}</span>
+    </div>
+
+    <div class="meta-grid catalog-meta-grid">
+        <div><span class="label">Dropzone-ID</span><span>{{ item.dropzone_id }}</span></div>
+        <div><span class="label">ICAO / Flugplatzkennung</span><span>{{ item.icao_code or "-" }} / {{ item.airport_ident or "-" }}</span></div>
+        <div><span class="label">Region</span><span>{{ item.region or "-" }}</span></div>
+        <div><span class="label">Koordinaten</span><span>{{ "%.6f"|format(item.latitude) }}, {{ "%.6f"|format(item.longitude) }}</span></div>
+        <div><span class="label">Erkennungsradius</span><span>{{ "%.0f"|format(item.match_radius_m) }} m</span></div>
+        <div>
+            <span class="label">Bodenhöhe</span>
+            <span>{% if item.ground_elevation_m is not none %}{{ "%.1f"|format(item.ground_elevation_m) }} m MSL{% else %}-{% endif %}</span>
+            <span class="meta-note">Quelle: {{ item.ground_elevation_source or "nicht angegeben" }}</span>
+        </div>
+        <div>
+            <span class="label">Veröffentlichte Höhe</span>
+            <span>{% if item.published_elevation_m is not none %}{{ "%.1f"|format(item.published_elevation_m) }} m MSL{% else %}-{% endif %}</span>
+        </div>
+        <div>
+            <span class="label">Höhenunsicherheit</span>
+            <span>{% if item.ground_elevation_uncertainty_m is not none %}± {{ "%.1f"|format(item.ground_elevation_uncertainty_m) }} m{% else %}-{% endif %}</span>
+        </div>
+        <div><span class="label">Katalogrevision</span><span>{{ item.catalog_revision }}</span></div>
+        <div><span class="label">Katalogversion</span><span>{{ detail.metadata.catalog_version if detail.metadata else "-" }}</span></div>
+    </div>
+</section>
+
+<section class="panel">
+    <h2>Zuordnungsstatistik</h2>
+    <p class="muted">Nur aggregierte Werte; Springernamen und einzelne Sprung-IDs werden nicht angezeigt.</p>
+    <div class="catalog-summary">
+        <div class="score-box">
+            <span class="k">Zugeordnete Sprünge</span>
+            <span class="v">{{ detail.assignment_summary.total }}</span>
+            <span class="m">Letzter Sprung: {{ detail.assignment_summary.latest_jump_at or "-" }}</span>
+        </div>
+        <div class="score-box">
+            <span class="k">Automatisch / manuell</span>
+            <span class="v">{{ detail.assignment_summary.automatic }} / {{ detail.assignment_summary.manual }}</span>
+            <span class="m">Aktuell gespeicherte Zuordnung</span>
+        </div>
+        <div class="score-box">
+            <span class="k">Ø Konfidenz</span>
+            <span class="v">{% if detail.assignment_summary.average_confidence is not none %}{{ "%.3f"|format(detail.assignment_summary.average_confidence) }}{% else %}-{% endif %}</span>
+            <span class="m">Min./Max.: {% if detail.assignment_summary.minimum_confidence is not none %}{{ "%.3f"|format(detail.assignment_summary.minimum_confidence) }} / {{ "%.3f"|format(detail.assignment_summary.maximum_confidence) }}{% else %}-{% endif %}</span>
+        </div>
+        <div class="score-box">
+            <span class="k">Ø Entfernung</span>
+            <span class="v">{% if detail.assignment_summary.average_distance_m is not none %}{{ "%.1f"|format(detail.assignment_summary.average_distance_m) }} m{% else %}-{% endif %}</span>
+            <span class="m">GNSS-Bodenposition zur erkannten Zone</span>
+        </div>
+    </div>
+
+    {% if detail.assignment_sources %}
+    <div class="table-wrap catalog-subtable">
+        <table>
+            <thead><tr><th>Aktuelle Zuordnungsart</th><th>Sprünge</th></tr></thead>
+            <tbody>
+            {% for row in detail.assignment_sources %}
+            <tr>
+                <td>{{ assignment_source_labels.get(row.assignment_source, row.assignment_source) }}</td>
+                <td>{{ row.assignment_count }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {% if detail.match_statuses %}
+    <div class="table-wrap catalog-subtable">
+        <table>
+            <thead><tr><th>Erkennungsstatus</th><th>Versuche</th><th>Ø Konfidenz</th><th>Ø Entfernung</th></tr></thead>
+            <tbody>
+            {% for row in detail.match_statuses %}
+            <tr>
+                <td>{{ match_status_labels.get(row.match_status, row.match_status) }}</td>
+                <td>{{ row.attempt_count }}</td>
+                <td>{% if row.average_confidence is not none %}{{ "%.3f"|format(row.average_confidence) }}{% else %}-{% endif %}</td>
+                <td>{% if row.average_distance_m is not none %}{{ "%.1f"|format(row.average_distance_m) }} m{% else %}-{% endif %}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</section>
+
+<section class="panel">
+    <h2>Zonen</h2>
+    {% if detail.zones %}
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Name</th><th>Art</th><th>Status</th><th>Koordinaten</th><th>Radius</th><th>Bodenhöhe</th></tr></thead>
+            <tbody>
+            {% for zone in detail.zones %}
+            <tr>
+                <td>{{ zone.name }}</td>
+                <td>{{ zone_kind_labels.get(zone.zone_kind, zone.zone_kind) }}</td>
+                <td>{{ zone_status_labels.get(zone.status, zone.status) }}</td>
+                <td>{{ "%.6f"|format(zone.latitude) }}, {{ "%.6f"|format(zone.longitude) }}</td>
+                <td>{{ "%.0f"|format(zone.match_radius_m) }} m</td>
+                <td>{% if zone.ground_elevation_m is not none %}{{ "%.1f"|format(zone.ground_elevation_m) }} m MSL{% else %}-{% endif %}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">Keine Zonen hinterlegt.</p>
+    {% endif %}
+</section>
+
+<section class="panel">
+    <h2>Betreiber</h2>
+    {% if detail.operators %}
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Name</th><th>Land</th><th>Status</th><th>Zuordnung</th><th>Website</th></tr></thead>
+            <tbody>
+            {% for operator in detail.operators %}
+            <tr>
+                <td>{{ operator.name }}{% if operator.is_primary %} <span class="muted">(Hauptbetreiber)</span>{% endif %}</td>
+                <td>{{ operator.country_code }}</td>
+                <td>{{ operator_status_labels.get(operator.status, operator.status) }}</td>
+                <td>{{ operator.assignment_status }}</td>
+                <td>{% if operator.website_url %}<a href="{{ operator.website_url }}" target="_blank" rel="noopener noreferrer">Website öffnen</a>{% else %}-{% endif %}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">Kein Betreiber hinterlegt.</p>
+    {% endif %}
+</section>
+
+<section class="panel">
+    <h2>Quellen und Nachweise</h2>
+    {% if detail.sources %}
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Quelle</th><th>Art</th><th>Vertrauen</th><th>Belegte Felder</th><th>Abruf</th><th>Link / Referenz</th></tr></thead>
+            <tbody>
+            {% for source in detail.sources %}
+            <tr>
+                <td>{{ source.source_name }}</td>
+                <td>{{ source_kind_labels.get(source.source_kind, source.source_kind) }}</td>
+                <td>{{ trust_level_labels.get(source.trust_level, source.trust_level) }}</td>
+                <td>{{ source.supports_fields | join(", ") if source.supports_fields else "-" }}</td>
+                <td>{{ source.retrieved_at }}</td>
+                <td>
+                    {% if source.source_url %}<a href="{{ source.source_url }}" target="_blank" rel="noopener noreferrer">Quelle öffnen</a>{% endif %}
+                    {% if source.source_ref %}<span class="source-ref">{{ source.source_ref }}</span>{% endif %}
+                    {% if not source.source_url and not source.source_ref %}-{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">Keine Quellen hinterlegt.</p>
+    {% endif %}
+</section>
+
+<section class="panel">
+    <h2>Historische GNSS-Beobachtungen</h2>
+    <p class="muted">Aggregierte Qualitäts- und Höhenwerte; keine personenbezogenen Sprungdetails.</p>
+    {% if detail.observation_groups %}
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Herkunft</th><th>Qualität</th><th>Beobachtungen</th><th>Samples</th><th>Ø Bodenhöhe</th><th>Ø Höhen-MAD</th></tr></thead>
+            <tbody>
+            {% for row in detail.observation_groups %}
+            <tr>
+                <td>{{ source_kind_labels.get(row.source_kind, row.source_kind) }}</td>
+                <td>{{ observation_quality_labels.get(row.quality_status, row.quality_status) }}</td>
+                <td>{{ row.observation_count }}</td>
+                <td>{{ row.sample_count }}</td>
+                <td>{% if row.average_ground_elevation_m is not none %}{{ "%.1f"|format(row.average_ground_elevation_m) }} m MSL{% else %}-{% endif %}</td>
+                <td>{% if row.average_altitude_mad_m is not none %}{{ "%.1f"|format(row.average_altitude_mad_m) }} m{% else %}-{% endif %}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">Noch keine historischen GNSS-Beobachtungen gespeichert.</p>
+    {% endif %}
+</section>
+{% endblock %}

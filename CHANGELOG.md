@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.0 - 2026-07-18
+
+### Dropzone-Katalog in der UI
+
+- Schreibgeschützte, filterbare Übersicht für alle Dropzones mit Ort, Status, Bodenhöhe, Betreiber, Quellenabdeckung, Zonen- und Sprunganzahl ergänzt.
+- Vollständige Detailseiten für Stammdaten, Erkennungsradius, Höhenherkunft und -unsicherheit, Zonen, Betreiber sowie feldbezogene Quellenbelege ergänzt.
+- Zuordnungsversuche und historische GNSS-Beobachtungen werden ausschließlich aggregiert angezeigt; Springernamen und einzelne Sprung-IDs bleiben verborgen.
+- Externe Links werden nur für gültige HTTP(S)-Adressen angeboten; Katalogdaten können über diese UI nicht verändert werden.
+- Zugeordnete Dropzones sind aus dem Sprungreport direkt mit ihrer Katalogdetailseite verlinkt.
+
+### Versionierung
+
+- App-Version auf `1.3.0` erhöht. Score-Berechnung, Lernlogik und Analysesignatur bleiben unverändert auf Analyseversion `1.1.0`.
+
 ## 1.2.0 - 2026-07-18
 
 ### Dropzone-Katalog

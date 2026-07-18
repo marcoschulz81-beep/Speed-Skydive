@@ -73,7 +73,7 @@
         <div>
             <span class="label">Dropzone</span>
             {% if report.dropzone %}
-            <span>{{ report.dropzone.name }} ({{ report.dropzone.country_code }})</span>
+            <span><a href="/dropzones/{{ report.dropzone.dropzone_id | urlencode }}?view={{ vm }}">{{ report.dropzone.name }}</a> ({{ report.dropzone.country_code }})</span>
             {% if vm == "expert" %}
             <span class="meta-note">
                 {{ report.dropzone.zone_name or "Landezone" }};
