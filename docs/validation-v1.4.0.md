@@ -99,4 +99,4 @@ Der asynchrone KI-Pfad wurde mit einem kontrollierten Test-Client geprüft:
 - Ruff: bestanden.
 - Mypy im dokumentierten Umfang: bestanden.
 - `compileall` für `app`, `scripts` und `tests`: bestanden.
-- GitHub Actions: wird nach dem Push als letzte externe Prüfung ergänzt.
+- Erster GitHub-Actions-Lauf `29759957553`: alle Schritte in 41 Sekunden bestanden. Die dabei gemeldete Node-20-Abkündigung wurde durch das Upgrade der offiziellen Actions auf ihre Node-24-Versionen behoben; der aktualisierte Lauf ist die abschließende externe Release-Prüfung.

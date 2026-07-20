@@ -16,6 +16,7 @@
 - Der Kaltstart eines Reports mit 184 historischen Sprüngen sank im Integrationstest von rund 24 Sekunden auf 0,179 Sekunden; der warme Aufruf benötigte 0,119 Sekunden.
 - KI-Coaching wird nach der deterministischen Seite im Hintergrund erzeugt, automatisch nachgeladen und persistent gespeichert.
 - Wiederholbarer Backfill mit automatischem Vorab-Backup und anschließendem Integritätsaudit ergänzt.
+- GitHub Actions auf die Node-24-basierten Versionen `checkout@v5` und `setup-python@v6` aktualisiert.
 
 ### Versionierung
 
