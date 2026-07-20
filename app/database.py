@@ -4,6 +4,98 @@ from contextlib import contextmanager
 from app.config import DATABASE_PATH
 
 
+def _migration_001_performance_storage(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS jump_series (
+            jump_id TEXT PRIMARY KEY,
+            series_version INTEGER NOT NULL DEFAULT 1,
+            encoding TEXT NOT NULL,
+            point_count INTEGER NOT NULL,
+            start_s REAL NOT NULL,
+            end_s REAL NOT NULL,
+            payload BLOB NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(jump_id) REFERENCES jumps(jump_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS jump_analysis_features (
+            jump_id TEXT PRIMARY KEY,
+            feature_version INTEGER NOT NULL DEFAULT 1,
+            reference_signature TEXT NOT NULL DEFAULT '',
+            source_json TEXT NOT NULL,
+            record_json TEXT,
+            reference_eligible INTEGER NOT NULL DEFAULT 0 CHECK(reference_eligible IN (0, 1)),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(jump_id) REFERENCES jumps(jump_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_jump_analysis_features_reference
+        ON jump_analysis_features(reference_eligible, jump_id);
+
+        CREATE TABLE IF NOT EXISTS jumper_profile_snapshots (
+            jumper_key TEXT PRIMARY KEY,
+            jumper_name TEXT NOT NULL,
+            feature_version INTEGER NOT NULL DEFAULT 1,
+            history_signature TEXT NOT NULL,
+            reference_signature TEXT NOT NULL DEFAULT '',
+            jump_count INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_coaching_results (
+            cache_key TEXT PRIMARY KEY,
+            jump_id TEXT,
+            analysis_signature TEXT NOT NULL,
+            model TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            view_mode TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('ready', 'error')),
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(jump_id) REFERENCES jumps(jump_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ai_coaching_results_jump
+        ON ai_coaching_results(jump_id, updated_at DESC);
+        """
+    )
+
+
+_SCHEMA_MIGRATIONS = (
+    (1, "performance_storage_v1", _migration_001_performance_storage),
+)
+
+
+def _apply_schema_migrations(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    applied = {
+        int(row["version"])
+        for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+    }
+    for version, name, migration in _SCHEMA_MIGRATIONS:
+        if version in applied:
+            continue
+        migration(conn)
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+            (version, name),
+        )
+
+
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
@@ -24,6 +116,9 @@ def get_connection():
 
 def init_db() -> None:
     with get_connection() as conn:
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA wal_autocheckpoint = 1000;")
         conn.executescript(
             """
             PRAGMA foreign_keys = ON;
@@ -411,4 +506,5 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jumps_dropzone_id ON jumps(dropzone_id)"
         )
+        _apply_schema_migrations(conn)
         conn.commit()

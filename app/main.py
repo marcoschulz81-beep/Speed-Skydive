@@ -12,8 +12,8 @@ from statistics import mean
 from typing import Any
 from urllib.parse import quote_plus
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import RedirectResponse, Response
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -45,10 +45,13 @@ from app.services.dropzone_matching import analyze_flysight_with_dropzone, list_
 from app.services.storage import (
     VALID_JUMP_CONTEXTS,
     delete_jump,
+    get_ai_coaching_result,
     get_best_jump_for_jumper,
     get_jump_report,
     get_jump_source_metadata,
     get_jump_summary,
+    get_jumper_profile_snapshot,
+    list_analysis_features,
     list_compare_candidates,
     list_jumpers,
     list_jumps_for_jumper,
@@ -58,8 +61,11 @@ from app.services.storage import (
     replace_analysis_result,
     save_analysis_result,
     update_jump_context,
+    upsert_ai_coaching_result,
+    upsert_analysis_feature,
     upsert_coaching_snapshot,
     upsert_jump_feedback,
+    upsert_jumper_profile_snapshot,
 )
 from app.text_utils import normalize_german_text
 
@@ -626,10 +632,25 @@ async def analyze_upload(
     return RedirectResponse(url=jump_url, status_code=303)
 
 
+@app.get("/jumps/{jump_id}/ai-coaching-status")
+def ai_coaching_status(jump_id: str, cache_key: str):
+    cached = get_ai_coaching_result(cache_key, jump_id=jump_id)
+    if cached is None:
+        return JSONResponse({"complete": False, "available": False})
+    status = str(cached.pop("_cache_status", "ready"))
+    return JSONResponse(
+        {
+            "complete": True,
+            "available": bool(status == "ready" and cached.get("available")),
+        }
+    )
+
+
 @app.get("/jumps/{jump_id}")
 def jump_detail(
     request: Request,
     jump_id: str,
+    background_tasks: BackgroundTasks,
     message: str | None = None,
     error: str | None = None,
     view: str | None = None,
@@ -672,14 +693,21 @@ def jump_detail(
         if previous_jump_row is not None and previous_jump_row.get("jump_id")
         else None
     )
-    jumper_history_reports: list[dict[str, Any]] = []
-    for item in jumper_history_rows:
-        item_report = get_jump_report(item["jump_id"])
-        if item_report is not None:
-            jumper_history_reports.append(item_report)
+    marco_profile = _get_marco_top15_profile(limit=15)
+    known_history_reports = {str(report["jump"]["jump_id"]): report}
+    if previous_jump_report is not None:
+        known_history_reports[str(previous_jump_report["jump"]["jump_id"])] = previous_jump_report
+    jumper_records, potential_history_reports = _load_jumper_feature_records(
+        rows=jumper_history_rows,
+        marco_profile=marco_profile,
+        known_reports=known_history_reports,
+    )
     jumper_summary = _build_jumper_summary(
         jumper_name=report["jump"]["jumper_name"],
         jumps=jumper_history_rows,
+        precomputed_records=jumper_records,
+        marco_profile=marco_profile,
+        use_persistent_cache=True,
     )
     jumper_stability_reference = (
         jumper_summary.get("stability_reference")
@@ -694,9 +722,8 @@ def jump_detail(
 
     speed_potential = build_speed_potential_preview(
         current_report=report,
-        historical_reports=jumper_history_reports,
+        historical_reports=potential_history_reports,
     )
-    marco_profile = _get_marco_top15_profile(limit=15)
     previous_review = (
         build_jump_review(
             previous_jump_report,
@@ -765,6 +792,16 @@ def jump_detail(
         quality_issue_lines=quality_issue_lines,
         view_mode=view_mode,
     )
+    deferred_ai_payload = ai_coaching.pop("_background_payload", None)
+    if isinstance(deferred_ai_payload, dict):
+        background_tasks.add_task(
+            _generate_and_store_ai_coaching,
+            payload=deferred_ai_payload,
+            cache_key=str(ai_coaching.get("cache_key") or ""),
+            jump_id=jump_id,
+            analysis_signature=str(report["jump"].get("analysis_signature") or "legacy"),
+            view_mode=view_mode,
+        )
     if view_mode == _VIEW_MODE_EXPERT:
         coaching_snapshot = _build_coaching_snapshot(
             report=report,
@@ -1177,7 +1214,7 @@ def jumper_view(request: Request, jumper_name: str, view: str | None = None):
         raise HTTPException(status_code=404, detail="Springer nicht gefunden.")
 
     jumps = _annotate_best_jump(jumps)
-    jumper_summary = _build_jumper_summary(jumper_name=jumper_name, jumps=jumps)
+    jumper_summary = _build_cached_jumper_summary(jumper_name=jumper_name, jumps=jumps)
     view_mode = _normalize_view_mode(view)
     return templates.TemplateResponse(
         request,
@@ -1211,7 +1248,7 @@ def jumper_compare(
         raise HTTPException(status_code=404, detail="Springer nicht gefunden.")
 
     jumps = _annotate_best_jump(jumps)
-    jumper_summary = _build_jumper_summary(jumper_name=jumper_name, jumps=jumps)
+    jumper_summary = _build_cached_jumper_summary(jumper_name=jumper_name, jumps=jumps)
     view_mode = _normalize_view_mode(view)
     jump_ids = {jump["jump_id"] for jump in jumps}
     compare_error: str | None = None
@@ -1284,7 +1321,7 @@ def coach_view(request: Request, jumper_name: str | None = None, view: str | Non
         if not jump_rows:
             continue
         jump_rows = _annotate_best_jump(jump_rows)
-        jumper_summary = _build_jumper_summary(jumper_name=jumper, jumps=jump_rows)
+        jumper_summary = _build_cached_jumper_summary(jumper_name=jumper, jumps=jump_rows)
         best = next((item for item in jump_rows if item.get("is_best")), None)
         best_report = get_jump_report(best["jump_id"]) if best is not None else None
 
@@ -2889,6 +2926,9 @@ def _get_marco_top15_profile(*, limit: int = 15) -> dict[str, Any] | None:
         return cached[1]
 
     profile = _build_marco_top15_profile(limit=limit, rows=rows)
+    if profile is not None:
+        profile = dict(profile)
+        profile["_reference_signature"] = signature
     _MARCO_PROFILE_CACHE[int(limit)] = (signature, profile)
     return profile
 
@@ -2937,6 +2977,70 @@ def _jumper_summary_signature(rows: list[dict[str, Any]]) -> str:
     return hashlib.sha1("||".join(parts).encode("utf-8")).hexdigest()
 
 
+def _reference_signature_from_profile(profile: dict[str, Any] | None) -> str:
+    if not isinstance(profile, dict):
+        return "no-marco-reference"
+    signature = str(profile.get("_reference_signature") or "").strip()
+    if signature:
+        return signature
+    payload = json.dumps(profile, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _analysis_feature_source(report: dict[str, Any]) -> dict[str, Any]:
+    jump = report.get("jump", {}) if isinstance(report.get("jump"), dict) else {}
+    metrics = report.get("metrics", {}) if isinstance(report.get("metrics"), dict) else {}
+    notes = report.get("notes", {}) if isinstance(report.get("notes"), dict) else {}
+    quality_flags = list(report.get("quality_flags", []) or [])
+    reference_eligible = _is_clean_reference_jump(
+        {
+            "quality_flags": quality_flags,
+            "rule_score_status": metrics.get("rule_score_status"),
+            "rule_based_3s_score": metrics.get("rule_based_3s_score"),
+        },
+        report,
+    )
+    return {
+        "metric_snapshot": _scorecard_metric_snapshot(report),
+        "reference_eligible": reference_eligible,
+        "potential_report": {
+            "jump": {"jump_id": jump.get("jump_id")},
+            "quality_flags": quality_flags,
+            "notes": {
+                "analysis_blocked": bool(notes.get("analysis_blocked")),
+                "t0_review_required": bool(notes.get("t0_review_required")),
+            },
+            "metrics": {
+                "rule_score_status": metrics.get("rule_score_status"),
+                "rule_based_3s_score": metrics.get("rule_based_3s_score"),
+                "negative_risk_score": metrics.get("negative_risk_score"),
+            },
+            "fixpoints": report.get("fixpoints", []),
+            "phases": report.get("phases", []),
+        },
+    }
+
+
+def _persist_analysis_feature(
+    report: dict[str, Any],
+    *,
+    marco_profile: dict[str, Any] | None,
+    include_record: bool,
+) -> dict[str, Any]:
+    source = _analysis_feature_source(report)
+    record = _build_jumper_record(report, marco_profile=marco_profile) if include_record else None
+    jump_id = str(report.get("jump", {}).get("jump_id") or "")
+    if jump_id:
+        upsert_analysis_feature(
+            jump_id,
+            source=source,
+            record=record,
+            reference_signature=_reference_signature_from_profile(marco_profile),
+            reference_eligible=bool(source.get("reference_eligible")),
+        )
+    return {"source": source, "record": record}
+
+
 def _build_marco_top15_profile(
     *,
     limit: int = 15,
@@ -2953,19 +3057,30 @@ def _build_marco_top15_profile(
         reverse=True,
     )
 
+    feature_map = list_analysis_features(
+        [str(row.get("jump_id") or "") for row in ordered_rows]
+    )
     candidates: list[dict[str, Any]] = []
     target = max(1, int(limit))
     for row in ordered_rows:
         jump_id = str(row.get("jump_id") or "")
         if not jump_id:
             continue
-        report = get_jump_report(jump_id)
-        if report is None:
+        feature = feature_map.get(jump_id)
+        source = feature.get("source") if isinstance(feature, dict) else None
+        if not isinstance(source, dict):
+            report = get_jump_report(jump_id)
+            if report is None:
+                continue
+            persisted = _persist_analysis_feature(report, marco_profile=None, include_record=False)
+            source = persisted["source"]
+        if not bool(source.get("reference_eligible")):
             continue
-        if not _is_clean_reference_jump(row, report):
+        raw_snapshot = source.get("metric_snapshot")
+        if not isinstance(raw_snapshot, dict):
             continue
-        snap = _scorecard_metric_snapshot(report)
-        best_3s = _to_float(report.get("metrics", {}).get("rule_based_3s_score"))
+        snap = dict(raw_snapshot)
+        best_3s = _to_float(row.get("rule_based_3s_score"))
         if best_3s is None:
             continue
         snap["best_3s"] = best_3s
@@ -3665,6 +3780,61 @@ def _feedback_context_line(feedback_context: dict[str, Any] | None, *, key: str)
     return _truncate_text(text, 360)
 
 
+def _ai_coaching_cache_key(
+    *,
+    payload: dict[str, Any],
+    jump_id: str,
+    analysis_signature: str,
+    view_mode: str,
+) -> str:
+    raw = json.dumps(
+        {
+            "payload": payload,
+            "jump_id": jump_id,
+            "analysis_signature": analysis_signature,
+            "view_mode": view_mode,
+            "model": AI_COACHING_MODEL,
+            "prompt_version": AI_COACHING_SCHEMA_VERSION,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _generate_and_store_ai_coaching(
+    *,
+    payload: dict[str, Any],
+    cache_key: str,
+    jump_id: str,
+    analysis_signature: str,
+    view_mode: str,
+) -> None:
+    if not cache_key:
+        return
+    result = generate_ai_coaching_texts(
+        payload,
+        view_mode=view_mode,
+        enabled=AI_COACHING_ENABLED,
+        model=AI_COACHING_MODEL,
+        timeout_s=AI_COACHING_TIMEOUT_S,
+        max_requests_per_day=AI_COACHING_MAX_REQUESTS_PER_DAY,
+    )
+    result["payload_schema_version"] = AI_COACHING_SCHEMA_VERSION
+    upsert_ai_coaching_result(
+        cache_key,
+        jump_id=jump_id,
+        analysis_signature=analysis_signature,
+        model=AI_COACHING_MODEL,
+        prompt_version=str(AI_COACHING_SCHEMA_VERSION),
+        view_mode=view_mode,
+        status="ready" if result.get("available") else "error",
+        payload=result,
+    )
+
+
 def _build_ai_coaching(
     *,
     report: dict[str, Any],
@@ -3690,16 +3860,44 @@ def _build_ai_coaching(
         quality_issue_lines=quality_issue_lines,
         view_mode=view_mode,
     )
-    result = generate_ai_coaching_texts(
-        payload,
+    jump = report.get("jump", {}) if isinstance(report.get("jump"), dict) else {}
+    jump_id = str(jump.get("jump_id") or "")
+    analysis_signature = str(jump.get("analysis_signature") or "legacy")
+    cache_key = _ai_coaching_cache_key(
+        payload=payload,
+        jump_id=jump_id,
+        analysis_signature=analysis_signature,
         view_mode=view_mode,
-        enabled=AI_COACHING_ENABLED,
-        model=AI_COACHING_MODEL,
-        timeout_s=AI_COACHING_TIMEOUT_S,
-        max_requests_per_day=AI_COACHING_MAX_REQUESTS_PER_DAY,
     )
-    result["payload_schema_version"] = AI_COACHING_SCHEMA_VERSION
-    return result
+    cached = get_ai_coaching_result(cache_key, jump_id=jump_id)
+    if cached is not None:
+        cached.pop("_cache_status", None)
+        cached["cached"] = True
+        cached["payload_schema_version"] = AI_COACHING_SCHEMA_VERSION
+        return cached
+
+    if not AI_COACHING_ENABLED:
+        result = generate_ai_coaching_texts(
+            payload,
+            view_mode=view_mode,
+            enabled=False,
+            model=AI_COACHING_MODEL,
+            timeout_s=AI_COACHING_TIMEOUT_S,
+            max_requests_per_day=AI_COACHING_MAX_REQUESTS_PER_DAY,
+        )
+        result["payload_schema_version"] = AI_COACHING_SCHEMA_VERSION
+        return result
+
+    return {
+        "available": False,
+        "enabled": True,
+        "pending": True,
+        "reason": "KI-Formulierung wird im Hintergrund erstellt.",
+        "source": "pending",
+        "cache_key": cache_key,
+        "payload_schema_version": AI_COACHING_SCHEMA_VERSION,
+        "_background_payload": payload,
+    }
 
 
 def _build_coaching_snapshot(
@@ -4735,7 +4933,70 @@ def _performance_band_for_speed(speed_kmh: float | None) -> str:
     return "basis"
 
 
-def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> dict[str, Any]:
+def _load_jumper_feature_records(
+    *,
+    rows: list[dict[str, Any]],
+    marco_profile: dict[str, Any] | None,
+    known_reports: dict[str, dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    reference_signature = _reference_signature_from_profile(marco_profile)
+    jump_ids = [str(row.get("jump_id") or "") for row in rows if row.get("jump_id")]
+    features = list_analysis_features(jump_ids, reference_signature=reference_signature)
+    report_cache = known_reports or {}
+    records: list[dict[str, Any]] = []
+    potential_reports: list[dict[str, Any]] = []
+    for row in rows:
+        jump_id = str(row.get("jump_id") or "")
+        if not jump_id:
+            continue
+        feature = features.get(jump_id)
+        source = feature.get("source") if isinstance(feature, dict) else None
+        record = feature.get("record") if isinstance(feature, dict) else None
+        if not isinstance(source, dict) or not isinstance(record, dict):
+            report = report_cache.get(jump_id) or get_jump_report(jump_id)
+            if report is None:
+                continue
+            feature = _persist_analysis_feature(report, marco_profile=marco_profile, include_record=True)
+            source = feature["source"]
+            record = feature["record"]
+        if isinstance(record, dict):
+            records.append(record)
+        potential_report = source.get("potential_report") if isinstance(source, dict) else None
+        if isinstance(potential_report, dict):
+            potential_reports.append(potential_report)
+    records.sort(key=lambda item: _t0_sort_key(item.get("t0_utc")))
+    return records, potential_reports
+
+
+def _build_cached_jumper_summary(
+    *,
+    jumper_name: str,
+    jumps: list[dict[str, Any]],
+    known_reports: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    marco_profile = _get_marco_top15_profile(limit=15)
+    records, _ = _load_jumper_feature_records(
+        rows=jumps,
+        marco_profile=marco_profile,
+        known_reports=known_reports,
+    )
+    return _build_jumper_summary(
+        jumper_name=jumper_name,
+        jumps=jumps,
+        precomputed_records=records,
+        marco_profile=marco_profile,
+        use_persistent_cache=True,
+    )
+
+
+def _build_jumper_summary(
+    *,
+    jumper_name: str,
+    jumps: list[dict[str, Any]],
+    precomputed_records: list[dict[str, Any]] | None = None,
+    marco_profile: dict[str, Any] | None = None,
+    use_persistent_cache: bool = False,
+) -> dict[str, Any]:
     if not jumps:
         return {"available": False, "reason": "Keine Sprünge vorhanden."}
 
@@ -4746,20 +5007,35 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
     if cached is not None and cached[0] == signature:
         return cached[1]
 
-    reports: list[dict[str, Any]] = []
-    for row in rows:
-        report = get_jump_report(str(row.get("jump_id")))
-        if report is not None:
-            reports.append(report)
+    reference_signature = _reference_signature_from_profile(marco_profile)
+    if use_persistent_cache:
+        stored = get_jumper_profile_snapshot(
+            jumper_name,
+            history_signature=signature,
+            reference_signature=reference_signature,
+        )
+        if stored is not None:
+            _JUMPER_SUMMARY_CACHE[cache_key] = (signature, stored)
+            return stored
 
-    if not reports:
+    reports: list[dict[str, Any]] = []
+    if precomputed_records is None:
+        for row in rows:
+            report = get_jump_report(str(row.get("jump_id")))
+            if report is not None:
+                reports.append(report)
+
+    if precomputed_records is None and not reports:
         result = {"available": False, "reason": "Keine auswertbaren Sprünge vorhanden."}
         _JUMPER_SUMMARY_CACHE[cache_key] = (signature, result)
         return result
 
-    reports = sorted(reports, key=lambda item: _t0_sort_key(item.get("jump", {}).get("t0_utc")))
-    marco_profile = _get_marco_top15_profile(limit=15)
-    records = [_build_jumper_record(item, marco_profile=marco_profile) for item in reports]
+    if precomputed_records is None:
+        reports = sorted(reports, key=lambda item: _t0_sort_key(item.get("jump", {}).get("t0_utc")))
+        resolved_profile = marco_profile if marco_profile is not None else _get_marco_top15_profile(limit=15)
+        records = [_build_jumper_record(item, marco_profile=resolved_profile) for item in reports]
+    else:
+        records = list(precomputed_records)
     records = [item for item in records if item]
     if not records:
         result = {"available": False, "reason": "Keine auswertbaren Sprünge vorhanden."}
@@ -4825,6 +5101,14 @@ def _build_jumper_summary(*, jumper_name: str, jumps: list[dict[str, Any]]) -> d
         "feedback_training_profile": feedback_training_profile,
     }
     _JUMPER_SUMMARY_CACHE[cache_key] = (signature, result)
+    if use_persistent_cache:
+        upsert_jumper_profile_snapshot(
+            jumper_name,
+            history_signature=signature,
+            reference_signature=reference_signature,
+            jump_count=len(records),
+            payload=result,
+        )
     return result
 
 
@@ -5144,7 +5428,7 @@ def _build_jumpers_overview(jumpers: list[str]) -> list[dict[str, Any]]:
         jump_rows = _sort_by_t0_desc(list_jumps_for_jumper(jumper_name))
         if not jump_rows:
             continue
-        summary = _build_jumper_summary(jumper_name=jumper_name, jumps=jump_rows)
+        summary = _build_cached_jumper_summary(jumper_name=jumper_name, jumps=jump_rows)
         stability_ref = summary.get("stability_reference", {}) if summary else {}
         performance_profile = summary.get("performance_profile", {}) if isinstance(summary, dict) else {}
         latest_t0 = jump_rows[0].get("t0_utc")
@@ -8539,33 +8823,37 @@ def _pick_best_history_reference(jumper_name: str) -> tuple[dict[str, Any] | Non
     if not rows:
         return None, None
 
-    clean_candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    fallback_candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    features = list_analysis_features([str(row.get("jump_id") or "") for row in rows])
+    report_cache: dict[str, dict[str, Any]] = {}
+    clean_candidates: list[dict[str, Any]] = []
     for row in rows:
         jump_id = str(row.get("jump_id") or "")
         if not jump_id:
             continue
-        report = get_jump_report(jump_id)
-        if report is None:
-            continue
-        pair = (row, report)
-        fallback_candidates.append(pair)
-        if _is_clean_reference_jump(row, report):
-            clean_candidates.append(pair)
+        feature = features.get(jump_id)
+        source = feature.get("source") if isinstance(feature, dict) else None
+        if not isinstance(source, dict):
+            report = get_jump_report(jump_id)
+            if report is None:
+                continue
+            report_cache[jump_id] = report
+            source = _persist_analysis_feature(report, marco_profile=None, include_record=False)["source"]
+        if bool(source.get("reference_eligible")):
+            clean_candidates.append(row)
 
-    pool = clean_candidates
-    if not pool:
+    if not clean_candidates:
         return None, None
 
-    def _sort_key(item: tuple[dict[str, Any], dict[str, Any]]) -> tuple[float, float]:
-        row, report = item
-        speed = _to_float(report.get("metrics", {}).get("rule_based_3s_score"))
+    def _sort_key(row: dict[str, Any]) -> tuple[float, float]:
+        speed = _to_float(row.get("rule_based_3s_score"))
         return (
             float("-inf") if speed is None else float(speed),
             _t0_sort_key(row.get("t0_utc")),
         )
 
-    best_row, best_report = max(pool, key=_sort_key)
+    best_row = max(clean_candidates, key=_sort_key)
+    best_jump_id = str(best_row.get("jump_id") or "")
+    best_report = report_cache.get(best_jump_id) or get_jump_report(best_jump_id)
     return best_row, best_report
 
 

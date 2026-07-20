@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+from io import BytesIO
 from statistics import median
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from app.analysis.curve_window import detect_curve_window
@@ -13,6 +15,119 @@ from app.database import get_connection
 
 VALID_JUMP_CONTEXTS = {"unknown", "training", "competition"}
 MAX_JUMP_FEEDBACK_CHARS = 2000
+JUMP_SERIES_VERSION = 1
+JUMP_SERIES_ENCODING = "npz-float64-v1"
+ANALYSIS_FEATURE_VERSION = 1
+
+
+def _encode_jump_series(samples: list[dict[str, Any]]) -> tuple[bytes, int, float, float]:
+    if not samples:
+        raise ValueError("Eine kompakte Sprungserie benoetigt mindestens einen Messpunkt.")
+
+    def _array(key: str) -> np.ndarray:
+        return np.asarray(
+            [np.nan if row.get(key) is None else float(row[key]) for row in samples],
+            dtype="<f8",
+        )
+
+    buffer = BytesIO()
+    np.savez_compressed(
+        buffer,
+        time_s=_array("t_rel_s"),
+        vVert_kmh=_array("vVert_kmh"),
+        vHor_kmh=_array("vHor_kmh"),
+        angle_deg=_array("angle_deg"),
+        hAGL_m=_array("hAGL_m"),
+        accVert_mps2=_array("accVert_mps2"),
+        velN_mps=_array("velN_mps"),
+        velE_mps=_array("velE_mps"),
+    )
+    start_s = float(samples[0]["t_rel_s"])
+    end_s = float(samples[-1]["t_rel_s"])
+    return buffer.getvalue(), len(samples), start_s, end_s
+
+
+def _decode_jump_series(row: Any) -> dict[str, list[float | None]] | None:
+    if row is None or str(row["encoding"]) != JUMP_SERIES_ENCODING:
+        return None
+    try:
+        with np.load(BytesIO(bytes(row["payload"])), allow_pickle=False) as payload:
+            required = (
+                "time_s",
+                "vVert_kmh",
+                "vHor_kmh",
+                "angle_deg",
+                "hAGL_m",
+                "accVert_mps2",
+                "velN_mps",
+                "velE_mps",
+            )
+            arrays = {key: np.asarray(payload[key], dtype=float) for key in required}
+    except (KeyError, OSError, TypeError, ValueError):
+        return None
+    point_count = int(row["point_count"])
+    if point_count <= 0 or any(len(values) != point_count for values in arrays.values()):
+        return None
+    return {
+        key: [None if not np.isfinite(value) else float(value) for value in values]
+        for key, values in arrays.items()
+    }
+
+
+def _compact_series_end_s(*, metrics: dict[str, Any], notes: dict[str, Any], sample_end_s: float) -> float:
+    candidates = [30.0]
+    for key in (
+        "best_3s_end_s",
+        "performance_window_end_s",
+        "validation_window_end_s",
+        "hot_zone_end_s",
+    ):
+        value = metrics.get(key)
+        if value is not None:
+            try:
+                candidates.append(float(value) + 0.5)
+            except (TypeError, ValueError):
+                pass
+    for key in ("curve_window_end_s", "decel_start_s", "canopy_open_s"):
+        value = notes.get(key)
+        if value is not None:
+            try:
+                candidates.append(float(value) + 0.5)
+            except (TypeError, ValueError):
+                pass
+    return min(float(sample_end_s), max(candidates))
+
+
+def _upsert_jump_series(
+    *,
+    conn: sqlite3.Connection,
+    jump_id: str,
+    samples: list[dict[str, Any]],
+    end_s: float | None = None,
+) -> None:
+    compact_samples = samples
+    if end_s is not None:
+        compact_samples = [row for row in samples if float(row["t_rel_s"]) <= float(end_s) + 1e-9]
+        if not compact_samples:
+            compact_samples = samples[:1]
+    payload, point_count, start_s, stored_end_s = _encode_jump_series(compact_samples)
+    conn.execute(
+        """
+        INSERT INTO jump_series (
+            jump_id, series_version, encoding, point_count, start_s, end_s, payload,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(jump_id) DO UPDATE SET
+            series_version = excluded.series_version,
+            encoding = excluded.encoding,
+            point_count = excluded.point_count,
+            start_s = excluded.start_s,
+            end_s = excluded.end_s,
+            payload = excluded.payload,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (jump_id, JUMP_SERIES_VERSION, JUMP_SERIES_ENCODING, point_count, start_s, stored_end_s, payload),
+    )
 
 
 def normalize_jump_context(raw: Any, *, default: str = "unknown") -> str:
@@ -29,6 +144,20 @@ def normalize_jump_feedback_text(raw: Any) -> str:
     if len(text) > MAX_JUMP_FEEDBACK_CHARS:
         return text[:MAX_JUMP_FEEDBACK_CHARS].rstrip()
     return text
+
+
+def _invalidate_derived_storage(*, conn: sqlite3.Connection, jump_id: str) -> None:
+    row = conn.execute(
+        "SELECT jumper_name FROM jumps WHERE jump_id = ? LIMIT 1",
+        (jump_id,),
+    ).fetchone()
+    conn.execute("DELETE FROM jump_analysis_features WHERE jump_id = ?", (jump_id,))
+    conn.execute("DELETE FROM ai_coaching_results WHERE jump_id = ?", (jump_id,))
+    if row is not None:
+        conn.execute(
+            "DELETE FROM jumper_profile_snapshots WHERE jumper_key = ?",
+            (str(row["jumper_name"]).strip().casefold(),),
+        )
 
 
 def save_analysis_result(
@@ -86,6 +215,299 @@ def save_dropzone_match_attempt(jump_id: str, match: dict[str, Any]) -> None:
         conn.commit()
 
 
+def backfill_jump_series(*, limit: int | None = None) -> dict[str, int]:
+    """Create compact series for legacy jumps without deleting normalized samples."""
+    params: tuple[Any, ...] = ()
+    limit_sql = ""
+    if limit is not None:
+        limit_sql = "LIMIT ?"
+        params = (max(0, int(limit)),)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT j.jump_id, m.best_3s_end_s, m.performance_window_end_s,
+                   m.validation_window_end_s, m.hot_zone_end_s, m.notes
+            FROM jumps j
+            JOIN metrics m ON m.jump_id = j.jump_id
+            LEFT JOIN jump_series s ON s.jump_id = j.jump_id
+            WHERE s.jump_id IS NULL
+            ORDER BY j.created_at, j.jump_id
+            {limit_sql}
+            """,
+            params,
+        ).fetchall()
+        created = 0
+        skipped = 0
+        for row in rows:
+            jump_id = str(row["jump_id"])
+            sample_rows = conn.execute(
+                """
+                SELECT t_rel_s, vVert_kmh, vHor_kmh, angle_deg, hAGL_m,
+                       accVert_mps2, velN_mps, velE_mps
+                FROM samples
+                WHERE jump_id = ?
+                ORDER BY t_rel_s
+                """,
+                (jump_id,),
+            ).fetchall()
+            if not sample_rows:
+                skipped += 1
+                continue
+            samples = [dict(item) for item in sample_rows]
+            try:
+                notes = json.loads(str(row["notes"] or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                notes = {}
+            series_end_s = _compact_series_end_s(
+                metrics=dict(row),
+                notes=notes if isinstance(notes, dict) else {},
+                sample_end_s=float(samples[-1]["t_rel_s"]),
+            )
+            _upsert_jump_series(conn=conn, jump_id=jump_id, samples=samples, end_s=series_end_s)
+            created += 1
+            if created % 25 == 0:
+                conn.commit()
+        conn.commit()
+    return {"candidates": len(rows), "created": created, "skipped": skipped}
+
+
+def audit_jump_series() -> dict[str, int]:
+    with get_connection() as conn:
+        total = int(conn.execute("SELECT COUNT(*) FROM jumps").fetchone()[0])
+        rows = conn.execute(
+            "SELECT jump_id, encoding, point_count, payload FROM jump_series ORDER BY jump_id"
+        ).fetchall()
+    corrupt = sum(1 for row in rows if _decode_jump_series(row) is None)
+    return {
+        "jumps": total,
+        "series": len(rows),
+        "missing": max(0, total - len(rows)),
+        "corrupt": corrupt,
+    }
+
+
+def list_analysis_features(
+    jump_ids: list[str],
+    *,
+    reference_signature: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    normalized_ids = list(dict.fromkeys(str(item) for item in jump_ids if str(item)))
+    if not normalized_ids:
+        return {}
+    placeholders = ",".join("?" for _ in normalized_ids)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT jump_id, feature_version, reference_signature, source_json,
+                   record_json, reference_eligible, created_at, updated_at
+            FROM jump_analysis_features
+            WHERE jump_id IN ({placeholders}) AND feature_version = ?
+            """,
+            (*normalized_ids, ANALYSIS_FEATURE_VERSION),
+        ).fetchall()
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        try:
+            source = json.loads(str(row["source_json"]))
+            record = None if row["record_json"] is None else json.loads(str(row["record_json"]))
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(source, dict):
+            continue
+        signature_matches = reference_signature is None or str(row["reference_signature"]) == reference_signature
+        result[str(row["jump_id"])] = {
+            "source": source,
+            "record": record if signature_matches and isinstance(record, dict) else None,
+            "reference_eligible": bool(row["reference_eligible"]),
+            "reference_signature": str(row["reference_signature"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    return result
+
+
+def upsert_analysis_feature(
+    jump_id: str,
+    *,
+    source: dict[str, Any],
+    record: dict[str, Any] | None,
+    reference_signature: str,
+    reference_eligible: bool,
+) -> bool:
+    if not jump_id or not isinstance(source, dict) or not source:
+        return False
+    source_json = json.dumps(source, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    record_json = (
+        None
+        if not isinstance(record, dict)
+        else json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+    with get_connection() as conn:
+        exists = conn.execute("SELECT 1 FROM jumps WHERE jump_id = ?", (jump_id,)).fetchone()
+        if exists is None:
+            return False
+        conn.execute(
+            """
+            INSERT INTO jump_analysis_features (
+                jump_id, feature_version, reference_signature, source_json, record_json,
+                reference_eligible, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(jump_id) DO UPDATE SET
+                feature_version = excluded.feature_version,
+                reference_signature = excluded.reference_signature,
+                source_json = excluded.source_json,
+                record_json = excluded.record_json,
+                reference_eligible = excluded.reference_eligible,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                jump_id,
+                ANALYSIS_FEATURE_VERSION,
+                reference_signature,
+                source_json,
+                record_json,
+                1 if reference_eligible else 0,
+            ),
+        )
+        conn.commit()
+    return True
+
+
+def get_jumper_profile_snapshot(
+    jumper_name: str,
+    *,
+    history_signature: str,
+    reference_signature: str,
+) -> dict[str, Any] | None:
+    jumper_key = jumper_name.strip().casefold()
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT payload_json
+            FROM jumper_profile_snapshots
+            WHERE jumper_key = ? AND feature_version = ?
+              AND history_signature = ? AND reference_signature = ?
+            LIMIT 1
+            """,
+            (jumper_key, ANALYSIS_FEATURE_VERSION, history_signature, reference_signature),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(str(row["payload_json"]))
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def upsert_jumper_profile_snapshot(
+    jumper_name: str,
+    *,
+    history_signature: str,
+    reference_signature: str,
+    jump_count: int,
+    payload: dict[str, Any],
+) -> None:
+    jumper_key = jumper_name.strip().casefold()
+    payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO jumper_profile_snapshots (
+                jumper_key, jumper_name, feature_version, history_signature,
+                reference_signature, jump_count, payload_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(jumper_key) DO UPDATE SET
+                jumper_name = excluded.jumper_name,
+                feature_version = excluded.feature_version,
+                history_signature = excluded.history_signature,
+                reference_signature = excluded.reference_signature,
+                jump_count = excluded.jump_count,
+                payload_json = excluded.payload_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                jumper_key,
+                jumper_name.strip(),
+                ANALYSIS_FEATURE_VERSION,
+                history_signature,
+                reference_signature,
+                int(jump_count),
+                payload_json,
+            ),
+        )
+        conn.commit()
+
+
+def get_ai_coaching_result(cache_key: str, *, jump_id: str | None = None) -> dict[str, Any] | None:
+    where_jump = "" if jump_id is None else " AND jump_id = ?"
+    params: tuple[Any, ...] = (cache_key,) if jump_id is None else (cache_key, jump_id)
+    with get_connection() as conn:
+        row = conn.execute(
+            f"""
+            SELECT status, payload_json
+            FROM ai_coaching_results
+            WHERE cache_key = ?{where_jump}
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(str(row["payload_json"]))
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    payload["_cache_status"] = str(row["status"])
+    return payload
+
+
+def upsert_ai_coaching_result(
+    cache_key: str,
+    *,
+    jump_id: str | None,
+    analysis_signature: str,
+    model: str,
+    prompt_version: str,
+    view_mode: str,
+    status: str,
+    payload: dict[str, Any],
+) -> None:
+    resolved_status = "ready" if status == "ready" else "error"
+    payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO ai_coaching_results (
+                cache_key, jump_id, analysis_signature, model, prompt_version,
+                view_mode, status, payload_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                jump_id = excluded.jump_id,
+                analysis_signature = excluded.analysis_signature,
+                model = excluded.model,
+                prompt_version = excluded.prompt_version,
+                view_mode = excluded.view_mode,
+                status = excluded.status,
+                payload_json = excluded.payload_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                cache_key,
+                jump_id,
+                analysis_signature,
+                model,
+                prompt_version,
+                view_mode,
+                resolved_status,
+                payload_json,
+            ),
+        )
+        conn.commit()
+
+
 def find_duplicate_jump_by_source_hash(
     *, jumper_name: str, source_file_sha256: str, analysis_signature: str = "legacy"
 ) -> str | None:
@@ -129,6 +551,7 @@ def replace_analysis_result(
             "DELETE FROM dropzone_observations WHERE jump_id = ? AND source_kind = 'historical_gps'",
             (jump_id,),
         )
+        _invalidate_derived_storage(conn=conn, jump_id=jump_id)
         conn.execute("DELETE FROM jumps WHERE jump_id = ?", (jump_id,))
         _insert_analysis_result(
             conn=conn,
@@ -160,6 +583,7 @@ def update_jump_context(jump_id: str, jump_context: str) -> bool:
             "UPDATE jumps SET jump_context = ? WHERE jump_id = ?",
             (resolved_context, jump_id),
         )
+        _invalidate_derived_storage(conn=conn, jump_id=jump_id)
         conn.commit()
     return True
 
@@ -198,6 +622,7 @@ def upsert_jump_feedback(jump_id: str, feedback_text: Any) -> bool:
             conn.execute("DELETE FROM jump_feedback WHERE jump_id = ?", (jump_id,))
         else:
             _upsert_jump_feedback(conn=conn, jump_id=jump_id, feedback_text=text)
+        _invalidate_derived_storage(conn=conn, jump_id=jump_id)
         conn.commit()
     return True
 
@@ -264,6 +689,7 @@ def delete_jump(jump_id: str) -> bool:
         ).fetchone()
         if row is None:
             return False
+        _invalidate_derived_storage(conn=conn, jump_id=jump_id)
         conn.execute("DELETE FROM jumps WHERE jump_id = ?", (jump_id,))
         conn.commit()
     return True
@@ -419,6 +845,19 @@ def _insert_analysis_result(
             for s in samples
         ),
     )
+    if samples:
+        report_notes = result.get("report", {}).get("notes", {})
+        series_end_s = _compact_series_end_s(
+            metrics=metrics,
+            notes=report_notes if isinstance(report_notes, dict) else {},
+            sample_end_s=float(samples[-1]["t_rel_s"]),
+        )
+        _upsert_jump_series(
+            conn=conn,
+            jump_id=str(jump["jump_id"]),
+            samples=samples,
+            end_s=series_end_s,
+        )
 
     conn.execute(
         """
@@ -904,7 +1343,7 @@ def list_compare_candidates(current_jump_id: str) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def get_jump_report(jump_id: str) -> dict[str, Any] | None:
+def get_jump_report(jump_id: str, *, prefer_compact_series: bool = True) -> dict[str, Any] | None:
     with get_connection() as conn:
         jump = conn.execute("SELECT * FROM jumps WHERE jump_id = ?", (jump_id,)).fetchone()
         metrics = conn.execute("SELECT * FROM metrics WHERE jump_id = ?", (jump_id,)).fetchone()
@@ -926,16 +1365,33 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
             """,
             (jump_id,),
         ).fetchone()
-        samples = conn.execute(
-            """
-            SELECT
-                t_rel_s, vVert_kmh, vHor_kmh, angle_deg, hAGL_m, accVert_mps2, velN_mps, velE_mps
-            FROM samples
-            WHERE jump_id = ?
-            ORDER BY t_rel_s ASC
-            """,
-            (jump_id,),
-        ).fetchall()
+        series_row = None
+        if prefer_compact_series:
+            try:
+                series_row = conn.execute(
+                    """
+                    SELECT encoding, point_count, payload
+                    FROM jump_series
+                    WHERE jump_id = ? AND series_version = ?
+                    LIMIT 1
+                    """,
+                    (jump_id, JUMP_SERIES_VERSION),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                series_row = None
+        series_data = _decode_jump_series(series_row)
+        samples = []
+        if series_data is None:
+            samples = conn.execute(
+                """
+                SELECT
+                    t_rel_s, vVert_kmh, vHor_kmh, angle_deg, hAGL_m, accVert_mps2, velN_mps, velE_mps
+                FROM samples
+                WHERE jump_id = ?
+                ORDER BY t_rel_s ASC
+                """,
+                (jump_id,),
+            ).fetchall()
         dropzone = conn.execute(
             """
             SELECT d.*, z.name AS zone_name, z.zone_kind,
@@ -1007,17 +1463,24 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
             coaching_snapshot_payload["created_at"] = coaching_snapshot["created_at"]
             coaching_snapshot_payload["updated_at"] = coaching_snapshot["updated_at"]
 
-    chart_data = {
-        "time_s": [float(row["t_rel_s"]) for row in samples],
-        "vVert_kmh": [float(row["vVert_kmh"]) for row in samples],
-        "vHor_kmh": [float(row["vHor_kmh"]) for row in samples],
-        "angle_deg": [float(row["angle_deg"]) for row in samples],
-        "hAGL_m": [None if row["hAGL_m"] is None else float(row["hAGL_m"]) for row in samples],
-        "accVert_mps2": [float(row["accVert_mps2"]) for row in samples],
-        "velN_mps": [float(row["velN_mps"]) for row in samples],
-        "velE_mps": [float(row["velE_mps"]) for row in samples],
-    }
-    forward_track = _build_forward_track_from_samples(samples)
+    if series_data is not None:
+        chart_data = series_data
+    else:
+        chart_data = {
+            "time_s": [float(row["t_rel_s"]) for row in samples],
+            "vVert_kmh": [float(row["vVert_kmh"]) for row in samples],
+            "vHor_kmh": [float(row["vHor_kmh"]) for row in samples],
+            "angle_deg": [float(row["angle_deg"]) for row in samples],
+            "hAGL_m": [None if row["hAGL_m"] is None else float(row["hAGL_m"]) for row in samples],
+            "accVert_mps2": [float(row["accVert_mps2"]) for row in samples],
+            "velN_mps": [float(row["velN_mps"]) for row in samples],
+            "velE_mps": [float(row["velE_mps"]) for row in samples],
+        }
+    forward_track = _build_forward_track_from_arrays(
+        time_s=chart_data["time_s"],
+        vel_n_mps=chart_data["velN_mps"],
+        vel_e_mps=chart_data["velE_mps"],
+    )
     chart_data["forward_m"] = forward_track["forward_m"]
     chart_data["backtrack_m"] = forward_track["backtrack_m"]
     notes["forward_track"] = forward_track["summary"]
@@ -1072,20 +1535,35 @@ def get_jump_report(jump_id: str) -> dict[str, Any] | None:
 
 
 def _build_forward_track_from_samples(samples: list[Any]) -> dict[str, Any]:
-    if not samples:
+    return _build_forward_track_from_arrays(
+        time_s=[float(row["t_rel_s"]) for row in samples],
+        vel_n_mps=[float(row["velN_mps"]) for row in samples],
+        vel_e_mps=[float(row["velE_mps"]) for row in samples],
+    )
+
+
+def _build_forward_track_from_arrays(
+    *,
+    time_s: list[float | None],
+    vel_n_mps: list[float | None],
+    vel_e_mps: list[float | None],
+) -> dict[str, Any]:
+    if not time_s:
         return {
             "forward_m": [],
             "backtrack_m": [],
             "summary": {"available": False},
         }
 
-    t: list[float] = []
-    vn: list[float] = []
-    ve: list[float] = []
-    for row in samples:
-        t.append(float(row["t_rel_s"]))
-        vn.append(float(row["velN_mps"]))
-        ve.append(float(row["velE_mps"]))
+    if any(value is None for values in (time_s, vel_n_mps, vel_e_mps) for value in values):
+        return {
+            "forward_m": [],
+            "backtrack_m": [],
+            "summary": {"available": False},
+        }
+    t = [float(value) for value in time_s if value is not None]
+    vn = [float(value) for value in vel_n_mps if value is not None]
+    ve = [float(value) for value in vel_e_mps if value is not None]
 
     if len(t) < 2:
         return {

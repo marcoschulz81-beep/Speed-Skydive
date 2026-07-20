@@ -50,6 +50,25 @@ class WindowResult:
     avg_angle_deg: float
 
 
+@dataclass
+class PreparedFlySightTrack:
+    df: pd.DataFrame
+    unit_normalization: dict[str, Any] | None
+    leading_gap_repair: dict[str, Any] | None
+    device_type: str
+    raw_start_time_utc: str
+    t_abs_s: np.ndarray
+    dt: np.ndarray
+    sample_rate_hz: float
+    quality_flags: tuple[str, ...]
+    quality_score: float
+    auto_t0_idx: int
+    auto_t0_confidence: float
+    auto_t0_uncertainty_s: float
+    auto_t0_reason: str
+    auto_t0_utc: str
+
+
 def _read_csv(content: bytes) -> pd.DataFrame:
     raw = content.decode("utf-8", errors="replace")
     if _looks_like_flysight2_log(raw):
@@ -942,27 +961,63 @@ def _best_3s_window(df: pd.DataFrame, start_limit: float, end_limit: float | Non
     vhor = ordered["vHor_kmh"].to_numpy(dtype=float)
     angle = ordered["angle_deg"].to_numpy(dtype=float)
     gaps = _gap_intervals(t_rel)
-    best: WindowResult | None = None
     candidate_count = int(round((last_start - first_start) / step)) + 1
-    for offset in range(candidate_count):
-        start = round(first_start + offset * step, 10)
-        end = round(start + duration, 10)
-        if _window_crosses_gap(start_s=start, end_s=end, gaps=gaps):
-            continue
-        avg_vvert_mps = _time_weighted_window_mean(t_rel, vvert, start, end)
-        if not np.isfinite(avg_vvert_mps):
-            continue
-        candidate = WindowResult(
-            start_s=float(start),
-            end_s=float(end),
-            avg_vvert_mps=float(avg_vvert_mps),
-            avg_vvert_kmh=float(avg_vvert_mps * 3.6),
-            avg_vhor_kmh=_time_weighted_window_mean(t_rel, vhor, start, end),
-            avg_angle_deg=_time_weighted_window_mean(t_rel, angle, start, end),
+    interval_count = max(1, int(round(duration / step)))
+    grid = np.linspace(
+        first_start,
+        last_start + duration,
+        candidate_count + interval_count,
+        dtype=float,
+    )
+    grid_step = duration / interval_count
+
+    def _all_window_means(values: np.ndarray) -> np.ndarray:
+        interpolated = np.interp(grid, t_rel, values)
+        finite_segments = np.isfinite(interpolated[:-1]) & np.isfinite(interpolated[1:])
+        segment_areas = np.where(
+            finite_segments,
+            (interpolated[:-1] + interpolated[1:]) * 0.5 * grid_step,
+            0.0,
         )
-        if best is None or candidate.avg_vvert_mps > best.avg_vvert_mps:
-            best = candidate
-    return best
+        area_prefix = np.concatenate(([0.0], np.cumsum(segment_areas)))
+        invalid_prefix = np.concatenate(([0], np.cumsum(~finite_segments)))
+        means = (
+            area_prefix[interval_count : interval_count + candidate_count]
+            - area_prefix[:candidate_count]
+        ) / duration
+        invalid_counts = (
+            invalid_prefix[interval_count : interval_count + candidate_count]
+            - invalid_prefix[:candidate_count]
+        )
+        means[invalid_counts > 0] = np.nan
+        return means
+
+    starts = np.round(first_start + np.arange(candidate_count, dtype=float) * step, 10)
+    valid = np.ones(candidate_count, dtype=bool)
+    for gap_start, gap_end in gaps:
+        valid &= ~((gap_start < starts + duration) & (gap_end > starts))
+
+    mean_vvert = _all_window_means(vvert)
+    valid &= np.isfinite(mean_vvert)
+    valid_indices = np.flatnonzero(valid)
+    if not len(valid_indices):
+        return None
+
+    # np.argmax returns the first maximum and therefore preserves the existing
+    # deterministic tie-breaking rule (earliest scoring window).
+    best_idx = int(valid_indices[int(np.argmax(mean_vvert[valid_indices]))])
+    mean_vhor = _all_window_means(vhor)
+    mean_angle = _all_window_means(angle)
+    start = float(starts[best_idx])
+    avg_vvert_mps = float(mean_vvert[best_idx])
+    return WindowResult(
+        start_s=start,
+        end_s=float(round(start + duration, 10)),
+        avg_vvert_mps=avg_vvert_mps,
+        avg_vvert_kmh=float(avg_vvert_mps * 3.6),
+        avg_vhor_kmh=float(mean_vhor[best_idx]),
+        avg_angle_deg=float(mean_angle[best_idx]),
+    )
 
 
 def _slice_analysis_window(
@@ -1652,23 +1707,8 @@ def _rule_score_assessment(
     return RULE_SCORE_VALID, []
 
 
-def analyze_flysight_csv(
-    *,
-    content: bytes,
-    file_name: str,
-    jumper_name: str,
-    ground_elevation_m: float | None,
-    breakoff_altitude_agl_m: float | None,
-    manual_t0_utc: str | None = None,
-    ground_elevation_source_override: str | None = None,
-) -> dict[str, Any]:
-    resolved_breakoff_altitude_agl_m = (
-        float(DEFAULT_BREAKOFF_ALTITUDE_AGL_M)
-        if breakoff_altitude_agl_m is None
-        else float(breakoff_altitude_agl_m)
-    )
-    if not np.isfinite(resolved_breakoff_altitude_agl_m) or resolved_breakoff_altitude_agl_m <= 0.0:
-        raise AnalysisError("Breakoff-Höhe muss eine positive Zahl sein.")
+def prepare_flysight_csv(content: bytes) -> PreparedFlySightTrack:
+    """Parse, normalize and validate a FlySight track exactly once per upload."""
     df = _read_csv(content)
     df, unit_normalization = _normalize_import_units(df)
     df, leading_gap_repair = _repair_leading_orphan_samples(df)
@@ -1679,36 +1719,145 @@ def analyze_flysight_csv(
     dt = np.diff(t_abs_s)
     sample_rate_hz = float(1.0 / np.median(dt)) if len(dt) else 0.0
     quality_flags, quality_score = _compute_quality_flags(df, sample_rate_hz, dt)
-
     auto_t0_idx, auto_t0_confidence, auto_t0_uncertainty_s, auto_t0_reason = _detect_t0(
         df,
         t_abs_s,
         sample_rate_hz,
     )
-    auto_t0_utc = df["time"].iloc[auto_t0_idx].isoformat()
-    manual_t0_applied = False
+    return PreparedFlySightTrack(
+        df=df,
+        unit_normalization=unit_normalization,
+        leading_gap_repair=leading_gap_repair,
+        device_type=device_type,
+        raw_start_time_utc=raw_start_time_utc,
+        t_abs_s=t_abs_s,
+        dt=dt,
+        sample_rate_hz=sample_rate_hz,
+        quality_flags=tuple(quality_flags),
+        quality_score=quality_score,
+        auto_t0_idx=auto_t0_idx,
+        auto_t0_confidence=auto_t0_confidence,
+        auto_t0_uncertainty_s=auto_t0_uncertainty_s,
+        auto_t0_reason=auto_t0_reason,
+        auto_t0_utc=df["time"].iloc[auto_t0_idx].isoformat(),
+    )
+
+
+def _resolve_prepared_t0(
+    prepared: PreparedFlySightTrack,
+    manual_t0_utc: str | None,
+) -> tuple[int, float, str, bool, float, float, str]:
     if manual_t0_utc is not None and str(manual_t0_utc).strip():
         t0_abs_s, t0_utc = _manual_t0_from_utc(
             manual_t0_utc=str(manual_t0_utc),
-            raw_start_time=df["time"].iloc[0],
-            t_abs_s=t_abs_s,
+            raw_start_time=prepared.df["time"].iloc[0],
+            t_abs_s=prepared.t_abs_s,
         )
-        t0_idx = int(np.searchsorted(t_abs_s, t0_abs_s, side="left"))
-        if t0_idx >= len(t_abs_s):
-            t0_idx = len(t_abs_s) - 1
-        manual_t0_applied = True
-        t0_confidence = 1.0
-        t0_uncertainty_s = 0.0
-        t0_reason = (
-            "Manuell gesetzter Absprungzeitpunkt; automatische Erkennung wurde nur als Referenz gespeichert."
+        t0_idx = int(np.searchsorted(prepared.t_abs_s, t0_abs_s, side="left"))
+        if t0_idx >= len(prepared.t_abs_s):
+            t0_idx = len(prepared.t_abs_s) - 1
+        return (
+            t0_idx,
+            t0_abs_s,
+            t0_utc,
+            True,
+            1.0,
+            0.0,
+            "Manuell gesetzter Absprungzeitpunkt; automatische Erkennung wurde nur als Referenz gespeichert.",
         )
-    else:
-        t0_idx = auto_t0_idx
-        t0_confidence = auto_t0_confidence
-        t0_uncertainty_s = auto_t0_uncertainty_s
-        t0_reason = auto_t0_reason
-        t0_utc = auto_t0_utc
-        t0_abs_s = float(t_abs_s[t0_idx])
+    return (
+        prepared.auto_t0_idx,
+        float(prepared.t_abs_s[prepared.auto_t0_idx]),
+        prepared.auto_t0_utc,
+        False,
+        prepared.auto_t0_confidence,
+        prepared.auto_t0_uncertainty_s,
+        prepared.auto_t0_reason,
+    )
+
+
+def build_ground_observation_samples(
+    prepared: PreparedFlySightTrack,
+    *,
+    manual_t0_utc: str | None = None,
+) -> list[dict[str, Any]]:
+    """Build only the fields needed for dropzone matching from a prepared track."""
+    _, t0_abs_s, _, _, _, _, _ = _resolve_prepared_t0(prepared, manual_t0_utc)
+    df = prepared.df
+    time_rel = prepared.t_abs_s - t0_abs_s
+    vel_n = df["velN"].to_numpy(dtype=float)
+    vel_e = df["velE"].to_numpy(dtype=float)
+    vel_d = df["velD"].to_numpy(dtype=float)
+    total_speed_kmh = np.sqrt(vel_n**2 + vel_e**2 + vel_d**2) * 3.6
+    time_values = df["time"].tolist()
+    lat_values = df["lat"].to_numpy()
+    lon_values = df["lon"].to_numpy()
+    altitude_values = df["hMSL"].to_numpy()
+    vacc_values = df["vAcc"].to_numpy()
+    sacc_values = df["sAcc"].to_numpy()
+    gps_fix_values = df["gpsFix"].to_numpy()
+    satellite_values = df["numSV"].to_numpy()
+    rows: list[dict[str, Any]] = []
+    for index in range(len(df)):
+        rows.append(
+            {
+                "time_utc": time_values[index].isoformat(),
+                "t_rel_s": float(time_rel[index]),
+                "lat": lat_values[index],
+                "lon": lon_values[index],
+                "hMSL_m": altitude_values[index],
+                "velD_mps": float(vel_d[index]),
+                "vTotal_kmh": float(total_speed_kmh[index]),
+                "vAcc": vacc_values[index],
+                "sAcc": sacc_values[index],
+                "gpsFix": gps_fix_values[index],
+                "numSV": satellite_values[index],
+            }
+        )
+    return rows
+
+
+def analyze_flysight_csv(
+    *,
+    content: bytes,
+    file_name: str,
+    jumper_name: str,
+    ground_elevation_m: float | None,
+    breakoff_altitude_agl_m: float | None,
+    manual_t0_utc: str | None = None,
+    ground_elevation_source_override: str | None = None,
+    prepared_track: PreparedFlySightTrack | None = None,
+) -> dict[str, Any]:
+    resolved_breakoff_altitude_agl_m = (
+        float(DEFAULT_BREAKOFF_ALTITUDE_AGL_M)
+        if breakoff_altitude_agl_m is None
+        else float(breakoff_altitude_agl_m)
+    )
+    if not np.isfinite(resolved_breakoff_altitude_agl_m) or resolved_breakoff_altitude_agl_m <= 0.0:
+        raise AnalysisError("Breakoff-Höhe muss eine positive Zahl sein.")
+    prepared = prepared_track or prepare_flysight_csv(content)
+    df = prepared.df
+    unit_normalization = prepared.unit_normalization
+    leading_gap_repair = prepared.leading_gap_repair
+    device_type = prepared.device_type
+    raw_start_time_utc = prepared.raw_start_time_utc
+    t_abs_s = prepared.t_abs_s
+    sample_rate_hz = prepared.sample_rate_hz
+    quality_flags = list(prepared.quality_flags)
+    quality_score = prepared.quality_score
+    auto_t0_confidence = prepared.auto_t0_confidence
+    auto_t0_uncertainty_s = prepared.auto_t0_uncertainty_s
+    auto_t0_reason = prepared.auto_t0_reason
+    auto_t0_utc = prepared.auto_t0_utc
+    (
+        _t0_idx,
+        t0_abs_s,
+        t0_utc,
+        manual_t0_applied,
+        t0_confidence,
+        t0_uncertainty_s,
+        t0_reason,
+    ) = _resolve_prepared_t0(prepared, manual_t0_utc)
     if not manual_t0_applied and (t0_confidence < 0.55 or t0_uncertainty_s > 1.2):
         quality_flags.append("NO_CLEAR_EXIT")
 

@@ -1,6 +1,6 @@
 # Speed-Skydive Analyzer
 
-Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Fokus auf Techniktraining und eine nachvollziehbare 3s-Wertung. Aktuelle App-Version: `1.3.0`; unveränderte Score-Engine: `1.1.0`.
+Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Fokus auf Techniktraining und eine nachvollziehbare 3s-Wertung. Aktuelle App-Version: `1.4.0`; unveränderte Score-Engine: `1.1.0`.
 
 ## Enthaltene Funktionen
 
@@ -24,7 +24,7 @@ Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Foku
 - Automatische Scorecard + konkrete Technik-Tipps
 - Optionales Sprungfeedback als Freitext beim Upload oder spaeter im Report
 - Gespeicherter Coaching-Fokus fuer den Rueckblick im naechsten Sprung
-- Speicherung pro Springer in SQLite (jumps/samples/metrics)
+- Speicherung pro Springer in SQLite mit normalisierten Roh-Samples, kompakten Report-Serien und versionierten Analyse-Features
 - HTML-Report mit interaktiven Kurven
 - Vergleichsansicht je Springer
 
@@ -35,6 +35,24 @@ Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Foku
 - Pandas/Numpy (Analyse)
 - Plotly.js (Kurven in UI)
 - SQLite (Persistenz)
+
+## Performance-Architektur ab v1.4.0
+
+- Eine Upload-Datei wird nur einmal geparst und vorbereitet. Dropzone-Erkennung und Bewertung nutzen denselben vorbereiteten Track.
+- Das beste 3s-Fenster wird vektorisiert auf demselben globalen 0,1s-Raster berechnet. Score-Regeln und Analyseversion bleiben unverändert.
+- Neue Uploads werden weiterhin vollständig in `samples` gespeichert und zusätzlich als komprimierte technische Serie in `jump_series` abgelegt. Reports lesen zuerst die kompakte Serie und fallen bei fehlenden oder ungültigen Daten automatisch auf `samples` zurück.
+- Springerkennwerte und fertige Profile werden versions- und referenzgebunden gespeichert. Kontext-, Feedback- und Reanalyseänderungen invalidieren die betroffenen Ableitungen.
+- KI-Coaching blockiert den ersten deterministischen Report nicht mehr. Es wird im Hintergrund erzeugt, automatisch nachgeladen und dauerhaft in SQLite gecacht.
+- Schemaänderungen laufen über `schema_migrations`. SQLite nutzt im lokalen Einzelserverbetrieb WAL; Original-CSV und normalisierte Samples bleiben als Wiederherstellungsquelle erhalten.
+
+Der additive Backfill erstellt vor jeder schreibenden Ausführung automatisch ein konsistentes SQLite-Backup. Ohne `--apply` verändert er nichts:
+
+```powershell
+python -m scripts.backfill_performance_v1_4
+python -m scripts.backfill_performance_v1_4 --apply
+```
+
+SQLite bleibt für den aktuellen Einzelserverbetrieb bewusst die schnellere und einfachere Grundlage. Ein Wechsel auf PostgreSQL ist vorgesehen, sobald mehrere App-Instanzen oder Worker gleichzeitig schreiben, die Datenbank auf Netzwerkspeicher liegen müsste oder wiederkehrende Schreibkonflikte messbar werden. Die fachliche Analyse bleibt davon getrennt; Details und Migrationspfad stehen in `docs/architecture-v1.4.0.md`.
 
 ## Start
 
@@ -149,7 +167,7 @@ Schutzmechanismen:
 - Kein Key in Templates, JavaScript, API-Responses, Logs oder GitHub.
 - KI-Payload enthaelt standardmaessig keine Namen, Dateinamen oder Zeitstempel.
 - Es werden keine CSV-Rohdaten oder kompletten GPS-Kurven an OpenAI gesendet.
-- Cache verhindert neue API-Aufrufe fuer identische Coaching-Payloads.
+- Ein persistenter Cache verhindert auch nach Serverneustarts neue API-Aufrufe fuer identische Coaching-Payloads.
 - `AI_COACHING_MAX_REQUESTS_PER_DAY` begrenzt neue OpenAI-Anfragen pro Serverprozess und Tag. `0` deaktiviert dieses Limit.
 
 ### Lokale Entwicklung
@@ -192,7 +210,7 @@ Sie kann nach Name, Ort, ICAO-Kennung, Betreiber, Land und Status gefiltert werd
 `/dropzones/{dropzone_id}` zeigt Höhenbelege, Zonen, Betreiber, Quellen sowie ausschließlich
 aggregierte Zuordnungs- und GNSS-Beobachtungswerte ohne Springernamen oder einzelne Sprung-IDs.
 Katalogmethodik: `docs/dropzone-catalog-2026.07.18.md`; Rollout und Validierung:
-`docs/validation-v1.2.0.md` und `docs/validation-v1.3.0.md`.
+`docs/validation-v1.2.0.md`, `docs/validation-v1.3.0.md` und `docs/validation-v1.4.0.md`.
 
 ## Tests
 

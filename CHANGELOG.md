@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.4.0 - 2026-07-20
+
+### Upload und Analyse
+
+- FlySight-Dateien werden pro Upload nur noch einmal geparst und vorbereitet; Dropzone-Erkennung und finale Bewertung teilen sich denselben Track.
+- Die Suche nach dem besten 3s-Fenster wurde ohne Regeländerung vektorisiert. Golden-Master-Hashes für reale kleine, mittlere und maximale Dateien stimmen exakt mit v1.3.0 überein.
+- Der größte reale Upload mit manueller Katalogzuordnung sank im Vergleichstest von 5,525 auf 1,048 Sekunden; Regel-Score und vollständiger Ergebnis-Hash blieben identisch.
+
+### Speicherung und Reports
+
+- Nummerierte, idempotente Schema-Migrationen und SQLite-WAL eingeführt.
+- Komprimierte technische Messreihen mit sicherem Dual-Read-Fallback ergänzt; normalisierte Samples und Original-CSV bleiben vollständig erhalten.
+- Versionierte Analyse-Features und dauerhafte Springerprofil-Snapshots ergänzen die bisherigen Prozess-Caches. Änderungen an Kontext, Feedback oder Analyse invalidieren abhängige Daten.
+- Der Kaltstart eines Reports mit 184 historischen Sprüngen sank im Integrationstest von rund 24 Sekunden auf 0,179 Sekunden; der warme Aufruf benötigte 0,119 Sekunden.
+- KI-Coaching wird nach der deterministischen Seite im Hintergrund erzeugt, automatisch nachgeladen und persistent gespeichert.
+- Wiederholbarer Backfill mit automatischem Vorab-Backup und anschließendem Integritätsaudit ergänzt.
+
+### Versionierung
+
+- App-Version auf `1.4.0` erhöht. Score-Engine, Score-Regeln und Analysesignatur bleiben unverändert auf Analyseversion `1.1.0`.
+
 ## 1.3.0 - 2026-07-18
 
 ### Dropzone-Katalog in der UI

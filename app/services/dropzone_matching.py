@@ -6,7 +6,12 @@ import math
 from statistics import median
 from typing import Any
 
-from app.analysis.pipeline import AnalysisError, analyze_flysight_csv
+from app.analysis.pipeline import (
+    AnalysisError,
+    analyze_flysight_csv,
+    build_ground_observation_samples,
+    prepare_flysight_csv,
+)
 from app.database import get_connection
 
 MATCH_ALGORITHM_VERSION = "stable-ground-match-v1"
@@ -246,37 +251,33 @@ def analyze_flysight_with_dropzone(
     zones: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     match_contexts = list_dropzone_match_contexts() if zones is None else zones
-    initial = analyze_flysight_csv(
-        content=content,
-        file_name=file_name,
-        jumper_name=jumper_name,
-        ground_elevation_m=ground_elevation_m,
-        breakoff_altitude_agl_m=breakoff_altitude_agl_m,
-        manual_t0_utc=manual_t0_utc,
+    prepared = prepare_flysight_csv(content)
+    observation = extract_stable_ground_observation(
+        build_ground_observation_samples(prepared, manual_t0_utc=manual_t0_utc)
     )
-    observation = extract_stable_ground_observation(initial["sample_records"])
     match = match_ground_observation(
         observation,
         match_contexts,
         manual_dropzone_id=manual_dropzone_id,
     )
 
-    result = initial
+    resolved_ground = ground_elevation_m
+    ground_source_override = None
     matched_ground = match.get("ground_elevation_m")
     if ground_elevation_m is None and match["status"] in {"accepted", "manual"} and matched_ground is not None:
-        source = "dropzone_manual" if match["status"] == "manual" else "dropzone_catalog"
-        result = analyze_flysight_csv(
-            content=content,
-            file_name=file_name,
-            jumper_name=jumper_name,
-            ground_elevation_m=float(matched_ground),
-            breakoff_altitude_agl_m=breakoff_altitude_agl_m,
-            manual_t0_utc=manual_t0_utc,
-            ground_elevation_source_override=source,
-        )
-        result_observation = extract_stable_ground_observation(result["sample_records"])
-        if result_observation is not None:
-            match["observation"] = result_observation
+        resolved_ground = float(matched_ground)
+        ground_source_override = "dropzone_manual" if match["status"] == "manual" else "dropzone_catalog"
+
+    result = analyze_flysight_csv(
+        content=content,
+        file_name=file_name,
+        jumper_name=jumper_name,
+        ground_elevation_m=resolved_ground,
+        breakoff_altitude_agl_m=breakoff_altitude_agl_m,
+        manual_t0_utc=manual_t0_utc,
+        ground_elevation_source_override=ground_source_override,
+        prepared_track=prepared,
+    )
 
     _attach_dropzone_match(result, match)
     return result

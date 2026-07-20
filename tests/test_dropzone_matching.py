@@ -10,6 +10,7 @@ import pytest
 
 from app import database
 from app.database import init_db
+from app.services import dropzone_matching
 from app.services.dropzone_catalog import sync_catalog
 from app.services.dropzone_matching import (
     analyze_flysight_with_dropzone,
@@ -237,14 +238,28 @@ def test_full_analysis_persists_assignment_attempt_and_observation(
     )
     jump_id, duplicate = save_analysis_result(result)
     report = get_jump_report(jump_id)
+    full_sample_report = get_jump_report(jump_id, prefer_compact_series=False)
 
     assert duplicate is False
     assert report is not None
+    assert full_sample_report is not None
     assert report["jump"]["ground_elevation_source"] == "dropzone_catalog"
     assert report["jump"]["dropzone_id"] == "dz-test"
     assert report["dropzone"]["name"] == "Testplatz"
     assert report["dropzone_match"]["match_status"] == "accepted"
     assert report["dropzone_match"]["confidence"] >= 0.75
+    with database.get_connection() as conn:
+        sample_count = int(conn.execute("SELECT COUNT(*) FROM samples WHERE jump_id = ?", (jump_id,)).fetchone()[0])
+        series_count = int(
+            conn.execute("SELECT point_count FROM jump_series WHERE jump_id = ?", (jump_id,)).fetchone()[0]
+        )
+    assert 0 < series_count < sample_count
+    assert report["chart_data"]["time_s"][-1] >= float(report["notes"]["curve_window_end_s"])
+    assert report["metrics"] == full_sample_report["metrics"]
+    assert report["fixpoints"] == full_sample_report["fixpoints"]
+    assert report["phases"] == full_sample_report["phases"]
+    for key in ("time_s", "vVert_kmh", "vHor_kmh", "angle_deg", "hAGL_m", "velN_mps", "velE_mps"):
+        assert report["chart_data"][key] == full_sample_report["chart_data"][key][:series_count]
 
 
 def test_manual_ground_keeps_priority_over_automatic_dropzone_height() -> None:
@@ -262,3 +277,37 @@ def test_manual_ground_keeps_priority_over_automatic_dropzone_height() -> None:
     assert result["jump_record"]["ground_elevation_m"] == 123.0
     assert result["jump_record"]["ground_elevation_source"] == "manual"
     assert json.loads(result["metrics_record"]["notes"])["dropzone_match_status"] == "accepted"
+
+
+def test_dropzone_upload_parses_and_analyzes_track_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    parse_calls = 0
+    analysis_calls = 0
+    original_prepare = dropzone_matching.prepare_flysight_csv
+    original_analyze = dropzone_matching.analyze_flysight_csv
+
+    def counted_prepare(content: bytes):
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_prepare(content)
+
+    def counted_analyze(**kwargs):
+        nonlocal analysis_calls
+        analysis_calls += 1
+        assert kwargs["prepared_track"] is not None
+        return original_analyze(**kwargs)
+
+    monkeypatch.setattr(dropzone_matching, "prepare_flysight_csv", counted_prepare)
+    monkeypatch.setattr(dropzone_matching, "analyze_flysight_csv", counted_analyze)
+
+    result = analyze_flysight_with_dropzone(
+        content=_jump_with_ground_sequence(),
+        file_name="single-pass.csv",
+        jumper_name="Test",
+        ground_elevation_m=None,
+        breakoff_altitude_agl_m=1707.0,
+        zones=[_zone()],
+    )
+
+    assert result["dropzone_match"]["status"] == "accepted"
+    assert parse_calls == 1
+    assert analysis_calls == 1

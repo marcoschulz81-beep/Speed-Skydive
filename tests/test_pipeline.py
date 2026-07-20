@@ -9,10 +9,75 @@ import pytest
 
 from app.analysis.pipeline import (
     AnalysisError,
+    _best_3s_window,
     _negative_risk,
     _refine_exit_to_ramp_start,
+    _time_weighted_window_mean,
     analyze_flysight_csv,
 )
+
+
+def _reference_best_3s_window(
+    frame: pd.DataFrame,
+    *,
+    start_limit: float,
+    end_limit: float | None = None,
+) -> tuple[float, float, float, float] | None:
+    ordered = frame.sort_values("t_rel_s")
+    time_s = ordered["t_rel_s"].to_numpy(dtype=float)
+    first = float(np.ceil((max(time_s[0], start_limit) - 1e-9) / 0.1) * 0.1)
+    available_end = float(time_s[-1]) if end_limit is None else min(float(time_s[-1]), end_limit)
+    last = float(np.floor((available_end - 3.0 + 1e-9) / 0.1) * 0.1)
+    if last < first:
+        return None
+    dt = np.diff(time_s)
+    gap_threshold = max(float(np.nanmedian(dt)) * 2.5, 0.6)
+    gaps = [(float(time_s[i]), float(time_s[i + 1])) for i, delta in enumerate(dt) if delta > gap_threshold]
+    best: tuple[float, float, float, float] | None = None
+    for offset in range(int(round((last - first) / 0.1)) + 1):
+        start = round(first + offset * 0.1, 10)
+        end = round(start + 3.0, 10)
+        if any(gap_start < end and gap_end > start for gap_start, gap_end in gaps):
+            continue
+        vertical = _time_weighted_window_mean(
+            time_s,
+            ordered["vVert_mps"].to_numpy(dtype=float),
+            start,
+            end,
+        )
+        candidate = (
+            start,
+            vertical,
+            _time_weighted_window_mean(time_s, ordered["vHor_kmh"].to_numpy(dtype=float), start, end),
+            _time_weighted_window_mean(time_s, ordered["angle_deg"].to_numpy(dtype=float), start, end),
+        )
+        if np.isfinite(vertical) and (best is None or vertical > best[1]):
+            best = candidate
+    return best
+
+
+def test_vectorized_best_window_matches_previous_algorithm_with_time_gap() -> None:
+    rng = np.random.default_rng(20260720)
+    time_s = np.cumsum(rng.uniform(0.08, 0.14, 550))
+    time_s[310:] += 0.9
+    frame = pd.DataFrame(
+        {
+            "t_rel_s": time_s,
+            "vVert_mps": 70.0 + 0.25 * time_s + 8.0 * np.sin(time_s / 4.0),
+            "vHor_kmh": 110.0 - 0.7 * time_s + 4.0 * np.cos(time_s / 3.0),
+            "angle_deg": 55.0 + 0.4 * time_s,
+        }
+    )
+
+    expected = _reference_best_3s_window(frame, start_limit=4.35, end_limit=48.72)
+    actual = _best_3s_window(frame, start_limit=4.35, end_limit=48.72)
+
+    assert expected is not None
+    assert actual is not None
+    assert actual.start_s == expected[0]
+    assert actual.avg_vvert_mps == pytest.approx(expected[1], abs=1e-10)
+    assert actual.avg_vhor_kmh == pytest.approx(expected[2], abs=1e-10)
+    assert actual.avg_angle_deg == pytest.approx(expected[3], abs=1e-10)
 
 
 def test_negative_risk_detects_early_hot_zone_vhor_collapse_with_rebound():
