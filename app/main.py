@@ -724,7 +724,7 @@ def jump_detail(
         tip_effect_profile=tip_effect_profile,
     )
     feedback_context = build_feedback_coaching_context(report, review=review)
-    scorecard_rows = _build_scorecard_rows(report)
+    scorecard_rows = _build_scorecard_rows(report, marco_profile=marco_profile)
     scorecard_rows = _annotate_scorecard_with_reference(
         rows=scorecard_rows,
         report=report,
@@ -1527,8 +1527,6 @@ def _build_legacy_scorecard_rows(
     )
     stability_reason = _join_reason_lines(stability_reason_lines)
 
-    if marco_profile is None:
-        marco_profile = _get_marco_top15_profile(limit=15)
     if marco_profile is not None:
         marco_scores = _compute_marco_percent_scores(
             snapshot=snapshot,

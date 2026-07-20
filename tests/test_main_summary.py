@@ -197,6 +197,24 @@ def test_scorecard_keeps_five_phase_structure_when_max_speed_not_evaluable():
     assert "Bewertungsfenster endet" in rows[-1]["reason"]
 
 
+def test_scorecard_does_not_load_reference_profile_implicitly(monkeypatch):
+    report = _minimal_goal_follow_report(
+        jump_id="scorecard-without-database",
+        file_name="scorecard-without-database.csv",
+        angle_10=74.0,
+        angle_15=80.0,
+    )
+
+    def fail_on_database_profile_lookup(*, limit: int = 15):
+        raise AssertionError(f"unexpected database profile lookup with limit={limit}")
+
+    monkeypatch.setattr("app.main._get_marco_top15_profile", fail_on_database_profile_lookup)
+
+    rows = _build_scorecard_rows(report)
+
+    assert [row["name"] for row in rows] == [phase["name"] for phase in TECHNICAL_PHASE_SPECS]
+
+
 def test_scorecard_penalizes_early_horizontal_reserve_collapse():
     time_s = [i * 0.5 for i in range(0, 61)]
     vvert = []
