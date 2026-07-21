@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
 from pathlib import Path
 from statistics import mean
+from threading import Lock
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -39,7 +40,11 @@ from app.config import (
     TECHNICAL_PHASE_SPECS,
 )
 from app.database import init_db
-from app.services.ai_coach import AI_COACHING_SCHEMA_VERSION, generate_ai_coaching_texts
+from app.services.ai_coach import (
+    AI_COACHING_SCHEMA_VERSION,
+    AI_PROFILE_COACHING_PROMPT_VERSION,
+    generate_ai_coaching_texts,
+)
 from app.services.dropzone_directory import get_dropzone_detail, list_dropzones
 from app.services.dropzone_matching import analyze_flysight_with_dropzone, list_dropzone_choices
 from app.services.storage import (
@@ -84,6 +89,8 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), na
 
 _MARCO_PROFILE_CACHE: dict[int, tuple[str, dict[str, Any] | None]] = {}
 _JUMPER_SUMMARY_CACHE: dict[str, tuple[str, dict[str, Any]]] = {}
+_AI_COACHING_INFLIGHT: set[str] = set()
+_AI_COACHING_INFLIGHT_LOCK = Lock()
 _PLOTLY_JS_CACHE: str | None = None
 _SEMANTIC_DEDUPE_STOPWORDS: set[str] = {
     "der",
@@ -794,13 +801,14 @@ def jump_detail(
     )
     deferred_ai_payload = ai_coaching.pop("_background_payload", None)
     if isinstance(deferred_ai_payload, dict):
-        background_tasks.add_task(
-            _generate_and_store_ai_coaching,
+        _queue_ai_coaching(
+            background_tasks,
             payload=deferred_ai_payload,
             cache_key=str(ai_coaching.get("cache_key") or ""),
             jump_id=jump_id,
             analysis_signature=str(report["jump"].get("analysis_signature") or "legacy"),
             view_mode=view_mode,
+            prompt_version=str(AI_COACHING_SCHEMA_VERSION),
         )
     if view_mode == _VIEW_MODE_EXPERT:
         coaching_snapshot = _build_coaching_snapshot(
@@ -1207,8 +1215,28 @@ def jump_compare(
     )
 
 
+@app.get("/jumpers/{jumper_name}/ai-coaching-status")
+def jumper_ai_coaching_status(jumper_name: str, cache_key: str):
+    del jumper_name  # Der undurchsichtige Cache-Key ist bereits profilspezifisch.
+    cached = get_ai_coaching_result(cache_key)
+    if cached is None:
+        return JSONResponse({"complete": False, "available": False})
+    status = str(cached.pop("_cache_status", "ready"))
+    return JSONResponse(
+        {
+            "complete": True,
+            "available": bool(status == "ready" and cached.get("available")),
+        }
+    )
+
+
 @app.get("/jumpers/{jumper_name}")
-def jumper_view(request: Request, jumper_name: str, view: str | None = None):
+def jumper_view(
+    request: Request,
+    jumper_name: str,
+    background_tasks: BackgroundTasks,
+    view: str | None = None,
+):
     jumps = list_jumps_for_jumper(jumper_name)
     if not jumps:
         raise HTTPException(status_code=404, detail="Springer nicht gefunden.")
@@ -1216,6 +1244,13 @@ def jumper_view(request: Request, jumper_name: str, view: str | None = None):
     jumps = _annotate_best_jump(jumps)
     jumper_summary = _build_cached_jumper_summary(jumper_name=jumper_name, jumps=jumps)
     view_mode = _normalize_view_mode(view)
+    jumper_ai_coaching = _prepare_jumper_profile_ai_coaching(
+        background_tasks=background_tasks,
+        jumper_name=jumper_name,
+        jumps=jumps,
+        jumper_summary=jumper_summary,
+        view_mode=view_mode,
+    )
     return templates.TemplateResponse(
         request,
         "jumper_detail.html",
@@ -1224,6 +1259,7 @@ def jumper_view(request: Request, jumper_name: str, view: str | None = None):
             "view_mode": view_mode,
             "jumps": jumps,
             "jumper_summary": jumper_summary,
+            "jumper_ai_coaching": jumper_ai_coaching,
             "compare_result": None,
             "compare_alignment": None,
             "compare_chart_json": None,
@@ -1241,6 +1277,7 @@ def jumper_compare(
     jumper_name: str,
     left_jump_id: str,
     right_jump_id: str,
+    background_tasks: BackgroundTasks,
     view: str | None = None,
 ):
     jumps = list_jumps_for_jumper(jumper_name)
@@ -1250,6 +1287,13 @@ def jumper_compare(
     jumps = _annotate_best_jump(jumps)
     jumper_summary = _build_cached_jumper_summary(jumper_name=jumper_name, jumps=jumps)
     view_mode = _normalize_view_mode(view)
+    jumper_ai_coaching = _prepare_jumper_profile_ai_coaching(
+        background_tasks=background_tasks,
+        jumper_name=jumper_name,
+        jumps=jumps,
+        jumper_summary=jumper_summary,
+        view_mode=view_mode,
+    )
     jump_ids = {jump["jump_id"] for jump in jumps}
     compare_error: str | None = None
     compare_result: dict[str, Any] | None = None
@@ -1284,6 +1328,7 @@ def jumper_compare(
             "view_mode": view_mode,
             "jumps": jumps,
             "jumper_summary": jumper_summary,
+            "jumper_ai_coaching": jumper_ai_coaching,
             "compare_result": compare_result,
             "compare_alignment": compare_alignment,
             "compare_chart_json": compare_chart_json,
@@ -3786,6 +3831,7 @@ def _ai_coaching_cache_key(
     jump_id: str,
     analysis_signature: str,
     view_mode: str,
+    prompt_version: str | int = AI_COACHING_SCHEMA_VERSION,
 ) -> str:
     raw = json.dumps(
         {
@@ -3794,7 +3840,7 @@ def _ai_coaching_cache_key(
             "analysis_signature": analysis_signature,
             "view_mode": view_mode,
             "model": AI_COACHING_MODEL,
-            "prompt_version": AI_COACHING_SCHEMA_VERSION,
+            "prompt_version": str(prompt_version),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -3808,31 +3854,64 @@ def _generate_and_store_ai_coaching(
     *,
     payload: dict[str, Any],
     cache_key: str,
-    jump_id: str,
+    jump_id: str | None,
     analysis_signature: str,
     view_mode: str,
+    prompt_version: str = str(AI_COACHING_SCHEMA_VERSION),
 ) -> None:
     if not cache_key:
         return
-    result = generate_ai_coaching_texts(
-        payload,
-        view_mode=view_mode,
-        enabled=AI_COACHING_ENABLED,
-        model=AI_COACHING_MODEL,
-        timeout_s=AI_COACHING_TIMEOUT_S,
-        max_requests_per_day=AI_COACHING_MAX_REQUESTS_PER_DAY,
-    )
-    result["payload_schema_version"] = AI_COACHING_SCHEMA_VERSION
-    upsert_ai_coaching_result(
-        cache_key,
+    try:
+        result = generate_ai_coaching_texts(
+            payload,
+            view_mode=view_mode,
+            enabled=AI_COACHING_ENABLED,
+            model=AI_COACHING_MODEL,
+            timeout_s=AI_COACHING_TIMEOUT_S,
+            max_requests_per_day=AI_COACHING_MAX_REQUESTS_PER_DAY,
+        )
+        result["payload_schema_version"] = AI_COACHING_SCHEMA_VERSION
+        upsert_ai_coaching_result(
+            cache_key,
+            jump_id=jump_id,
+            analysis_signature=analysis_signature,
+            model=AI_COACHING_MODEL,
+            prompt_version=prompt_version,
+            view_mode=view_mode,
+            status="ready" if result.get("available") else "error",
+            payload=result,
+        )
+    finally:
+        with _AI_COACHING_INFLIGHT_LOCK:
+            _AI_COACHING_INFLIGHT.discard(cache_key)
+
+
+def _queue_ai_coaching(
+    background_tasks: BackgroundTasks,
+    *,
+    payload: dict[str, Any],
+    cache_key: str,
+    jump_id: str | None,
+    analysis_signature: str,
+    view_mode: str,
+    prompt_version: str,
+) -> bool:
+    if not cache_key:
+        return False
+    with _AI_COACHING_INFLIGHT_LOCK:
+        if cache_key in _AI_COACHING_INFLIGHT:
+            return False
+        _AI_COACHING_INFLIGHT.add(cache_key)
+    background_tasks.add_task(
+        _generate_and_store_ai_coaching,
+        payload=payload,
+        cache_key=cache_key,
         jump_id=jump_id,
         analysis_signature=analysis_signature,
-        model=AI_COACHING_MODEL,
-        prompt_version=str(AI_COACHING_SCHEMA_VERSION),
         view_mode=view_mode,
-        status="ready" if result.get("available") else "error",
-        payload=result,
+        prompt_version=prompt_version,
     )
+    return True
 
 
 def _build_ai_coaching(
@@ -3897,6 +3976,211 @@ def _build_ai_coaching(
         "cache_key": cache_key,
         "payload_schema_version": AI_COACHING_SCHEMA_VERSION,
         "_background_payload": payload,
+    }
+
+
+def _prepare_jumper_profile_ai_coaching(
+    *,
+    background_tasks: BackgroundTasks,
+    jumper_name: str,
+    jumps: list[dict[str, Any]],
+    jumper_summary: dict[str, Any],
+    view_mode: str,
+) -> dict[str, Any]:
+    ai_coaching = _build_jumper_profile_ai_coaching(
+        jumper_name=jumper_name,
+        jumps=jumps,
+        jumper_summary=jumper_summary,
+        view_mode=view_mode,
+    )
+    deferred_payload = ai_coaching.pop("_background_payload", None)
+    if isinstance(deferred_payload, dict):
+        _queue_ai_coaching(
+            background_tasks,
+            payload=deferred_payload,
+            cache_key=str(ai_coaching.get("cache_key") or ""),
+            jump_id=None,
+            analysis_signature=str(ai_coaching.get("profile_signature") or "legacy-profile"),
+            view_mode=view_mode,
+            prompt_version=_profile_ai_prompt_version(),
+        )
+    return ai_coaching
+
+
+def _build_jumper_profile_ai_coaching(
+    *,
+    jumper_name: str,
+    jumps: list[dict[str, Any]],
+    jumper_summary: dict[str, Any],
+    view_mode: str,
+) -> dict[str, Any]:
+    payload = _build_jumper_profile_ai_payload(
+        jumper_name=jumper_name,
+        jumper_summary=jumper_summary,
+        view_mode=view_mode,
+    )
+    profile_signature = _jumper_summary_signature(jumps)
+    profile_scope = hashlib.sha256(jumper_name.strip().casefold().encode("utf-8")).hexdigest()
+    prompt_version = _profile_ai_prompt_version()
+    cache_key = _ai_coaching_cache_key(
+        payload=payload,
+        jump_id=f"jumper-profile:{profile_scope}",
+        analysis_signature=profile_signature,
+        view_mode=view_mode,
+        prompt_version=prompt_version,
+    )
+    cached = get_ai_coaching_result(cache_key)
+    if cached is not None:
+        cached.pop("_cache_status", None)
+        cached["cached"] = True
+        cached["profile_signature"] = profile_signature
+        cached["payload_schema_version"] = AI_COACHING_SCHEMA_VERSION
+        return cached
+
+    if not AI_COACHING_ENABLED:
+        result = generate_ai_coaching_texts(
+            payload,
+            view_mode=view_mode,
+            enabled=False,
+            model=AI_COACHING_MODEL,
+            timeout_s=AI_COACHING_TIMEOUT_S,
+            max_requests_per_day=AI_COACHING_MAX_REQUESTS_PER_DAY,
+        )
+        result["profile_signature"] = profile_signature
+        result["payload_schema_version"] = AI_COACHING_SCHEMA_VERSION
+        return result
+
+    return {
+        "available": False,
+        "enabled": True,
+        "pending": True,
+        "reason": "KI-Profilcoach wird im Hintergrund erstellt.",
+        "source": "pending",
+        "cache_key": cache_key,
+        "profile_signature": profile_signature,
+        "payload_schema_version": AI_COACHING_SCHEMA_VERSION,
+        "_background_payload": payload,
+    }
+
+
+def _profile_ai_prompt_version() -> str:
+    return f"{AI_COACHING_SCHEMA_VERSION}:profile:{AI_PROFILE_COACHING_PROMPT_VERSION}"
+
+
+def _build_jumper_profile_ai_payload(
+    *,
+    jumper_name: str,
+    jumper_summary: dict[str, Any],
+    view_mode: str,
+) -> dict[str, Any]:
+    performance_profile = (
+        jumper_summary.get("performance_profile", {})
+        if isinstance(jumper_summary.get("performance_profile"), dict)
+        else {}
+    )
+    stability_reference = (
+        jumper_summary.get("stability_reference", {})
+        if isinstance(jumper_summary.get("stability_reference"), dict)
+        else {}
+    )
+    tip_effect_profile = (
+        jumper_summary.get("tip_effect_profile", {})
+        if isinstance(jumper_summary.get("tip_effect_profile"), dict)
+        else {}
+    )
+    improved = _limit_texts(jumper_summary.get("improved_points"), max_items=5, max_len=240)
+    worse = _limit_texts(jumper_summary.get("worse_points"), max_items=5, max_len=240)
+    earlier_better = _limit_texts(
+        jumper_summary.get("earlier_better_points"),
+        max_items=4,
+        max_len=240,
+    )
+    focus_actions = _limit_texts(jumper_summary.get("focus_actions"), max_items=4, max_len=360)
+    trend_summary = _truncate_text(str(jumper_summary.get("trend_summary") or ""), 300)
+    main_issues = _unique_texts(worse + earlier_better)[:5]
+
+    trend_rows: list[dict[str, Any]] = []
+    for raw in (jumper_summary.get("trend_rows") or [])[:10]:
+        if not isinstance(raw, dict):
+            continue
+        trend_rows.append(
+            {
+                "name": _truncate_text(str(raw.get("name") or ""), 80),
+                "early_value": _round_float(raw.get("early_value"), 1),
+                "recent_value": _round_float(raw.get("recent_value"), 1),
+                "delta": _round_float(raw.get("delta"), 1),
+                "unit": str(raw.get("unit") or ""),
+                "status": str(raw.get("status") or ""),
+            }
+        )
+
+    return {
+        "schema_version": AI_COACHING_SCHEMA_VERSION,
+        "profile_prompt_version": AI_PROFILE_COACHING_PROMPT_VERSION,
+        "report_kind": "jumper_profile",
+        "view_mode": view_mode,
+        "jump": {
+            "jumper_name": jumper_name.strip() if AI_COACHING_INCLUDE_IDENTIFIERS else "",
+            "report_scope": "all_available_jumps",
+        },
+        "profile": {
+            "jump_count": int(jumper_summary.get("jump_count") or 0),
+            "learning_jump_count": int(jumper_summary.get("learning_jump_count") or 0),
+            "excluded_learning_jump_count": int(jumper_summary.get("excluded_learning_jump_count") or 0),
+            "trend_summary": trend_summary,
+            "trend_rows": trend_rows,
+            "stability": {
+                "available": bool(stability_reference.get("available")),
+                "stable_lines": _limit_texts(
+                    stability_reference.get("stable_lines"),
+                    max_items=4,
+                    max_len=240,
+                ),
+                "unstable_lines": _limit_texts(
+                    stability_reference.get("unstable_lines"),
+                    max_items=4,
+                    max_len=240,
+                ),
+            },
+            "personal_timing": _compact_timing_reference_for_ai(
+                jumper_summary.get("timing_reference")
+            ),
+            "tip_effect": {
+                "available": bool(tip_effect_profile.get("available")),
+                "summary": _truncate_text(str(tip_effect_profile.get("summary") or ""), 260),
+                "lines": _limit_texts(tip_effect_profile.get("lines"), max_items=4, max_len=240),
+            },
+        },
+        "performance_profile": _compact_performance_profile_for_ai(performance_profile),
+        "feedback_training_profile": _compact_feedback_training_profile_for_ai(
+            jumper_summary.get("feedback_training_profile")
+        ),
+        "metrics": {
+            "best_rule_score_kmh": _round_float(jumper_summary.get("best_speed_kmh"), 1),
+        },
+        "review": {
+            "happened": [trend_summary] if trend_summary else [],
+            "good": improved,
+            "not_good": main_issues,
+            "coaching_goals": [],
+        },
+        "jump_brief": {
+            "summary": trend_summary,
+            "main_issues": main_issues,
+            "strengths": improved,
+            "actions": focus_actions,
+        },
+        "quality": {
+            "analysis_blocked": False,
+            "quality_flags": [],
+            "quality_issue_lines": (
+                [
+                    f"{int(jumper_summary.get('excluded_learning_jump_count') or 0)} Spruenge sind aus dem Lernprofil ausgeschlossen."
+                ]
+                if int(jumper_summary.get("excluded_learning_jump_count") or 0) > 0
+                else []
+            ),
+        },
     }
 
 

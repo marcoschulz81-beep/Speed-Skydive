@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.5.0 - 2026-07-21
+
+### KI-Erklärungen und Coaching
+
+- Profilweiten KI-Coach für Springerprofile ergänzt. Er verwendet die auswertbaren Sprünge, Trendwerte, Leistungsprofil, Stabilitätsreferenz, Feedbackkontext und regelbasierte Trainingsfokusse.
+- Einfache und Expertenansicht erhalten jeweils eine passende KI-Erklärung; die einfache Ansicht vermeidet interne Fachbegriffe und rundet notwendige Grenzwerte verständlich.
+- Springer-Vergleichsreports behalten den KI-Profilcoach und die jeweils gewählte Ansicht bei.
+- KI-Coaching bleibt weiterhin für jeden einzelnen Sprungreport in einfacher und Expertenansicht verfügbar.
+- Profilantworten werden getrennt nach Profilstand, Modell, Promptversion und Ansicht persistent gespeichert und nach der Hintergrundgenerierung automatisch eingeblendet.
+- Gleichzeitige identische KI-Anfragen durch wiederholtes Aktualisieren werden innerhalb des laufenden Serverprozesses zusammengeführt.
+- Textbegrenzung bevorzugt vollständige Sätze, damit längere KI-Fazits nicht mitten im Satz enden.
+
+### Qualität und Versionierung
+
+- Regressionstests für Profilpayload, Datenschutz ohne Identifikatoren, einfache/Experten-Darstellung, Hintergrund-Polling, Doppelanfrage-Schutz und vollständige Satzgrenzen ergänzt.
+- App-Version auf `1.5.0` erhöht. Score-Engine, Score-Regeln und Analysesignatur bleiben unverändert auf Analyseversion `1.1.0`.
+
 ## 1.4.0 - 2026-07-20
 
 ### Upload und Analyse

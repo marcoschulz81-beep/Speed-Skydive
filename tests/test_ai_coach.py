@@ -89,6 +89,43 @@ def test_ai_coaching_accepts_valid_json_schema_response():
     assert "Ein reines Ergebnisziel" in request["instructions"]
 
 
+def test_ai_coaching_uses_profile_context_for_jumper_profile():
+    clear_ai_coaching_cache()
+    response_payload = {
+        "summary": "Das Profil entwickelt sich stabil nach oben.",
+        "main_issue": "Der wichtigste Hebel ist die reproduzierbare schnelle Phase.",
+        "coaching_text": "Mehrere Spruenge zeigen Fortschritt, die Wiederholbarkeit schwankt aber noch.",
+        "next_jump_focus": "Im naechsten Sprung die zuletzt gute Linie ohne zusaetzliche Korrektur wiederholen.",
+        "confidence_note": "Die Profilbasis ist ausreichend.",
+    }
+    fake_client = _FakeClient(json.dumps(response_payload))
+
+    result = generate_ai_coaching_texts(
+        {
+            "report_kind": "jumper_profile",
+            "profile_prompt_version": 1,
+            "profile": {"jump_count": 12, "trend_summary": "Positiver Verlauf."},
+            "jump_brief": {"actions": ["Die zuletzt gute Linie stabil wiederholen."]},
+        },
+        view_mode="expert",
+        enabled=True,
+        model="gpt-5-mini",
+        timeout_s=1.0,
+        api_key="test-key",
+        client_factory=lambda _key, _timeout: fake_client,
+    )
+
+    assert result["available"] is True
+    request = fake_client.responses.calls[0]
+    sent_payload = json.loads(request["input"][0]["content"][0]["text"])
+    assert sent_payload["report_kind"] == "jumper_profile"
+    assert sent_payload["profile"]["jump_count"] == 12
+    assert "Springerprofil ueber mehrere Spruenge" in request["instructions"]
+    assert "bei diesem Sprung" in request["instructions"]
+    schema = request["text"]["format"]["schema"]
+    assert "Springerprofil" in schema["properties"]["summary"]["description"]
+
+
 def test_ai_coaching_preserves_long_expert_coaching_text_past_old_limit():
     clear_ai_coaching_cache()
     long_explanation = " ".join(
@@ -168,6 +205,19 @@ def test_ai_text_limit_does_not_finish_on_dangling_connector():
     assert limited == "Prioritaet: Aufbau ruhig halten und die Linie."
     assert "vor." not in limited
     assert "dem." not in limited
+
+
+def test_ai_text_limit_prefers_an_earlier_complete_sentence():
+    first_sentence = (
+        "Das Profil zeigt ueber mehrere Spruenge einen stabilen und klar positiven Verlauf."
+    )
+    second_sentence = (
+        "Die spaete Phase bleibt jedoch ein wiederkehrender Schwerpunkt mit mehreren weiteren Einzelheiten."
+    )
+
+    limited = _limit_text(f"{first_sentence} {second_sentence}", len(first_sentence) + 35)
+
+    assert limited == first_sentence
 
 
 def test_ai_coaching_expert_focus_keeps_reported_focus_complete():

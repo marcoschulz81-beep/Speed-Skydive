@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi import BackgroundTasks
+
 from app.config import TECHNICAL_PHASE_SPECS
 from app.main import (
+    _AI_COACHING_INFLIGHT,
     _annotate_scorecard_with_reference,
     _build_ai_coaching_payload,
     _build_coaching_snapshot,
     _build_fs2_quality_issue_lines,
     _build_jump_brief_simple,
     _build_jump_brief_summary,
+    _build_jumper_profile_ai_payload,
     _build_jumper_stability_reference,
     _build_jumper_timing_reference,
     _build_jumper_trend_rows,
@@ -20,6 +24,7 @@ from app.main import (
     _jumper_overview_simple_status,
     _normalize_view_mode,
     _phase_rows_for_report,
+    _queue_ai_coaching,
     _render_simple_glossary,
     _tip_focus_from_previous,
     _tip_follow_status,
@@ -74,6 +79,89 @@ def _minimal_goal_follow_report(
             "accVert_mps2": [2.2 for _ in time_s],
         },
     }
+
+
+def test_jumper_profile_ai_payload_uses_all_profile_signals_without_identifier():
+    payload = _build_jumper_profile_ai_payload(
+        jumper_name="Test Jumper",
+        view_mode="simple",
+        jumper_summary={
+            "jump_count": 12,
+            "learning_jump_count": 10,
+            "excluded_learning_jump_count": 2,
+            "best_speed_kmh": 421.25,
+            "trend_summary": "Positiver Verlauf.",
+            "improved_points": ["Aufbau wurde besser."],
+            "worse_points": ["Das schnelle Fenster schwankt."],
+            "earlier_better_points": [],
+            "focus_actions": ["Die gute Linie stabil wiederholen."],
+            "trend_rows": [
+                {
+                    "name": "Regel-Score",
+                    "early_value": 390.0,
+                    "recent_value": 410.0,
+                    "delta": 20.0,
+                    "unit": "km/h",
+                    "status": "besser",
+                }
+            ],
+            "performance_profile": {"available": False},
+            "feedback_training_profile": {"available": False},
+            "stability_reference": {"available": False},
+            "timing_reference": {"available": False},
+            "tip_effect_profile": {"available": False},
+        },
+    )
+
+    assert payload["report_kind"] == "jumper_profile"
+    assert payload["view_mode"] == "simple"
+    assert payload["jump"]["jumper_name"] == ""
+    assert payload["profile"]["jump_count"] == 12
+    assert payload["profile"]["trend_rows"][0]["delta"] == 20.0
+    assert payload["jump_brief"]["actions"] == ["Die gute Linie stabil wiederholen."]
+    assert payload["quality"]["quality_issue_lines"]
+
+
+def test_jumper_template_exposes_profile_ai_in_simple_and_expert_views():
+    template = Path("app/templates/jumper_detail.html").read_text(encoding="utf-8")
+
+    assert "KI-Erklärung &amp; Profil-Coach" in template
+    assert "Was dahintersteckt" in template
+    assert "KI-Coaching-Erklärung" in template
+    assert "KI-Coaching-Fokus" in template
+    assert "jumper-ai-coaching-pending" in template
+    assert "/ai-coaching-status?cache_key=" in template
+
+
+def test_ai_background_queue_deduplicates_repeated_refreshes():
+    cache_key = "profile-refresh-test"
+    background_tasks = BackgroundTasks()
+    _AI_COACHING_INFLIGHT.discard(cache_key)
+    try:
+        first = _queue_ai_coaching(
+            background_tasks,
+            payload={"report_kind": "jumper_profile"},
+            cache_key=cache_key,
+            jump_id=None,
+            analysis_signature="profile-signature",
+            view_mode="expert",
+            prompt_version="profile-test",
+        )
+        second = _queue_ai_coaching(
+            background_tasks,
+            payload={"report_kind": "jumper_profile"},
+            cache_key=cache_key,
+            jump_id=None,
+            analysis_signature="profile-signature",
+            view_mode="expert",
+            prompt_version="profile-test",
+        )
+
+        assert first is True
+        assert second is False
+        assert len(background_tasks.tasks) == 1
+    finally:
+        _AI_COACHING_INFLIGHT.discard(cache_key)
 
 
 def test_ai_payload_includes_compact_feedback_context():

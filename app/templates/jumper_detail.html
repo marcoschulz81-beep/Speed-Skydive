@@ -208,6 +208,89 @@
     {% endif %}
     {% endif %}
 
+    {% if jumper_ai_coaching %}
+    <div class="profile-ai-coach">
+        <h2>KI-Erklärung &amp; Profil-Coach</h2>
+        {% if jumper_ai_coaching.available %}
+            {% if (view_mode or 'expert') == 'simple' %}
+            <p class="muted">Die KI erklärt dein Profil aus allen auswertbaren Sprüngen in einfacher Sprache.</p>
+            <div class="score-grid vertical-grid">
+                <div class="score-box">
+                    <span class="k">Kurz erklärt</span>
+                    <p>{{ jumper_ai_coaching.summary }}</p>
+                </div>
+                <div class="score-box">
+                    <span class="k">Was dahintersteckt</span>
+                    <p>{{ jumper_ai_coaching.coaching_text }}</p>
+                </div>
+                <div class="score-box">
+                    <span class="k">Dein nächster Fokus</span>
+                    <p>{{ jumper_ai_coaching.next_jump_focus }}</p>
+                </div>
+            </div>
+            {% else %}
+            <p class="muted">Formulierung: KI. Grundlage: Profil-, Trend- und Regelanalyse aller auswertbaren Sprünge.</p>
+            <div class="score-grid vertical-grid">
+                <div class="score-box">
+                    <span class="k">Profilfazit</span>
+                    <p>{{ jumper_ai_coaching.summary }}</p>
+                </div>
+                <div class="score-box">
+                    <span class="k">Wichtigster profilweiter Hebel</span>
+                    <p>{{ jumper_ai_coaching.main_issue }}</p>
+                </div>
+                <div class="score-box">
+                    <span class="k">KI-Coaching-Erklärung</span>
+                    <p>{{ jumper_ai_coaching.coaching_text }}</p>
+                </div>
+                <div class="score-box">
+                    <span class="k">KI-Coaching-Fokus</span>
+                    <p>{{ jumper_ai_coaching.next_jump_focus }}</p>
+                    <span class="m">{{ jumper_ai_coaching.confidence_note }}</span>
+                    <span class="m">Modell: {{ jumper_ai_coaching.model }}{% if jumper_ai_coaching.cached %}, Cache{% endif %}</span>
+                </div>
+            </div>
+            {% endif %}
+        {% elif jumper_ai_coaching.pending %}
+        <p
+            class="muted"
+            id="jumper-ai-coaching-pending"
+            data-status-url="/jumpers/{{ jumper_name | urlencode }}/ai-coaching-status?cache_key={{ jumper_ai_coaching.cache_key }}"
+        >
+            Der KI-Profilcoach wird im Hintergrund erstellt. Profil-, Trend- und Regelanalyse sind bereits vollständig verfügbar.
+        </p>
+        {% elif jumper_ai_coaching.enabled and jumper_ai_coaching.reason %}
+        <p class="muted">KI-Profilcoach nicht verfügbar: {{ jumper_ai_coaching.reason }} Die regelbasierte Profilauswertung bleibt vollständig nutzbar.</p>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if jumper_ai_coaching and jumper_ai_coaching.pending %}
+    <script>
+    (() => {
+        const pending = document.getElementById("jumper-ai-coaching-pending");
+        if (!pending) return;
+        const statusUrl = pending.dataset.statusUrl;
+        let attempts = 0;
+        const poll = async () => {
+            attempts += 1;
+            try {
+                const response = await fetch(statusUrl, {headers: {"Accept": "application/json"}});
+                const status = response.ok ? await response.json() : null;
+                if (status?.complete) {
+                    window.location.reload();
+                    return;
+                }
+            } catch (_error) {
+                // Die regelbasierte Profilauswertung bleibt auch ohne Polling voll nutzbar.
+            }
+            if (attempts < 45) window.setTimeout(poll, 1000);
+        };
+        window.setTimeout(poll, 700);
+    })();
+    </script>
+    {% endif %}
+
     <div class="table-wrap">
         <table>
             <thead>

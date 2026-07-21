@@ -10,6 +10,7 @@ from difflib import SequenceMatcher
 from typing import Any, Callable
 
 AI_COACHING_SCHEMA_VERSION = 10
+AI_PROFILE_COACHING_PROMPT_VERSION = 2
 
 _REQUIRED_TEXT_FIELDS = [
     "summary",
@@ -97,6 +98,7 @@ def generate_ai_coaching_texts(
         )
 
     clean_payload = _compact_payload(payload)
+    report_kind = str(clean_payload.get("report_kind") or "jump").strip().lower()
     cache_key = _cache_key(payload=clean_payload, view_mode=view_mode, model=model)
     cached = _AI_COACHING_CACHE.get(cache_key)
     if cached is not None:
@@ -117,7 +119,7 @@ def generate_ai_coaching_texts(
         _track_daily_request()
         response = client.responses.create(
             model=model,
-            instructions=_instructions_for_view(view_mode),
+            instructions=_instructions_for_view(view_mode, report_kind=report_kind),
             input=[
                 {
                     "role": "user",
@@ -134,7 +136,7 @@ def generate_ai_coaching_texts(
                     "type": "json_schema",
                     "name": "speed_skydive_ai_coaching",
                     "strict": True,
-                    "schema": _response_schema(),
+                    "schema": _response_schema(report_kind=report_kind),
                 }
             },
             reasoning={"effort": "low"},
@@ -239,8 +241,11 @@ def _safe_exception_category(exc: Exception) -> str:
 def _compact_payload(payload: dict[str, Any]) -> dict[str, Any]:
     allowed_keys = {
         "schema_version",
+        "report_kind",
+        "profile_prompt_version",
         "view_mode",
         "jump",
+        "profile",
         "performance_profile",
         "feedback_training_profile",
         "metrics",
@@ -268,8 +273,9 @@ def _cache_key(*, payload: dict[str, Any], view_mode: str, model: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _instructions_for_view(view_mode: str) -> str:
+def _instructions_for_view(view_mode: str, *, report_kind: str = "jump") -> str:
     is_simple = view_mode == "simple"
+    is_profile = report_kind == "jumper_profile"
     style = (
         "Schreibe sehr einfach, direkt und ohne Fachjargon. Maximal drei kurze Saetze pro Feld. "
         "Nutze keine internen Begriffe wie Technikmodell, technische Bewertung, technische Analyse, "
@@ -290,9 +296,25 @@ def _instructions_for_view(view_mode: str) -> str:
             "und keine neuen technischen Zielwerte erfinden. Die pruefbare Tipp-Liste bleibt separat sichtbar. "
         )
     )
+    profile_rule = ""
+    if is_profile:
+        profile_rule = (
+            "Dieser Auftrag bewertet kein einzelnes Ereignis, sondern das Springerprofil ueber mehrere Spruenge. "
+            "Beziehe summary, main_issue und coaching_text auf wiederkehrende Muster und den Verlauf in profile, review "
+            "und jump_brief. Unterscheide klar zwischen stabilen Mustern, Verbesserungen und noch offenen Punkten. "
+            "Behaupte keine Ursache allein aus einer Korrelation und schreibe nicht 'bei diesem Sprung'. "
+            "summary muss aus hoechstens zwei vollstaendigen, kurzen Saetzen bestehen. "
+            "next_jump_focus bleibt genau eine konkrete Aufgabe fuer den naechsten Sprung. "
+        )
+        if is_simple:
+            profile_rule += (
+                "Nutze in der einfachen Profilansicht alltaegliche Woerter und ganze, kurze Saetze. "
+                "Vermeide Dezimal-Grenzwerte und ungewoehnliche Wortzusammensetzungen; runde notwendige Werte sinnvoll. "
+            )
     return (
         "Du bist ein Speed-Skydiving-Coach. Formuliere Coaching-Texte ausschliesslich aus den gelieferten "
         "Analyse-Fakten. Erfinde keine Messwerte, keine Ursachen und keine Sicherheitsdiagnosen. "
+        f"{profile_rule}"
         "Die deterministische Analyse ist die Quelle der Wahrheit; wenn Datenqualitaet eingeschraenkt ist, "
         "formuliere vorsichtig. Wenn primary_diagnosis.available=true ist, behandle diese Diagnose als Hauptursache "
         "und formuliere keine widerspruechlichen Ziele wie gleichzeitig steiler und flacher werden. "
@@ -324,7 +346,8 @@ def _instructions_for_view(view_mode: str) -> str:
     )
 
 
-def _response_schema() -> dict[str, Any]:
+def _response_schema(*, report_kind: str = "jump") -> dict[str, Any]:
+    is_profile = report_kind == "jumper_profile"
     return {
         "type": "object",
         "additionalProperties": False,
@@ -332,16 +355,24 @@ def _response_schema() -> dict[str, Any]:
         "properties": {
             "summary": {
                 "type": "string",
-                "description": "Kurzes Gesamtfazit zum Sprung auf Basis der gelieferten Fakten.",
+                "description": (
+                    "Kurzes Gesamtfazit zum Springerprofil auf Basis aller gelieferten Fakten."
+                    if is_profile
+                    else "Kurzes Gesamtfazit zum Sprung auf Basis der gelieferten Fakten."
+                ),
             },
             "main_issue": {
                 "type": "string",
-                "description": "Wichtigstes Problem oder Hebel fuer diesen Sprung.",
+                "description": (
+                    "Wichtigstes wiederkehrendes Problem oder groesster Hebel im Springerprofil."
+                    if is_profile
+                    else "Wichtigstes Problem oder Hebel fuer diesen Sprung."
+                ),
             },
             "coaching_text": {
                 "type": "string",
                 "description": (
-                    "Erklaerender Coaching-Text: Ursache, Wirkung und Flugmechanik. "
+                    "Erklaerender Coaching-Text zu Verlauf, Ursache, Wirkung und Flugmechanik. "
                     "Nicht die konkrete Aufgabe aus next_jump_focus wiederholen."
                 ),
             },
@@ -451,7 +482,7 @@ def _limit_text(text: str, max_len: int) -> str:
         cleaned.rfind("!", 0, max_len + 1),
         cleaned.rfind("?", 0, max_len + 1),
     )
-    if sentence_boundary >= max(80, int(max_len * 0.65)):
+    if sentence_boundary >= 80:
         boundary = sentence_boundary + 1
     else:
         word_boundary = cleaned.rfind(" ", 0, max_len + 1)
