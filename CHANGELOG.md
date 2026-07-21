@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.5.2 - 2026-07-21
+
+### Animierter KI-Platzhalter
+
+- Das lokale Speed-Skydive-SVG um eine ruhige Flugbewegung des Springers ergänzt.
+- Geschwindigkeitslinien und Flugspur bewegen sich versetzt und zeigen kontinuierliche Aktivität ohne vorgetäuschten Prozentfortschritt.
+- Der vorhandene rotierende Außenring und die pulsierenden Ladepunkte bleiben erhalten.
+- Bei aktivierter Einstellung `prefers-reduced-motion` werden sämtliche Bewegungen des Ladezustands deaktiviert.
+
+### Kompatibilität
+
+- Polling, Cache-Schlüssel, Status-Endpunkte und Fehler-Fallback bleiben unverändert.
+- App-Version auf `1.5.2` erhöht. Score-Engine, Analysesignatur und Datenbankschema bleiben unverändert.
+
 ## 1.5.1 - 2026-07-21
 
 ### KI-Ladezustand

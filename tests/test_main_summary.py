@@ -240,6 +240,23 @@ def test_ai_loader_svg_is_local_and_well_formed():
     assert len([node for node in root.iter() if node.tag.endswith("path")]) >= 3
 
 
+def test_ai_loader_animates_flight_and_respects_reduced_motion():
+    svg = Path("app/static/speed-skydive-loader.svg").read_text(encoding="utf-8")
+    page_css = Path("app/static/style.css").read_text(encoding="utf-8")
+
+    assert 'id="ai-loader-diver"' in svg
+    assert 'class="ai-speed-line"' in svg
+    assert 'id="ai-loader-trail"' in svg
+    assert "@keyframes ai-diver-flight" in svg
+    assert "@keyframes ai-speed-flow" in svg
+    assert "@keyframes ai-trail-flow" in svg
+    assert "@media (prefers-reduced-motion: reduce)" in svg
+    assert "animation: none" in svg
+    assert "animation: ai-loader-spin" in page_css
+    assert "animation: ai-loader-pulse" in page_css
+    assert "@media (prefers-reduced-motion: reduce)" in page_css
+
+
 def test_ai_background_queue_deduplicates_repeated_refreshes():
     cache_key = "profile-refresh-test"
     background_tasks = BackgroundTasks()

@@ -1,15 +1,71 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="title desc">
   <title id="title">Speed-Skydive</title>
-  <desc id="desc">Stilisierte steile Fluglinie mit Geschwindigkeitsstreifen</desc>
+  <desc id="desc">Animierter Springer auf einer steilen Fluglinie mit Geschwindigkeitsstreifen</desc>
   <defs>
     <linearGradient id="speed-gradient" x1="18" y1="18" x2="78" y2="78" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#4aa3ff"/>
       <stop offset="1" stop-color="#2ecc71"/>
     </linearGradient>
   </defs>
+  <style>
+    #ai-loader-diver {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: ai-diver-flight 1.8s ease-in-out infinite;
+    }
+
+    .ai-speed-line {
+      stroke-dasharray: 8 5;
+      animation: ai-speed-flow 1.15s linear infinite;
+    }
+
+    .ai-speed-line:nth-child(2) {
+      animation-delay: -0.22s;
+    }
+
+    .ai-speed-line:nth-child(3) {
+      animation-delay: -0.44s;
+    }
+
+    #ai-loader-trail {
+      stroke-dasharray: 9 6;
+      animation: ai-trail-flow 1.35s linear infinite;
+    }
+
+    @keyframes ai-diver-flight {
+      0%, 100% { transform: translate(-1px, -2px) rotate(-1deg); }
+      50% { transform: translate(2px, 3px) rotate(2deg); }
+    }
+
+    @keyframes ai-speed-flow {
+      0% { stroke-dashoffset: 26; opacity: .28; }
+      45% { opacity: .9; }
+      100% { stroke-dashoffset: 0; opacity: .28; }
+    }
+
+    @keyframes ai-trail-flow {
+      0% { stroke-dashoffset: 30; opacity: .35; }
+      50% { opacity: .9; }
+      100% { stroke-dashoffset: 0; opacity: .35; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #ai-loader-diver,
+      .ai-speed-line,
+      #ai-loader-trail {
+        animation: none;
+      }
+    }
+  </style>
   <circle cx="48" cy="48" r="43" fill="#0f151c" stroke="#263646" stroke-width="2"/>
-  <path d="M19 27h24M15 37h22M20 47h13" fill="none" stroke="#4aa3ff" stroke-linecap="round" stroke-width="4" opacity=".72"/>
-  <path d="M39 22c10 5 18 12 23 21l-9 5 16 25-10 6-18-29 8-5c-4-6-10-11-17-14z" fill="url(#speed-gradient)"/>
-  <path d="M53 19c5 0 9 4 9 9s-4 9-9 9-9-4-9-9 4-9 9-9z" fill="#dde5ed"/>
-  <path d="M37 55c-7 4-12 10-15 18" fill="none" stroke="#2ecc71" stroke-linecap="round" stroke-width="4" opacity=".8"/>
+  <g id="ai-loader-speed-lines" fill="none" stroke="#4aa3ff" stroke-linecap="round" stroke-width="4">
+    <path class="ai-speed-line" d="M19 27h24"/>
+    <path class="ai-speed-line" d="M15 37h22"/>
+    <path class="ai-speed-line" d="M20 47h13"/>
+  </g>
+  <g id="ai-loader-diver">
+    <path d="M39 22c10 5 18 12 23 21l-9 5 16 25-10 6-18-29 8-5c-4-6-10-11-17-14z" fill="url(#speed-gradient)"/>
+    <path d="M53 19c5 0 9 4 9 9s-4 9-9 9-9-4-9-9 4-9 9-9z" fill="#dde5ed"/>
+  </g>
+  <path id="ai-loader-trail" d="M37 55c-7 4-12 10-15 18" fill="none" stroke="#2ecc71" stroke-linecap="round" stroke-width="4"/>
 </svg>

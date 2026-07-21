@@ -5,7 +5,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATABASE_PATH = BASE_DIR / "speed_skydive.db"
 RAW_UPLOAD_DIR = BASE_DIR / "uploaded_logs"
 
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 ANALYSIS_VERSION = "1.1.0"
 
 REQUIRED_COLUMNS = [
