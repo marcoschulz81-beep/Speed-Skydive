@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.5.1 - 2026-07-21
+
+### KI-Ladezustand
+
+- Eigenes lokales Speed-Skydive-SVG als Ladezeichen mit dem Hinweis `Sprungbewertung in Analyse` ergänzt.
+- Solange die KI-Antwort aussteht, werden Bewertung, Scores, Kurven, Diagnosen und Coaching-Inhalte serverseitig nicht gerendert. Neutrale Metadaten, Kontext, Feedback und Datenwarnungen bleiben sichtbar.
+- Springerprofile verwenden denselben Ladepfad mit dem Hinweis `Profilbewertung in Analyse`.
+- Bei deaktivierter oder endgültig fehlgeschlagener KI bleibt die vollständige regelbasierte Bewertung als Fallback verfügbar.
+- Ladeanzeige ist responsiv, für Screenreader ausgezeichnet und respektiert reduzierte Animationen.
+
+### Automatisches Nachladen
+
+- Feste Polling-Abbrüche nach 20 Sekunden im Sprungreport beziehungsweise 45 Sekunden im Profil entfernt.
+- Gemeinsames Polling lädt auch KI-Antworten automatisch nach, die länger als 20 Sekunden benötigen; nach 30 Sekunden wird das Intervall reduziert.
+- Ein einmaliger Wiederherstellungs-Reload nach 60 Sekunden startet einen durch Serverneustart verlorenen Hintergrundauftrag neu, ohne identische Parallelaufträge zu erzeugen.
+- Status-Endpunkte liefern zusätzlich den abwärtskompatiblen Zustand `pending`, `ready` oder `error`.
+- Ansichtswechsel zwischen `simple` und `expert` erzeugen weiterhin nur die tatsächlich benötigte, getrennt gecachte Textvariante.
+
+### Versionierung
+
+- App-Version auf `1.5.1` erhöht. Score-Engine, Analysesignatur und Datenbankschema bleiben unverändert.
+
 ## 1.5.0 - 2026-07-21
 
 ### KI-Erklärungen und Coaching

@@ -1,0 +1,18 @@
+<div
+    class="ai-analysis-loader"
+    data-ai-analysis-loader
+    data-status-url="{{ ai_loading_status_url }}"
+    data-recovery-key="{{ ai_loading_recovery_key }}"
+    role="status"
+    aria-live="polite"
+    aria-busy="true"
+>
+    <div class="ai-loader-mark" aria-hidden="true">
+        <img src="/static/speed-skydive-loader.svg" alt="" width="96" height="96">
+    </div>
+    <p class="ai-loader-brand">Speed-Skydive Analyzer</p>
+    <h2>{{ ai_loading_title }}</h2>
+    <p class="muted ai-loader-detail" data-ai-loading-detail>{{ ai_loading_detail }}</p>
+    <div class="ai-loader-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+    <span class="sr-only">Bitte warten. Die KI-Auswertung wird automatisch nachgeladen.</span>
+</div>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="title desc">
+  <title id="title">Speed-Skydive</title>
+  <desc id="desc">Stilisierte steile Fluglinie mit Geschwindigkeitsstreifen</desc>
+  <defs>
+    <linearGradient id="speed-gradient" x1="18" y1="18" x2="78" y2="78" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4aa3ff"/>
+      <stop offset="1" stop-color="#2ecc71"/>
+    </linearGradient>
+  </defs>
+  <circle cx="48" cy="48" r="43" fill="#0f151c" stroke="#263646" stroke-width="2"/>
+  <path d="M19 27h24M15 37h22M20 47h13" fill="none" stroke="#4aa3ff" stroke-linecap="round" stroke-width="4" opacity=".72"/>
+  <path d="M39 22c10 5 18 12 23 21l-9 5 16 25-10 6-18-29 8-5c-4-6-10-11-17-14z" fill="url(#speed-gradient)"/>
+  <path d="M53 19c5 0 9 4 9 9s-4 9-9 9-9-4-9-9 4-9 9-9z" fill="#dde5ed"/>
+  <path d="M37 55c-7 4-12 10-15 18" fill="none" stroke="#2ecc71" stroke-linecap="round" stroke-width="4" opacity=".8"/>
+</svg>

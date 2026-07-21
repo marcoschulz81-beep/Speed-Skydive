@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from xml.etree import ElementTree
 
 from fastapi import BackgroundTasks
+from jinja2 import Environment, FileSystemLoader
 
 from app.config import TECHNICAL_PHASE_SPECS
 from app.main import (
     _AI_COACHING_INFLIGHT,
+    _ai_coaching_status_payload,
     _annotate_scorecard_with_reference,
     _build_ai_coaching_payload,
     _build_coaching_snapshot,
@@ -129,8 +132,112 @@ def test_jumper_template_exposes_profile_ai_in_simple_and_expert_views():
     assert "Was dahintersteckt" in template
     assert "KI-Coaching-Erklärung" in template
     assert "KI-Coaching-Fokus" in template
-    assert "jumper-ai-coaching-pending" in template
+    assert "Profilbewertung in Analyse" in template
+    assert '_ai_analysis_loading.html' in template
     assert "/ai-coaching-status?cache_key=" in template
+
+
+def test_pending_jump_report_renders_only_metadata_and_analysis_loader():
+    env = Environment(loader=FileSystemLoader("app/templates"), autoescape=True)
+    template = env.get_template("jump_detail.html")
+    report = {
+        "jump": {
+            "jumper_name": "Test Jumper",
+            "file_name": "test.csv",
+            "jump_context": "training",
+            "t0_utc": "2026-07-21T10:00:00Z",
+            "sample_rate_hz": 10,
+            "is_valid_altitude": True,
+        },
+        "metrics": {"analysis_version": "1.1.0"},
+        "notes": {"analysis_blocked": False},
+        "feedback": {"available": False},
+        "dropzone": None,
+        "dropzone_match": None,
+    }
+
+    for view_mode in ("simple", "expert"):
+        rendered = template.render(
+            view_mode=view_mode,
+            jump_id="jump-pending",
+            report=report,
+            ai_coaching={"pending": True, "cache_key": f"cache-{view_mode}"},
+            coach_view_enabled=False,
+            needs_plotly=False,
+            quality_issue_lines=[],
+            jump_context_options=[],
+            dropzone_options=[],
+            message=None,
+            error=None,
+        )
+
+        assert "Sprungbewertung in Analyse" in rendered
+        assert "speed-skydive-loader.svg" in rendered
+        assert "Test Jumper" in rendered
+        assert "Speed Score" not in rendered
+        assert "Speed Übersicht" not in rendered
+        assert "Coaching-Bewertung" not in rendered
+        assert "Scorecard" not in rendered
+        assert "Kurvenanalyse" not in rendered
+        assert "Diagnose" not in rendered
+        assert "plotly.min.js" not in rendered
+
+
+def test_pending_jumper_profile_hides_profile_scores_comparisons_and_charts():
+    env = Environment(loader=FileSystemLoader("app/templates"), autoescape=True)
+    template = env.get_template("jumper_detail.html")
+
+    rendered = template.render(
+        view_mode="expert",
+        jumper_name="Test Jumper",
+        jumper_ai_coaching={"pending": True, "cache_key": "profile-cache"},
+        coach_view_enabled=False,
+        needs_plotly=False,
+    )
+
+    assert "Profilbewertung in Analyse" in rendered
+    assert "speed-skydive-loader.svg" in rendered
+    assert "Gesamtbild" not in rendered
+    assert "Regel-Score" not in rendered
+    assert "Sprünge vergleichen" not in rendered
+    assert "Trend 3s-Max" not in rendered
+    assert "plotly.min.js" not in rendered
+
+
+def test_ai_status_payload_is_additive_and_distinguishes_ready_error_pending():
+    assert _ai_coaching_status_payload(None) == {
+        "state": "pending",
+        "complete": False,
+        "available": False,
+    }
+    assert _ai_coaching_status_payload(
+        {"_cache_status": "ready", "available": True}
+    ) == {"state": "ready", "complete": True, "available": True}
+    assert _ai_coaching_status_payload(
+        {"_cache_status": "error", "available": False}
+    ) == {"state": "error", "complete": True, "available": False}
+
+
+def test_shared_ai_loader_keeps_polling_after_old_twenty_second_limit():
+    script = Path("app/static/ai-loading.js").read_text(encoding="utf-8")
+    base = Path("app/templates/base.html").read_text(encoding="utf-8")
+
+    assert 'src="/static/ai-loading.js" defer' in base
+    assert "attempts < 20" not in script
+    assert "attempts < 45" not in script
+    assert "elapsedMs < 30000 ? 1000 : 3000" in script
+    assert 'state === "ready" || state === "error"' in script
+    assert "elapsedMs >= 60000" in script
+    assert "window.location.reload()" in script
+
+
+def test_ai_loader_svg_is_local_and_well_formed():
+    path = Path("app/static/speed-skydive-loader.svg")
+    root = ElementTree.parse(path).getroot()
+
+    assert root.tag.endswith("svg")
+    assert root.attrib["viewBox"] == "0 0 96 96"
+    assert len([node for node in root.iter() if node.tag.endswith("path")]) >= 3
 
 
 def test_ai_background_queue_deduplicates_repeated_refreshes():

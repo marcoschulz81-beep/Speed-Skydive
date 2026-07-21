@@ -1,6 +1,6 @@
 # Speed-Skydive Analyzer
 
-Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Fokus auf Techniktraining und eine nachvollziehbare 3s-Wertung. Aktuelle App-Version: `1.5.0`; unveränderte Score-Engine: `1.1.0`.
+Webanwendung zur automatischen FlySight-Auswertung für Speed-Skydiving mit Fokus auf Techniktraining und eine nachvollziehbare 3s-Wertung. Aktuelle App-Version: `1.5.1`; unveränderte Score-Engine: `1.1.0`.
 
 ## Enthaltene Funktionen
 
@@ -69,7 +69,9 @@ Danach: `http://127.0.0.1:8000`
 
 Ab Version 1.5.0 ist KI-Coaching in allen einzelnen Sprungreports sowie im Springerprofil verfügbar, jeweils in einfacher und Expertenansicht. Der Profil-Coach fasst alle auswertbaren Sprünge zusammen und erklärt Entwicklungen, wiederkehrende Muster und den nächsten Trainingsfokus. Profilvergleiche behalten diesen profilweiten KI-Kontext bei.
 
-Einzelreport und Profil werden zunächst vollständig regelbasiert dargestellt. Die KI-Formulierung entsteht anschließend im Hintergrund, wird automatisch nachgeladen und abhängig von Analyse-/Profilstand, Modell, Prompt und Ansichtsmodus persistent gespeichert. Wiederholtes Aktualisieren während einer laufenden Anfrage startet im selben Serverprozess keine identische zweite Anfrage.
+Ab Version 1.5.1 zeigt eine noch laufende KI-Auswertung zunächst eine eigene Ladeansicht mit lokalem Speed-Skydive-SVG. Bewertung, Scores, Kurven, Diagnosen und Coaching-Texte werden erst nach dem fertigen KI-Text eingeblendet. Metadaten, Kontext, Feedback und Datenwarnungen bleiben sichtbar. Bei einem endgültigen KI-Fehler wird die vollständige Regelbewertung als Fallback freigegeben.
+
+Die KI-Formulierung entsteht im Hintergrund, wird automatisch nachgeladen und abhängig von Analyse-/Profilstand, Modell, Prompt und Ansichtsmodus persistent gespeichert. Das Nachladen läuft auch nach längeren Antworten weiter; beim Wechsel zwischen einfacher und Expertenansicht wird die jeweils fehlende Variante selbstständig ergänzt. Wiederholtes Aktualisieren während einer laufenden Anfrage startet im selben Serverprozess keine identische zweite Anfrage.
 
 Die technische Analyse bleibt lokal und deterministisch. OpenAI wird nur genutzt, um aus den bereits berechneten Fakten bessere Coaching-Texte zu formulieren.
 
@@ -214,7 +216,7 @@ Sie kann nach Name, Ort, ICAO-Kennung, Betreiber, Land und Status gefiltert werd
 `/dropzones/{dropzone_id}` zeigt Höhenbelege, Zonen, Betreiber, Quellen sowie ausschließlich
 aggregierte Zuordnungs- und GNSS-Beobachtungswerte ohne Springernamen oder einzelne Sprung-IDs.
 Katalogmethodik: `docs/dropzone-catalog-2026.07.18.md`; Rollout und Validierung:
-`docs/validation-v1.2.0.md`, `docs/validation-v1.3.0.md`, `docs/validation-v1.4.0.md` und `docs/validation-v1.5.0.md`.
+`docs/validation-v1.2.0.md`, `docs/validation-v1.3.0.md`, `docs/validation-v1.4.0.md`, `docs/validation-v1.5.0.md` und `docs/validation-v1.5.1.md`.
 
 ## Tests
 

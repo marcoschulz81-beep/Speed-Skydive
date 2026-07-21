@@ -2,6 +2,7 @@
 {% block title %}Sprungreport | Speed-Skydive Analyzer{% endblock %}
 {% block content %}
 {% set vm = view_mode if view_mode in ["simple", "expert"] else "expert" %}
+{% set ai_pending = ai_coaching and ai_coaching.pending %}
 <section class="panel">
     <div class="panel-head">
         <h1>Sprungreport</h1>
@@ -120,6 +121,15 @@
     </div>
 </section>
 
+{% if ai_pending %}
+<section class="panel">
+    {% set ai_loading_title = "Sprungbewertung in Analyse" %}
+    {% set ai_loading_detail = "Der KI-Coach erstellt die Erklärung. Die fertige Bewertung wird automatisch eingeblendet." %}
+    {% set ai_loading_status_url = "/jumps/" ~ jump_id ~ "/ai-coaching-status?cache_key=" ~ ai_coaching.cache_key %}
+    {% set ai_loading_recovery_key = "jump:" ~ jump_id ~ ":" ~ vm ~ ":" ~ ai_coaching.cache_key %}
+    {% include "_ai_analysis_loading.html" %}
+</section>
+{% else %}
 <section class="panel">
     <h2>{% if vm == "simple" %}Speed Übersicht{% else %}Speed Score{% endif %}</h2>
     <div class="score-grid vertical-grid">
@@ -281,44 +291,10 @@
             </div>
         </div>
     {% endif %}
-    {% if ai_coaching and ai_coaching.pending %}
-    <p
-        class="muted"
-        id="ai-coaching-pending"
-        data-status-url="/jumps/{{ jump_id }}/ai-coaching-status?cache_key={{ ai_coaching.cache_key }}"
-    >
-        KI-Formulierung wird im Hintergrund erstellt. Die Regelanalyse ist bereits vollstaendig verfuegbar.
-    </p>
-    {% elif vm == "expert" and ai_coaching and ai_coaching.enabled and ai_coaching.reason and not ai_coaching.available %}
+    {% if ai_coaching and ai_coaching.enabled and ai_coaching.reason and not ai_coaching.available %}
     <p class="muted">KI-Formulierung nicht verfuegbar: {{ ai_coaching.reason }} Die Coaching-Bewertung nutzt die Regelanalyse.</p>
     {% endif %}
 </section>
-
-{% if ai_coaching and ai_coaching.pending %}
-<script>
-(() => {
-    const pending = document.getElementById("ai-coaching-pending");
-    if (!pending) return;
-    const statusUrl = pending.dataset.statusUrl;
-    let attempts = 0;
-    const poll = async () => {
-        attempts += 1;
-        try {
-            const response = await fetch(statusUrl, {headers: {"Accept": "application/json"}});
-            const status = response.ok ? await response.json() : null;
-            if (status?.complete) {
-                window.location.reload();
-                return;
-            }
-        } catch (_error) {
-            // Die deterministische Auswertung bleibt auch ohne Polling voll nutzbar.
-        }
-        if (attempts < 20) window.setTimeout(poll, 1000);
-    };
-    window.setTimeout(poll, 700);
-})();
-</script>
-{% endif %}
 
 {% if vm == "expert" and tip_follow_up and tip_follow_up.available %}
 <section class="panel">
@@ -834,4 +810,5 @@ Plotly.newPlot("chart-angle-vvert", [{
 }, {displayModeBar: false});
 {% endif %}
 </script>
+{% endif %}
 {% endblock %}

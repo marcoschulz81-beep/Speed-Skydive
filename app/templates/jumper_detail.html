@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Springer | Speed-Skydive Analyzer{% endblock %}
 {% block content %}
+{% set vm = view_mode if view_mode in ["simple", "expert"] else "expert" %}
+{% set profile_ai_pending = jumper_ai_coaching and jumper_ai_coaching.pending %}
 <section class="panel">
     <div class="panel-head">
         <h1>Springer: {{ jumper_name }}</h1>
@@ -16,6 +18,13 @@
         </div>
     </div>
 
+    {% if profile_ai_pending %}
+    {% set ai_loading_title = "Profilbewertung in Analyse" %}
+    {% set ai_loading_detail = "Der KI-Coach wertet die verfügbaren Sprünge aus. Das fertige Profil wird automatisch eingeblendet." %}
+    {% set ai_loading_status_url = "/jumpers/" ~ (jumper_name | urlencode) ~ "/ai-coaching-status?cache_key=" ~ jumper_ai_coaching.cache_key %}
+    {% set ai_loading_recovery_key = "profile:" ~ (jumper_name | urlencode) ~ ":" ~ vm ~ ":" ~ jumper_ai_coaching.cache_key %}
+    {% include "_ai_analysis_loading.html" %}
+    {% else %}
     {% if jumper_summary and jumper_summary.available %}
     {% if (view_mode or 'expert') == 'simple' %}
     <div class="score-grid vertical-grid">
@@ -251,44 +260,10 @@
                 </div>
             </div>
             {% endif %}
-        {% elif jumper_ai_coaching.pending %}
-        <p
-            class="muted"
-            id="jumper-ai-coaching-pending"
-            data-status-url="/jumpers/{{ jumper_name | urlencode }}/ai-coaching-status?cache_key={{ jumper_ai_coaching.cache_key }}"
-        >
-            Der KI-Profilcoach wird im Hintergrund erstellt. Profil-, Trend- und Regelanalyse sind bereits vollständig verfügbar.
-        </p>
         {% elif jumper_ai_coaching.enabled and jumper_ai_coaching.reason %}
         <p class="muted">KI-Profilcoach nicht verfügbar: {{ jumper_ai_coaching.reason }} Die regelbasierte Profilauswertung bleibt vollständig nutzbar.</p>
         {% endif %}
     </div>
-    {% endif %}
-
-    {% if jumper_ai_coaching and jumper_ai_coaching.pending %}
-    <script>
-    (() => {
-        const pending = document.getElementById("jumper-ai-coaching-pending");
-        if (!pending) return;
-        const statusUrl = pending.dataset.statusUrl;
-        let attempts = 0;
-        const poll = async () => {
-            attempts += 1;
-            try {
-                const response = await fetch(statusUrl, {headers: {"Accept": "application/json"}});
-                const status = response.ok ? await response.json() : null;
-                if (status?.complete) {
-                    window.location.reload();
-                    return;
-                }
-            } catch (_error) {
-                // Die regelbasierte Profilauswertung bleibt auch ohne Polling voll nutzbar.
-            }
-            if (attempts < 45) window.setTimeout(poll, 1000);
-        };
-        window.setTimeout(poll, 700);
-    })();
-    </script>
     {% endif %}
 
     <div class="table-wrap">
@@ -345,8 +320,10 @@
             </tbody>
         </table>
     </div>
+    {% endif %}
 </section>
 
+{% if not profile_ai_pending %}
 <section class="panel">
     <h2>Sprünge vergleichen</h2>
     <form class="compare-form" method="get" action="/jumpers/{{ jumper_name | urlencode }}/compare">
@@ -698,4 +675,5 @@ Plotly.newPlot("chart-compare-angle", [
 }, {displayModeBar: false, responsive: true});
 {% endif %}
 </script>
+{% endif %}
 {% endblock %}

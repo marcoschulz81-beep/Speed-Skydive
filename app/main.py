@@ -642,15 +642,7 @@ async def analyze_upload(
 @app.get("/jumps/{jump_id}/ai-coaching-status")
 def ai_coaching_status(jump_id: str, cache_key: str):
     cached = get_ai_coaching_result(cache_key, jump_id=jump_id)
-    if cached is None:
-        return JSONResponse({"complete": False, "available": False})
-    status = str(cached.pop("_cache_status", "ready"))
-    return JSONResponse(
-        {
-            "complete": True,
-            "available": bool(status == "ready" and cached.get("available")),
-        }
-    )
+    return JSONResponse(_ai_coaching_status_payload(cached))
 
 
 @app.get("/jumps/{jump_id}")
@@ -852,7 +844,7 @@ def jump_detail(
             "message": message,
             "error": error,
             "view_mode": view_mode,
-            "needs_plotly": True,
+            "needs_plotly": not bool(ai_coaching.get("pending")),
         },
     )
 
@@ -1219,15 +1211,19 @@ def jump_compare(
 def jumper_ai_coaching_status(jumper_name: str, cache_key: str):
     del jumper_name  # Der undurchsichtige Cache-Key ist bereits profilspezifisch.
     cached = get_ai_coaching_result(cache_key)
+    return JSONResponse(_ai_coaching_status_payload(cached))
+
+
+def _ai_coaching_status_payload(cached: dict[str, Any] | None) -> dict[str, Any]:
     if cached is None:
-        return JSONResponse({"complete": False, "available": False})
+        return {"state": "pending", "complete": False, "available": False}
     status = str(cached.pop("_cache_status", "ready"))
-    return JSONResponse(
-        {
-            "complete": True,
-            "available": bool(status == "ready" and cached.get("available")),
-        }
-    )
+    available = bool(status == "ready" and cached.get("available"))
+    return {
+        "state": "ready" if available else "error",
+        "complete": True,
+        "available": available,
+    }
 
 
 @app.get("/jumpers/{jumper_name}")
@@ -1266,7 +1262,7 @@ def jumper_view(
             "compare_error": None,
             "left_jump_id": None,
             "right_jump_id": None,
-            "needs_plotly": True,
+            "needs_plotly": not bool(jumper_ai_coaching.get("pending")),
         },
     )
 
@@ -1335,7 +1331,7 @@ def jumper_compare(
             "compare_error": compare_error,
             "left_jump_id": left_jump_id,
             "right_jump_id": right_jump_id,
-            "needs_plotly": True,
+            "needs_plotly": not bool(jumper_ai_coaching.get("pending")),
         },
     )
 
